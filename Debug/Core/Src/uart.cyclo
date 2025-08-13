@@ -1,0 +1,5 @@
+../Core/Src/uart.c:10:6:UART_TransmitString	1
+../Core/Src/uart.c:21:6:UART_TransmitByte	1
+../Core/Src/uart.c:33:6:UART_ReadDataPacket	4
+../Core/Src/uart.c:49:6:UART_ReceiveString	1
+../Core/Src/uart.c:60:6:UART_ProcessReceivedData	3

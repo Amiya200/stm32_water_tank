@@ -18,6 +18,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "global.h" // Include the global header for motorStatus
+
+// ... (rest of the main code)
+
+// ... (rest of the main code)
+
 
 #include "adc.h"
 /* Private includes ----------------------------------------------------------*/
