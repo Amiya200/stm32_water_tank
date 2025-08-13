@@ -1,0 +1,3 @@
+../Core/Src/switches.c:10:6:Switches_Init	32	static
+../Core/Src/switches.c:28:6:Switch_Read	24	static
+../Core/Src/switches.c:42:6:Switch_WasPressed	24	static
