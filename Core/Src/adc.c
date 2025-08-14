@@ -39,6 +39,11 @@ void ADC_Init(ADC_HandleTypeDef* hadc)
   * @param hadc: Pointer to ADC handle
   * @param data: Pointer to ADC_Data struct to store results
   */
+/**
+  * @brief Reads all ADC channels and transmits UART messages if thresholds are met.
+  * @param hadc: Pointer to ADC handle
+  * @param data: Pointer to ADC_Data struct to store results
+  */
 void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
 {
     ADC_ChannelConfTypeDef sConfig = {0};
@@ -47,7 +52,8 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
 
     // Define the voltage threshold for UART transmission
     const float UART_TRANSMIT_THRESHOLD = 3.0f; // Proper 3V or above
-    const float DRY_RUN_THRESHOLD = 1.0f; // Threshold for dry run detection
+    const float DRY_RUN_THRESHOLD = .0f; // Threshold for dry run detection
+    const float GROUND_THRESHOLD = 0.1f; // Threshold to consider as ground (0V)
 
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
     {
@@ -62,6 +68,13 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             data->rawValues[i] = HAL_ADC_GetValue(hadc);
             data->voltages[i] = (data->rawValues[i] * 3.3f) / 4095.0f;
             data->maxReached[i] = (data->voltages[i] >= 3.2f) ? 1 : 0; // Original 3.2V threshold for maxReached flag
+
+            // Check if the voltage is close to ground
+            if (data->voltages[i] < GROUND_THRESHOLD)
+            {
+                data->rawValues[i] = 0; // Set raw value to 0
+                data->voltages[i] = 0.0f; // Set voltage to 0.0V
+            }
 
             // Check voltage for UART transmission
             if (data->voltages[i] >= UART_TRANSMIT_THRESHOLD)
