@@ -1,3 +1,4 @@
-../Core/Src/adc.c:28:6:ADC_Init	16	static
-../Core/Src/adc.c:47:6:ADC_ReadAllChannels	72	static
-../Core/Src/adc.c:144:9:ADC_CheckMaxVoltage	24	static
+../Core/Src/adc.c:31:13:SendDataPacket	16	static
+../Core/Src/adc.c:38:6:ADC_Init	16	static
+../Core/Src/adc.c:47:6:ADC_ReadAllChannels	64	static
+../Core/Src/adc.c:120:9:ADC_CheckMaxVoltage	24	static
