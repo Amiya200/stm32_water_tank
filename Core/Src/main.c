@@ -17,24 +17,34 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-#include "lcd_i2c.h" // Include LCD driver header
-#include "stdio.h"   // For sprintf
-#include "rtc_i2c.h" // Include RTC driver header
-#include "global.h" // Include the global header for motorStatus
+#include "lcd_i2c.h"  // Include LCD driver header
+#include "stdio.h"    // For sprintf
+#include "rtc_i2c.h"  // Include RTC driver header
+#include "global.h"   // Include the global header for motorStatus
 #include "adc.h"
+#include "lora.h"
 
+#include <string.h>   // <-- required for strlen()
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+extern SPI_HandleTypeDef hspi1;
+
+
+uint8_t txBuffer[64];   // for sending packets
+uint8_t rxBuffer[64];   // for receiving packets
+
+uint8_t rxData[64];
+uint8_t rxLen;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -47,7 +57,6 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-
 ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c2;
@@ -57,16 +66,17 @@ RTC_HandleTypeDef hrtc;
 SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart1;
+
 /* USER CODE BEGIN PV */
 
 // Variables for display, local to main.c
 float TEMP;
-char buffer[20]; // Increased buffer size for temperature string
+char buffer[20];  // Increased buffer size for temperature string
+uint8_t loraMode = 1;  // 1 = transmitter, 0 = receiver
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
-
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
@@ -89,12 +99,11 @@ ADC_Data adcData;
   * @brief  The application entry point.
   * @retval int
   */
-int main(void)
-{
+int main(void) {
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
-
 
   /* MCU Configuration--------------------------------------------------------*/
 
@@ -121,42 +130,53 @@ int main(void)
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
 
-  lcd_init (); // Initialize the LCD
+  lcd_init();  // Initialize the LCD
 
   ADC_Init(&hadc1);
 
-  // Uncomment the line below to set the initial time on the RTC
-  // Set_Time(00, 03, 14, 5, 3, 1, 19); // sec, min, hour, day_of_week, day_of_month, month, year (e.g., 2019)
-                                    // Example: 00 seconds, 03 minutes, 14 hours (2 PM), Friday (5), 3rd day, January (1), 2019
+  LoRa_Init();   // initialize LoRa
 
+  char msg[] = "LoRa Receiver Ready\r\n";
+  HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+  while (1) {
       // Read all ADC channels
       ADC_ReadAllChannels(&hadc1, &adcData);
-    /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
+      // LoRa operation based on mode
+      if (loraMode == 1) {
+          // Transmitter
+          uint8_t msg[] = "Hello from STM32!";
+          LoRa_SendPacket(msg, sizeof(msg) - 1);
+          HAL_Delay(1000);
+      } else {
+          // Receiver
+          uint8_t len = LoRa_ReceivePacket(rxBuffer);
+          if (len > 0) {
+              HAL_UART_Transmit(&huart1, rxBuffer, len, HAL_MAX_DELAY);
+          }
+      }
 
-	  Get_Time(); // Read current time from RTC
-	  sprintf (buffer, "%02d:%02d:%02d", time.hour, time.minutes, time.seconds);
-	  lcd_put_cur (0,0); // Set cursor to row 0, column 0
-	  lcd_send_string(buffer); // Display time
+      // RTC time
+      Get_Time();
+      sprintf(buffer, "%02d:%02d:%02d", time.hour, time.minutes, time.seconds);
+      lcd_put_cur(0, 0);
+      lcd_send_string(buffer);
 
-	  sprintf (buffer, "%02d-%02d-20%02d", time.dayofmonth, time.month, time.year);
-	  lcd_put_cur(1, 0); // Set cursor to row 1, column 0
-	  lcd_send_string(buffer); // Display date
+      sprintf(buffer, "%02d-%02d-20%02d", time.dayofmonth, time.month, time.year);
+      lcd_put_cur(1, 0);
+      lcd_send_string(buffer);
 
+      // RTC temperature
+      lcd_put_cur(0, 10);
+      lcd_send_string(buffer);
 
-	  lcd_put_cur(0, 10); // Set cursor to row 0, column 10
-	  // Using %g for float to avoid trailing zeros if possible, or adjust precision
-	  lcd_send_string(buffer);
-
-	  HAL_Delay(500); // Delay for 500ms before next update
+      HAL_Delay(500);
   }
+
   /* USER CODE END 3 */
 }
 
@@ -164,11 +184,10 @@ int main(void)
   * @brief System Clock Configuration
   * @retval None
   */
-void SystemClock_Config(void)
-{
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+void SystemClock_Config(void) {
+  RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = { 0 };
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -180,29 +199,26 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+                                | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
-  {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC|RCC_PERIPHCLK_ADC;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC | RCC_PERIPHCLK_ADC;
   PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_HSE_DIV128;
   PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-  {
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
     Error_Handler();
   }
 }
@@ -212,33 +228,50 @@ void SystemClock_Config(void)
   * @param None
   * @retval None
   */
+static void MX_ADC1_Init(void) {
 
-static void MX_ADC1_Init(void)
-{
-    ADC_ChannelConfTypeDef sConfig = {0};
+  /* USER CODE BEGIN ADC1_Init 0 */
 
-    hadc1.Instance = ADC1;
-    hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-    hadc1.Init.ContinuousConvMode = DISABLE;
-    hadc1.Init.DiscontinuousConvMode = DISABLE;
-    hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-    hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-    hadc1.Init.NbrOfConversion = 1;
-    HAL_ADC_Init(&hadc1);
-}
+  /* USER CODE END ADC1_Init 0 */
 
+  ADC_ChannelConfTypeDef sConfig = { 0 };
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
+    Error_Handler();
+  }
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
-
+}
 
 /**
   * @brief I2C2 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_I2C2_Init(void)
-{
+static void MX_I2C2_Init(void) {
 
   /* USER CODE BEGIN I2C2_Init 0 */
 
@@ -256,14 +289,12 @@ static void MX_I2C2_Init(void)
   hi2c2.Init.OwnAddress2 = 0;
   hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
   hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
-  {
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN I2C2_Init 2 */
 
   /* USER CODE END I2C2_Init 2 */
-
 }
 
 /**
@@ -271,15 +302,14 @@ static void MX_I2C2_Init(void)
   * @param None
   * @retval None
   */
-static void MX_RTC_Init(void)
-{
+static void MX_RTC_Init(void) {
 
   /* USER CODE BEGIN RTC_Init 0 */
 
   /* USER CODE END RTC_Init 0 */
 
-  RTC_TimeTypeDef sTime = {0};
-  RTC_DateTypeDef DateToUpdate = {0};
+  RTC_TimeTypeDef sTime = { 0 };
+  RTC_DateTypeDef DateToUpdate = { 0 };
 
   /* USER CODE BEGIN RTC_Init 1 */
 
@@ -290,8 +320,7 @@ static void MX_RTC_Init(void)
   hrtc.Instance = RTC;
   hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND;
   hrtc.Init.OutPut = RTC_OUTPUTSOURCE_ALARM;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK)
-  {
+  if (HAL_RTC_Init(&hrtc) != HAL_OK) {
     Error_Handler();
   }
 
@@ -305,8 +334,7 @@ static void MX_RTC_Init(void)
   sTime.Minutes = 0x0;
   sTime.Seconds = 0x0;
 
-  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
-  {
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK) {
     Error_Handler();
   }
   DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
@@ -314,14 +342,12 @@ static void MX_RTC_Init(void)
   DateToUpdate.Date = 0x1;
   DateToUpdate.Year = 0x0;
 
-  if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK)
-  {
+  if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN RTC_Init 2 */
 
   /* USER CODE END RTC_Init 2 */
-
 }
 
 /**
@@ -329,8 +355,7 @@ static void MX_RTC_Init(void)
   * @param None
   * @retval None
   */
-static void MX_SPI1_Init(void)
-{
+static void MX_SPI1_Init(void) {
 
   /* USER CODE BEGIN SPI1_Init 0 */
 
@@ -352,14 +377,12 @@ static void MX_SPI1_Init(void)
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
-  {
+  if (HAL_SPI_Init(&hspi1) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN SPI1_Init 2 */
 
   /* USER CODE END SPI1_Init 2 */
-
 }
 
 /**
@@ -367,8 +390,7 @@ static void MX_SPI1_Init(void)
   * @param None
   * @retval None
   */
-static void MX_USART1_UART_Init(void)
-{
+static void MX_USART1_UART_Init(void) {
 
   /* USER CODE BEGIN USART1_Init 0 */
 
@@ -385,14 +407,12 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.Mode = UART_MODE_TX_RX;
   huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
+  if (HAL_UART_Init(&huart1) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
@@ -400,9 +420,8 @@ static void MX_USART1_UART_Init(void)
   * @param None
   * @retval None
   */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
+static void MX_GPIO_Init(void) {
+  GPIO_InitTypeDef GPIO_InitStruct = { 0 };
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
@@ -417,17 +436,16 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, Relay1_Pin|Relay2_Pin|Relay3_Pin|SWITCH4_Pin
-                          |LORA_STATUS_Pin|RF_DATA_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, Relay1_Pin | Relay2_Pin | Relay3_Pin | SWITCH4_Pin | LORA_STATUS_Pin | RF_DATA_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LED1_Pin|LED2_Pin|LED3_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOA, LED1_Pin | LED2_Pin | LED3_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LED4_Pin|LED5_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOB, LED4_Pin | LED5_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -437,27 +455,27 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : AC_voltage_Pin AC_current_Pin */
-  GPIO_InitStruct.Pin = AC_voltage_Pin|AC_current_Pin;
+  GPIO_InitStruct.Pin = AC_voltage_Pin | AC_current_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : Relay1_Pin Relay2_Pin Relay3_Pin SWITCH4_Pin
                            LORA_STATUS_Pin RF_DATA_Pin LED4_Pin LED5_Pin */
-  GPIO_InitStruct.Pin = Relay1_Pin|Relay2_Pin|Relay3_Pin|SWITCH4_Pin
-                          |LORA_STATUS_Pin|RF_DATA_Pin|LED4_Pin|LED5_Pin;
+  GPIO_InitStruct.Pin = Relay1_Pin | Relay2_Pin | Relay3_Pin | SWITCH4_Pin
+                        | LORA_STATUS_Pin | RF_DATA_Pin | LED4_Pin | LED5_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SWITCH1_Pin SWITCH2_Pin SWITCH3_Pin */
-  GPIO_InitStruct.Pin = SWITCH1_Pin|SWITCH2_Pin|SWITCH3_Pin;
+  GPIO_InitStruct.Pin = SWITCH1_Pin | SWITCH2_Pin | SWITCH3_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LED1_Pin LED2_Pin LED3_Pin LORA_SELECT_Pin */
-  GPIO_InitStruct.Pin = LED1_Pin|LED2_Pin|LED3_Pin|LORA_SELECT_Pin;
+  GPIO_InitStruct.Pin = LED1_Pin | LED2_Pin | LED3_Pin | LORA_SELECT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -476,13 +494,11 @@ static void MX_GPIO_Init(void)
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
-void Error_Handler(void)
-{
+void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1)
-  {
+  while (1) {
   }
   /* USER CODE END Error_Handler_Debug */
 }
@@ -494,8 +510,7 @@ void Error_Handler(void)
   * @param  line: assert_param error line source number
   * @retval None
   */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line number,
      ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
