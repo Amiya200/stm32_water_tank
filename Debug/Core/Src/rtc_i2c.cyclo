@@ -1,7 +1,6 @@
-../Core/Src/rtc_i2c.c:11:9:RTC_I2C_DecToBcd	1
-../Core/Src/rtc_i2c.c:20:9:RTC_I2C_BcdToDec	1
-../Core/Src/rtc_i2c.c:29:6:RTC_I2C_Init	2
-../Core/Src/rtc_i2c.c:48:6:RTC_I2C_SetTime	2
-../Core/Src/rtc_i2c.c:63:6:RTC_I2C_GetTime	2
-../Core/Src/rtc_i2c.c:77:6:RTC_I2C_SetDate	2
-../Core/Src/rtc_i2c.c:91:6:RTC_I2C_GetDate	2
+../Core/Src/rtc_i2c.c:12:9:decToBcd	1
+../Core/Src/rtc_i2c.c:22:5:bcdToDec	1
+../Core/Src/rtc_i2c.c:38:6:Set_Time	1
+../Core/Src/rtc_i2c.c:59:6:Get_Time	1
+../Core/Src/rtc_i2c.c:78:7:Get_Temp	1
+../Core/Src/rtc_i2c.c:95:6:force_temp_conv	2

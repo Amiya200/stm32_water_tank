@@ -1,97 +1,30 @@
 #ifndef __RTC_I2C_H
 #define __RTC_I2C_H
 
-#ifdef __cplusplus
- extern "C" {
-#endif
+#include "main.h" // Assuming main.h includes HAL definitions and other necessary headers
 
-#include "main.h" // For I2C_HandleTypeDef and HAL functions, which includes stm32f1xx_hal_rtc.h
-#include <stdbool.h>
-#include <stdint.h>
+// DS3231 I2C Slave Address (7-bit address 0x68, shifted left by 1 for 8-bit address)
+#define DS3231_ADDRESS 0xD0
 
-// Define the I2C address of your RTC module (if using an external I2C RTC)
-// For internal STM32 RTC, this define is not directly used by HAL RTC functions.
-// It's kept here for consistency if you later switch to an external I2C RTC.
-#define RTC_I2C_ADDRESS (0x68 << 1) // Example for DS1307/DS3231
+// Structure to hold time and date information
+typedef struct {
+	uint8_t seconds;
+	uint8_t minutes;
+	uint8_t hour;
+	uint8_t dayofweek; // 1=Sunday, 2=Monday, ..., 7=Saturday
+	uint8_t dayofmonth;
+	uint8_t month;
+	uint8_t year;      // Last two digits of the year (e.g., 23 for 2023)
+} TIME;
 
-// RTC Register Addresses (Example for DS1307/DS3231 - not directly used for internal HAL RTC)
-#define DS1307_REG_SECONDS      0x00
-#define DS1307_REG_MINUTES      0x01
-#define DS1307_REG_HOURS        0x02
-#define DS1307_REG_DAYOFWEEK    0x03
-#define DS1307_REG_DAY          0x04
-#define DS1307_REG_MONTH        0x05
-#define DS1307_REG_YEAR         0x06
-#define DS1307_REG_CONTROL      0x07
+extern TIME time; // Declare the TIME structure globally so main.c can access it
 
-// Control Register Bits (Example for DS1307 - not directly used for internal HAL RTC)
-#define DS1307_CH_BIT           (1 << 7) // Clock Halt bit
-#define DS1307_SQWE_BIT         (1 << 4) // Square Wave Enable bit
-#define DS1307_RS_MASK          (0x03)   // Rate Select bits
-
-// NOTE: RTC_TimeTypeDef and RTC_DateTypeDef are already defined by the STM32 HAL library
-// in stm32f1xx_hal_rtc.h, which is included via main.h -> stm32f1xx_hal.h.
-// Do NOT redefine them here, as it causes conflicting types errors.
-
-// Function Prototypes
-
-/**
-  * @brief  Initializes the RTC module. For internal RTC, this typically means
-  *         initializing the HAL_RTC_HandleTypeDef. For external I2C RTC, it
-  *         would involve I2C initialization and checking the RTC chip.
-  * @param  hrtc: Pointer to the RTC handle (e.g., &hrtc from main.c)
-  * @retval true if initialization is successful, false otherwise.
-  */
-bool RTC_I2C_Init(RTC_HandleTypeDef *hrtc); // Changed parameter to RTC_HandleTypeDef
-
-/**
-  * @brief  Sets the current time on the RTC module.
-  * @param  hrtc: Pointer to the RTC handle.
-  * @param  sTime: Pointer to a RTC_TimeTypeDef structure containing the time to set.
-  * @retval true if time is set successfully, false otherwise.
-  */
-bool RTC_I2C_SetTime(RTC_HandleTypeDef *hrtc, RTC_TimeTypeDef *sTime);
-
-/**
-  * @brief  Gets the current time from the RTC module.
-  * @param  hrtc: Pointer to the RTC handle.
-  * @param  sTime: Pointer to a RTC_TimeTypeDef structure to store the retrieved time.
-  * @retval true if time is read successfully, false otherwise.
-  */
-bool RTC_I2C_GetTime(RTC_HandleTypeDef *hrtc, RTC_TimeTypeDef *sTime);
-
-/**
-  * @brief  Sets the current date on the RTC module.
-  * @param  hrtc: Pointer to the RTC handle.
-  * @param  sDate: Pointer to a RTC_DateTypeDef structure containing the date to set.
-  * @retval true if date is set successfully, false otherwise.
-  */
-bool RTC_I2C_SetDate(RTC_HandleTypeDef *hrtc, RTC_DateTypeDef *sDate); // Changed to RTC_DateTypeDef
-
-/**
-  * @brief  Gets the current date from the RTC module.
-  * @param  hrtc: Pointer to the RTC handle.
-  * @param  sDate: Pointer to a RTC_DateTypeDef structure to store the retrieved date.
-  * @retval true if date is read successfully, false otherwise.
-  */
-bool RTC_I2C_GetDate(RTC_HandleTypeDef *hrtc, RTC_DateTypeDef *sDate); // Changed to RTC_DateTypeDef
-
-/**
-  * @brief  Converts a decimal value to BCD format.
-  * @param  val: Decimal value to convert.
-  * @retval BCD value.
-  */
-uint8_t RTC_I2C_DecToBcd(uint8_t val);
-
-/**
-  * @brief  Converts a BCD value to decimal format.
-  * @param  val: BCD value to convert.
-  * @retval Decimal value.
-  */
-uint8_t RTC_I2C_BcdToDec(uint8_t val);
-
-#ifdef __cplusplus
-}
-#endif
+// Function prototypes
+uint8_t decToBcd(int val);
+int bcdToDec(uint8_t val);
+void Set_Time (uint8_t sec, uint8_t min, uint8_t hour, uint8_t dow, uint8_t dom, uint8_t month, uint8_t year);
+void Get_Time (void);
+float Get_Temp (void);
+void force_temp_conv (void);
 
 #endif /* __RTC_I2C_H */
