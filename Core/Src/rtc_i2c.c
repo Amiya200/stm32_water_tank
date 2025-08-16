@@ -1,6 +1,6 @@
 #include "rtc_i2c.h"
 
-extern I2C_HandleTypeDef hi2c1; // External declaration for the I2C handle initialized in main.c
+extern I2C_HandleTypeDef hi2c2; // External declaration for the I2C handle initialized in main.c
 
 TIME time; // Definition of the global TIME structure (only defined once here)
 
@@ -47,7 +47,7 @@ void Set_Time (uint8_t sec, uint8_t min, uint8_t hour, uint8_t dow, uint8_t dom,
 	set_time[6] = decToBcd(year);
 
 	// Write 7 bytes starting from address 0x00 (seconds register)
-	HAL_I2C_Mem_Write(&hi2c1, DS3231_ADDRESS, 0x00, 1, set_time, 7, 1000);
+	HAL_I2C_Mem_Write(&hi2c2, DS3231_ADDRESS, 0x00, 1, set_time, 7, 1000);
 }
 
 /**
@@ -60,7 +60,7 @@ void Get_Time (void)
 {
 	uint8_t get_time[7];
 	// Read 7 bytes starting from address 0x00 (seconds register)
-	HAL_I2C_Mem_Read(&hi2c1, DS3231_ADDRESS, 0x00, 1, get_time, 7, 1000);
+	HAL_I2C_Mem_Read(&hi2c2, DS3231_ADDRESS, 0x00, 1, get_time, 7, 1000);
 	time.seconds = bcdToDec(get_time[0]);
 	time.minutes = bcdToDec(get_time[1]);
 	time.hour = bcdToDec(get_time[2]);
@@ -80,7 +80,7 @@ float Get_Temp (void)
 	uint8_t temp[2];
 
 	// Read 2 bytes starting from address 0x11 (temperature MSB register)
-	HAL_I2C_Mem_Read(&hi2c1, DS3231_ADDRESS, 0x11, 1, temp, 2, 1000);
+	HAL_I2C_Mem_Read(&hi2c2, DS3231_ADDRESS, 0x11, 1, temp, 2, 1000);
 	// Temperature calculation: MSB + (LSB >> 6) * 0.25
 	return ((float)temp[0]) + ((float)(temp[1] >> 6) / 4.0f);
 }
@@ -97,13 +97,13 @@ void force_temp_conv (void)
 	uint8_t status=0;
 	uint8_t control=0;
 	// Read status register (0x0F)
-	HAL_I2C_Mem_Read(&hi2c1, DS3231_ADDRESS, 0x0F, 1, &status, 1, 100);
+	HAL_I2C_Mem_Read(&hi2c2, DS3231_ADDRESS, 0x0F, 1, &status, 1, 100);
 	// Check if the busy bit (bit 2, OSF) is not set (0x04)
 	if (!(status & 0x04))
 	{
 		// Read control register (0x0E)
-		HAL_I2C_Mem_Read(&hi2c1, DS3231_ADDRESS, 0x0E, 1, &control, 1, 100);
+		HAL_I2C_Mem_Read(&hi2c2, DS3231_ADDRESS, 0x0E, 1, &control, 1, 100);
 		// Set the CONV bit (bit 5, CONV) in the control register to force a temperature conversion
-		HAL_I2C_Mem_Write(&hi2c1, DS3231_ADDRESS, 0x0E, 1, (uint8_t *)(control | 0x20), 1, 100);
+		HAL_I2C_Mem_Write(&hi2c2, DS3231_ADDRESS, 0x0E, 1, (uint8_t *)(control | 0x20), 1, 100);
 	}
 }

@@ -1,20 +1,9 @@
 #include "adc.h"
-#include "main.h"
-#include "uart.h"   // for UART_TransmitString / UART_ReceiveString
-extern UART_HandleTypeDef huart1;
+#include "main.h" // Include main.h or uart_handle.h depending on your choice
+#include "uart.h" // Include the new UART header
+#include "global.h" // Include the global header for motorStatus
 
-#include "global.h"
-
-// ---------- CONFIGURATION ----------
-#define ADC_RESOLUTION       4095.0f
-#define ADC_REF_VOLTAGE      3.3f
-
-#define UART_TRANSMIT_THRESHOLD   3.0f   // V
-#define MAX_REACHED_THRESHOLD     3.2f   // V
-#define DRY_RUN_THRESHOLD         0.0f   // V
-#define GROUND_THRESHOLD          0.1f   // V
-
-// ---------- GLOBAL VARIABLES ----------
+// ADC channel configuration
 static const uint32_t adcChannels[ADC_CHANNEL_COUNT] = {
     ADC_CHANNEL_0,  // PA0
     ADC_CHANNEL_1,  // PA1
@@ -24,104 +13,140 @@ static const uint32_t adcChannels[ADC_CHANNEL_COUNT] = {
     ADC_CHANNEL_5   // PA5
 };
 
-char dataPacket[16];          // Buffer for outgoing UART packet
-uint8_t motorStatus = 0;      // 0 = Off, 1 = On
+// Buffer to hold the data packet
+char dataPacket[9]; // Adjust size as needed
 
-// ---------- HELPER: Build and send packet ----------
-static void SendDataPacket(const char* msg)
-{
-    UART_ReadDataPacket(dataPacket, msg, strlen(msg)); // prepare packet
-    UART_TransmitString(&huart1, dataPacket);          // transmit packet
-}
+// Define the motorStatus variable
+uint8_t motorStatus = 0; // 0: Off, 1: On
 
-// ---------- ADC Initialization ----------
+// ... (rest of the ADC code remains unchanged)
+
+/**
+  * @brief Initializes the ADC hardware
+  * @param hadc: Pointer to ADC handle
+  */
 void ADC_Init(ADC_HandleTypeDef* hadc)
 {
+    // Calibration
     if (HAL_ADCEx_Calibration_Start(hadc) != HAL_OK)
     {
         Error_Handler();
     }
 }
 
-// ---------- Read All ADC Channels ----------
+/**
+  * @brief Reads all ADC channels and transmits UART messages if thresholds are met.
+  * @param hadc: Pointer to ADC handle
+  * @param data: Pointer to ADC_Data struct to store results
+  */
+/**
+  * @brief Reads all ADC channels and transmits UART messages if thresholds are met.
+  * @param hadc: Pointer to ADC handle
+  * @param data: Pointer to ADC_Data struct to store results
+  */
 void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
 {
     ADC_ChannelConfTypeDef sConfig = {0};
     sConfig.Rank = 1;
     sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
 
+    // Define the voltage threshold for UART transmission
+    const float UART_TRANSMIT_THRESHOLD = 3.0f; // Proper 3V or above
+    const float DRY_RUN_THRESHOLD = .0f; // Threshold for dry run detection
+    const float GROUND_THRESHOLD = 0.1f; // Threshold to consider as ground (0V)
+
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
     {
         // Configure channel
         sConfig.Channel = adcChannels[i];
-        if (HAL_ADC_ConfigChannel(hadc, &sConfig) != HAL_OK) {
-            data->rawValues[i] = 0;
-            data->voltages[i] = 0.0f;
-            data->maxReached[i] = 0;
-            continue;
-        }
+        HAL_ADC_ConfigChannel(hadc, &sConfig);
 
         // Start conversion
         HAL_ADC_Start(hadc);
         if (HAL_ADC_PollForConversion(hadc, 10) == HAL_OK)
         {
-            // Get raw and voltage
             data->rawValues[i] = HAL_ADC_GetValue(hadc);
-            data->voltages[i] = (data->rawValues[i] * ADC_REF_VOLTAGE) / ADC_RESOLUTION;
-            data->maxReached[i] = (data->voltages[i] >= MAX_REACHED_THRESHOLD);
+            data->voltages[i] = (data->rawValues[i] * 3.3f) / 4095.0f;
+            data->maxReached[i] = (data->voltages[i] >= 3.2f) ? 1 : 0; // Original 3.2V threshold for maxReached flag
 
-            // If close to ground, clamp to 0
-            if (data->voltages[i] < GROUND_THRESHOLD) {
-                data->rawValues[i] = 0;
-                data->voltages[i] = 0.0f;
+            // Check if the voltage is close to ground
+            if (data->voltages[i] < GROUND_THRESHOLD)
+            {
+                data->rawValues[i] = 0; // Set raw value to 0
+                data->voltages[i] = 0.0f; // Set voltage to 0.0V
             }
 
-            // UART packet handling
+            // Check voltage for UART transmission
             if (data->voltages[i] >= UART_TRANSMIT_THRESHOLD)
             {
                 switch (i)
                 {
-                    case 0: SendDataPacket("@10W#"); motorStatus = 1; break;
-                    case 1: SendDataPacket("@30W#"); motorStatus = 1; break;
-                    case 2: SendDataPacket("@70W#"); motorStatus = 1; break;
-                    case 3: SendDataPacket("@1:W#"); motorStatus = 1; break;
-                    case 4: SendDataPacket("@DRY#"); motorStatus = 1; break;
-                    default: break;
+                    case 0: // IN0
+                        UART_ReadDataPacket(dataPacket, "@10W#", sizeof("@10W#") - 1);
+                        UART_TransmitString(&huart1, dataPacket);
+                        motorStatus = 1; // Motor is on
+                        break;
+                    case 1: // IN1
+                        UART_ReadDataPacket(dataPacket, "@30W#", sizeof("@30W#") - 1);
+                        UART_TransmitString(&huart1, dataPacket);
+                        motorStatus = 1; // Motor is on
+                        break;
+                    case 2: // IN2
+                        UART_ReadDataPacket(dataPacket, "@70W#", sizeof("@70W#") - 1);
+                        UART_TransmitString(&huart1, dataPacket);
+                        motorStatus = 1; // Motor is on
+                        break;
+                    case 3: // IN3
+                        UART_ReadDataPacket(dataPacket, "@1:W#", sizeof("@1:W#") - 1);
+                        UART_TransmitString(&huart1, dataPacket);
+                        motorStatus = 1; // Motor is on
+                        break;
+                    case 4: // IN4
+                        UART_ReadDataPacket(dataPacket, "@DRY#", sizeof("@DRY#") - 1);
+                        UART_TransmitString(&huart1, dataPacket);
+                        motorStatus = 1; // Set motor status to on for dry run
+                        break;
+                    // Cases for IN5 are not specified for UART transmission
+                    default:
+                        break;
                 }
             }
-            else if (data->voltages[i] <= DRY_RUN_THRESHOLD && motorStatus == 1)
+            else if (data->voltages[i] < DRY_RUN_THRESHOLD && motorStatus == 1)
             {
-                // Dry run detected
-                SendDataPacket("@MT0#");
-                motorStatus = 0;
+                // If the voltage is below the dry run threshold and the motor is on
+                UART_ReadDataPacket(dataPacket, "@MT0#", sizeof("@MT0#") - 1);
+                UART_TransmitString(&huart1, dataPacket);
+                motorStatus = 0; // Set motor status to off
             }
         }
         else
         {
-            // Conversion timeout/error
+            // Handle ADC conversion timeout or error if necessary
+            // For simplicity, we'll just set values to 0 on error
             data->rawValues[i] = 0;
             data->voltages[i] = 0.0f;
             data->maxReached[i] = 0;
         }
     }
 
-    // ---------- Handle incoming UART ----------
-    char receivedData[20] = {0};
-
-    UART_ReceiveString(&huart1, receivedData, sizeof(receivedData));
-
-    if (receivedData[0] != '\0') {   // only process if something received
-        UART_ProcessReceivedData(receivedData);
-    }
-
+    // Check for incoming UART data
+    char receivedData[20]; // Buffer to hold received data
+    UART_ReceiveString(&huart1, receivedData, sizeof(receivedData)); // Receive data from UART
+    UART_ProcessReceivedData(receivedData); // Process the received data
 }
 
-// ---------- Max Voltage Check ----------
+/**
+  * @brief Checks if any channel reached maximum voltage
+  * @param data: Pointer to ADC_Data struct
+  * @param threshold: Voltage threshold (e.g., 3.2V)
+  * @return 1 if any channel reached max, 0 otherwise
+  */
 uint8_t ADC_CheckMaxVoltage(ADC_Data* data, float threshold)
 {
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
     {
-        if (data->voltages[i] >= threshold) {
+        if (data->voltages[i] >= threshold)
+        {
             return 1;
         }
     }
