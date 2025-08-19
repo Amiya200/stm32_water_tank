@@ -1,8 +1,8 @@
 ../Core/Src/lora.c:9:6:LoRa_Reset	1
 ../Core/Src/lora.c:17:6:LoRa_WriteReg	1
-../Core/Src/lora.c:28:9:LoRa_ReadReg	1
-../Core/Src/lora.c:41:6:LoRa_WriteBuffer	1
-../Core/Src/lora.c:51:6:LoRa_ReadBuffer	1
-../Core/Src/lora.c:61:6:LoRa_Init	1
-../Core/Src/lora.c:98:6:LoRa_SendPacket	2
-../Core/Src/lora.c:123:9:LoRa_ReceivePacket	2
+../Core/Src/lora.c:25:9:LoRa_ReadReg	1
+../Core/Src/lora.c:36:6:LoRa_WriteBuffer	1
+../Core/Src/lora.c:45:6:LoRa_ReadBuffer	1
+../Core/Src/lora.c:54:6:LoRa_Init	1
+../Core/Src/lora.c:94:6:LoRa_SendPacket	2
+../Core/Src/lora.c:122:9:LoRa_ReceivePacket	2
