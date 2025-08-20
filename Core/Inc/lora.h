@@ -31,4 +31,9 @@ void LoRa_ReadBuffer(uint8_t addr, uint8_t *buffer, uint8_t size);
 void LoRa_SendPacket(const uint8_t *buffer, uint8_t size);
 uint8_t LoRa_ReceivePacket(uint8_t *buffer);
 
+
+void LoRa_Init(void);
+void LoRa_Task(void);
+
+
 #endif /* __LORA_H__ */

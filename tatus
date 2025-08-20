@@ -1,0 +1,65 @@
+[33mcommit fab8375def0bb9aa21f3c4f350607f71ec31704c[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Wed Aug 20 16:54:19 2025 +0530
+
+    able to the connection establishing as it is a receiver now improving the code
+
+[33mcommit 2bcf50d089ab07a0b073aa5cf9c064f8b720330b[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Wed Aug 20 14:24:37 2025 +0530
+
+    able to make connection with the receiver as making this as a transmitter
+
+[33mcommit 7d70e3bcf5e2736ba106716ce3066054c316b16c[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Tue Aug 19 17:44:51 2025 +0530
+
+    updated the code and trying to test the lora module
+
+[33mcommit b64e78f1807baac5780cbb3c4fa5e59f58e21300[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Sat Aug 16 17:01:01 2025 +0530
+
+    added te files of lora module and a feature to select the transmitter and receiver now preaparing it for testing
+
+[33mcommit 63e99adf2e18bad0e22f5ee235319afc132b9278[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Sat Aug 16 16:29:49 2025 +0530
+
+    able to se the data of both rtc and adc
+
+[33mcommit ed96178618ca19446e728e7c78493cc9ec382f0d[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Sat Aug 16 15:27:15 2025 +0530
+
+    able to rtc data
+
+[33mcommit 248ec5930c1e4f9d3e8adc1f5acfb5af192fce48[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Thu Aug 14 16:11:32 2025 +0530
+
+    added the code of rtc but not tested be carefull while generating code from ioc
+
+[33mcommit 96a630384c7505db63231090c8fe8b067f473663[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Thu Aug 14 13:31:40 2025 +0530
+
+    able to test adc with long wire now looking forward to the uart
+
+[33mcommit 35c92387f87ffce9990f78ec650b598615db9e89[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Wed Aug 13 18:44:43 2025 +0530
+
+    okk  with adc and uart for device on rooftop tank side
+
+[33mcommit a7d4e73871330f7d9405f813f52f0606d12d80e9[m
+Author: Krishna <krishna@brainwave.com>
+Date:   Wed Aug 13 17:46:47 2025 +0530
+
+    Describe what you changed or added
+
+[33mcommit ddfd85583b4e91d7f80057087f253d1a7349581b[m
+Author: Amiya Krishna Gupta <amiygupta2468@gmail.com>
+Date:   Mon Aug 11 10:00:48 2025 +0530
+
+    first commit

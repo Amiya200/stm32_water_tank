@@ -38,9 +38,6 @@ extern SPI_HandleTypeDef hspi1;
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 // LoRa Modes
-#define LORA_MODE_TRANSMITTER 1
-#define LORA_MODE_RECEIVER    2
-#define LORA_MODE_TRANCEIVER  3 // Both Transmitter and Receiver
 /* USER CODE END PD */
 
 /* Private variables ---------------------------------------------------------*/
@@ -52,13 +49,9 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 char lcdBuffer[20];
-uint8_t rxBuffer[32];        // LoRa RX
-uint8_t txBuffer[32];        // LoRa TX
-uint8_t connectionStatus = 0; // 0 = lost, 1 = OK
 ADC_Data adcData;            // ADC readings
 
 // Variable to control LoRa mode: 1=Transmitter, 2=Receiver, 3=Transceiver
-uint8_t loraMode = LORA_MODE_RECEIVER; // Default to Transceiver mode
 /* USER CODE END PV */
 char errMsg[50];
 /* Function prototypes -------------------------------------------------------*/
@@ -69,7 +62,6 @@ static void MX_RTC_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_I2C2_Init(void);
-static uint8_t z = 0;
 
 /* USER CODE BEGIN 0 */
 void Debug_Print(char *msg) {
@@ -107,159 +99,13 @@ int main(void) {
   Debug_Print(dbg);
 
   // Set initial LoRa mode
-  if (loraMode == LORA_MODE_RECEIVER || loraMode == LORA_MODE_TRANCEIVER) {
-      LoRa_SetRxContinuous(); // Start in RX mode if receiver or transceiver
-      Debug_Print("LoRa set to RX Continuous mode.\r\n");
-  } else {
-      LoRa_SetStandby(); // Otherwise, start in Standby
-      Debug_Print("LoRa set to Standby mode.\r\n");
-  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
+  /* Infinite loop */
   while (1) {
-      // === Verify LoRa chip ===
-      uint8_t version = LoRa_ReadReg(0x42);  // SX1278 RegVersion
-      if (version != 0x12) {
-          z = 1;
-          char errMsg[50];
-          sprintf(errMsg, "LoRa not found! RegVersion=0x%02X\r\n", version);
-          Debug_Print(errMsg);
-          HAL_Delay(2000);
-          continue; // retry until chip responds
-      }
-
-      switch (loraMode) {
-          case LORA_MODE_TRANSMITTER:
-              // Transmitter logic
-              Debug_Print("LoRa Mode: Transmitter\r\n");
-              uint8_t tx_msg[] = "HELLO_TX";
-              z=5;
-              LoRa_SendPacket(tx_msg, sizeof(tx_msg) - 1);
-              Debug_Print("Sent: HELLO_TX\r\n");
-              HAL_Delay(2000); // Send every 2 seconds
-              break;
-          case LORA_MODE_RECEIVER:
-              Debug_Print("LoRa Mode: Receiver\r\n");
-
-              connectionStatus = 0; // Reset connection status
-
-              // Step 1: Wait for "PING" from transmitter
-              for (int i = 0; i < 40; i++) {   // ~1s timeout (40 x 25ms)
-                  uint8_t len = LoRa_ReceivePacket(rxBuffer);
-                  if (len > 0) {
-                      rxBuffer[len] = '\0'; // null terminate
-                      char dbg_rx[50];
-                      sprintf(dbg_rx, "Received: %s\r\n", rxBuffer);
-                      Debug_Print(dbg_rx);
-
-                      if (strncmp((char*)rxBuffer, "PING", 4) == 0) {
-                          // Step 2: Reply with "ACK"
-                          uint8_t ack_msg[] = "ACK";
-                          LoRa_SendPacket(ack_msg, sizeof(ack_msg) - 1);
-                          Debug_Print("Sent: ACK\r\n");
-
-                          connectionStatus = 1;
-                          z = 6; // connection established
-                          break;
-                      }
-                  }
-                  HAL_Delay(25);
-              }
-
-              // Step 3: Handle failed connection
-              if (!connectionStatus) {
-                  Debug_Print("Connection failed. No PING received.\r\n");
-                  z = 7;
-                  HAL_Delay(1000); // retry delay
-              } else {
-                  // Step 4: Ready to receive normal data
-                  uint8_t rx_len = LoRa_ReceivePacket(rxBuffer);
-                  if (rx_len > 0) {
-                      rxBuffer[rx_len] = '\0';
-                      char dbg_rx2[50];
-                      sprintf(dbg_rx2, "Data Received: %s\r\n", rxBuffer);
-                      Debug_Print(dbg_rx2);
-                      z = 8;
-                  }
-              }
-
-              HAL_Delay(100);
-              break;
-
-
-//          case LORA_MODE_RECEIVER:
-//              // Receiver logic
-//              Debug_Print("LoRa Mode: Receiver\r\n");
-//              uint8_t rx_len = LoRa_ReceivePacket(rxBuffer);
-//              if (rx_len > 0) {
-//                  rxBuffer[rx_len] = '\0'; // null terminate
-//                  char dbg_rx[50];
-//                  sprintf(dbg_rx, "Received: %s\r\n", rxBuffer);
-//                  Debug_Print(dbg_rx);
-//              }
-//              HAL_Delay(100); // Check for packets frequently
-//              break;
-
-          case LORA_MODE_TRANCEIVER:
-              // Transceiver logic (send and receive)
-              Debug_Print("LoRa Mode: Transceiver\r\n");
-
-              // Try to receive first
-              uint8_t rx_len_tr = LoRa_ReceivePacket(rxBuffer);
-              if (rx_len_tr > 0) {
-                  rxBuffer[rx_len_tr] = '\0'; // null terminate
-                  char dbg_rx_tr[50];
-                  sprintf(dbg_rx_tr, "Received: %s\r\n", rxBuffer);
-                  Debug_Print(dbg_rx_tr);
-
-                  // If "PING" is received, send "ACK"
-                  if (strncmp((char*)rxBuffer, "PING", 4) == 0) {
-                      uint8_t ack_msg[] = "ACK";
-                      LoRa_SendPacket(ack_msg, sizeof(ack_msg) - 1);
-                      Debug_Print("Sent: ACK\r\n");
-                  }
-              }
-
-              // Then send a PING
-              uint8_t tx_msg_tr[] = "PING";
-              LoRa_SendPacket(tx_msg_tr, sizeof(tx_msg_tr) - 1);
-              Debug_Print("Sent: PING\r\n");
-
-              // Wait for ACK (max 500 ms)
-              connectionStatus = 0;
-              for (int i = 0; i < 20; i++) {   // 20 x 25ms = 500ms
-                  uint8_t len = LoRa_ReceivePacket(rxBuffer);
-                  if (len > 0) {
-                      rxBuffer[len] = '\0'; // null terminate
-                      char dbg_ack[50];
-                      sprintf(dbg_ack, "Received ACK check: %s\r\n", rxBuffer);
-                      Debug_Print(dbg_ack);
-
-                      if (strncmp((char*)rxBuffer, "ACK", 3) == 0) {
-                          connectionStatus = 1;
-                          z = 3;
-                          break;
-                      }
-                  }
-                  HAL_Delay(25);
-              }
-
-              if (!connectionStatus) {
-                  Debug_Print("Connection: LOST\r\n");
-                  z = 4;
-              } else {
-                  Debug_Print("Connection: OK\r\n");
-              }
-
-              HAL_Delay(1000); // Delay before next cycle in transceiver mode
-              break;
-
-          default:
-              Debug_Print("Invalid LoRa Mode!\r\n");
-              HAL_Delay(1000);
-              break;
-      }
+      LoRa_Task(); // Call the LoRa task to handle communication
 
       // === Display RTC (remains unchanged) ===
       Get_Time();
