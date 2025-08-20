@@ -72,9 +72,7 @@ void LoRa_Init(void) {
     LoRa_SetFrequency(433000000);
 
     /* PA config: PA_BOOST, max power (common for SX1278 Ra-02) */
-
     LoRa_WriteReg(0x09, 0x8F); // PA_BOOST, max power
- // RegPaConfig
 
     /* Enable high-power PA if module supports it (optional) */
     LoRa_WriteReg(0x4D, 0x87); // RegPaDac (only on SX1276/78 family)
@@ -101,17 +99,37 @@ void LoRa_Init(void) {
     /* Map DIO0 = RxDone/TxDone as normal (we'll poll IRQs) */
     LoRa_WriteReg(0x40, 0x00);
 
-    /* Clear IRQs and go to continuous RX */
+    /* Clear IRQs */
     LoRa_WriteReg(0x12, 0xFF);
-    LoRa_WriteReg(0x01, 0x81); // Standby
+}
+
+/**
+  * @brief Sets the LoRa module to Standby mode.
+  */
+void LoRa_SetStandby(void) {
+    LoRa_WriteReg(0x01, 0x81); // Standby mode
     HAL_Delay(2);
-    LoRa_WriteReg(0x01, 0x85); // Continuous RX
+}
+
+/**
+  * @brief Sets the LoRa module to Continuous Receive mode.
+  */
+void LoRa_SetRxContinuous(void) {
+    LoRa_WriteReg(0x01, 0x85); // Continuous RX mode
+    HAL_Delay(2);
+}
+
+/**
+  * @brief Sets the LoRa module to Transmit mode.
+  */
+void LoRa_SetTx(void) {
+    LoRa_WriteReg(0x01, 0x83); // TX mode
+    HAL_Delay(2);
 }
 
 /* --- send packet, poll TxDone, return to RX --- */
 void LoRa_SendPacket(const uint8_t *buffer, uint8_t size) {
-    /* Standby */
-    LoRa_WriteReg(0x01, 0x81);
+    LoRa_SetStandby(); // Go to Standby before TX
 
     /* Reset FIFO pointers */
     LoRa_WriteReg(0x0E, 0x00);
@@ -124,8 +142,7 @@ void LoRa_SendPacket(const uint8_t *buffer, uint8_t size) {
     /* Clear IRQs */
     LoRa_WriteReg(0x12, 0xFF);
 
-    /* Enter TX */
-    LoRa_WriteReg(0x01, 0x83);
+    LoRa_SetTx(); // Enter TX
 
     /* Wait for TxDone */
     uint32_t t0 = HAL_GetTick();
@@ -137,8 +154,7 @@ void LoRa_SendPacket(const uint8_t *buffer, uint8_t size) {
     /* Clear TxDone (if set) */
     LoRa_WriteReg(0x12, 0x08);
 
-    /* Back to RX */
-    LoRa_WriteReg(0x01, 0x85);
+    LoRa_SetRxContinuous(); // Back to RX after TX
 }
 
 /* --- receive helper: returns length or 0 --- */
