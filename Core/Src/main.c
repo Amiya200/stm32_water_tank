@@ -19,9 +19,12 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
 #include "lcd_i2c.h"   // I2C LCD driver
 #include "rtc_i2c.h"   // RTC driver
 #include "global.h"    // Global variables like motorStatus
@@ -29,10 +32,12 @@
 #include "lora.h"      // LoRa driver
 #include <string.h>
 #include <stdio.h>
+/* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 extern SPI_HandleTypeDef hspi1;
+char buf[30];
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -40,11 +45,20 @@ extern SPI_HandleTypeDef hspi1;
 // LoRa Modes
 /* USER CODE END PD */
 
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+
 I2C_HandleTypeDef hi2c2;
+
 RTC_HandleTypeDef hrtc;
+
 SPI_HandleTypeDef hspi1;
+
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
@@ -53,8 +67,8 @@ ADC_Data adcData;            // ADC readings
 
 // Variable to control LoRa mode: 1=Transmitter, 2=Receiver, 3=Transceiver
 /* USER CODE END PV */
-char errMsg[50];
-/* Function prototypes -------------------------------------------------------*/
+
+/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
@@ -62,7 +76,18 @@ static void MX_RTC_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_I2C2_Init(void);
+/* USER CODE BEGIN PFP */
+void I2C_Scan(void) {
+    for (uint8_t i = 1; i < 128; i++) {
+        if (HAL_I2C_IsDeviceReady(&hi2c2, (i << 1), 2, 10) == HAL_OK) {
+            sprintf(buf, "Found device at 0x%02X\r\n", i);
+            Debug_Print(buf);
+        }
+    }
+}
+/* USER CODE END PFP */
 
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 void Debug_Print(char *msg) {
     HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
@@ -73,92 +98,128 @@ void Debug_Print(char *msg) {
   * @brief  The application entry point.
   * @retval int
   */
-int main(void) {
+int main(void)
+{
 
-  /* MCU Configuration */
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
   SystemClock_Config();
 
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_ADC1_Init();
-//  MX_RTC_Init(); // RTC is commented out in original, keeping it that way
+  MX_RTC_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_I2C2_Init();
-
   /* USER CODE BEGIN 2 */
   lcd_init();
   ADC_Init(&hadc1);
   LoRa_Init(); // Initialize LoRa module
-
+  I2C_Scan();
   Debug_Print("System Initialized\r\n");
   uint8_t modem = LoRa_ReadReg(0x1D);
   uint8_t modem2 = LoRa_ReadReg(0x1E);
   char dbg[50];
+
   sprintf(dbg, "ModemCfg1=0x%02X, ModemCfg2=0x%02X\r\n", modem, modem2);
   Debug_Print(dbg);
+  if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDRESS, 2, 100) != HAL_OK) {
+      Debug_Print("❌ DS3231 not responding!\r\n");
+  } else {
+      Debug_Print("✅ DS3231 detected!\r\n");
+  }
+
 
   // Set initial LoRa mode
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
-  /* Infinite loop */
-  while (1) {
-      LoRa_Task(); // Call the LoRa task to handle communication
-      Get_Time();
-      ADC_ReadAllChannels(&hadc1, &adcData);
-      // === Display RTC (remains unchanged) ===
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+	  LoRa_Task(); // Call the LoRa task to handle communication
+	  Get_Time();
+	  ADC_ReadAllChannels(&hadc1, &adcData);
+	        // === Display RTC (remains unchanged) ===
 
-      sprintf(lcdBuffer, "%02d:%02d:%02d", time.hour, time.minutes, time.seconds);
-      lcd_put_cur(0, 0);
-      lcd_send_string(lcdBuffer);
+	        sprintf(lcdBuffer, "%02d:%02d:%02d", time.hour, time.minutes, time.seconds);
+	        lcd_put_cur(0, 0);
+	        lcd_send_string(lcdBuffer);
 
-      sprintf(lcdBuffer, "%02d-%02d-20%02d", time.dayofmonth, time.month, time.year);
-      lcd_put_cur(1, 0);
-      lcd_send_string(lcdBuffer);
+	        sprintf(lcdBuffer, "%02d-%02d-20%02d", time.dayofmonth, time.month, time.year);
+	        lcd_put_cur(1, 0);
+	        lcd_send_string(lcdBuffer);
+    /* USER CODE END WHILE */
 
-      // The main loop delay is now handled within each case or at the end of the transceiver case.
-      // If you want a consistent delay for all modes, place it here.
-      // HAL_Delay(1000); // Example: delay for 1 second per loop iteration
+    /* USER CODE BEGIN 3 */
   }
-
+  /* USER CODE END 3 */
 }
 
 /**
   * @brief System Clock Configuration
   * @retval None
   */
-void SystemClock_Config(void) {
-    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-    // Use HSI (8 MHz internal) with PLL
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2; // HSI/2 = 4 MHz
-    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;             // 4*16 = 64 MHz
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) { Error_Handler(); }
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
-    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-                                | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK; // Updated line
-    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) { Error_Handler(); }
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-    // Use LSI (internal ~40 kHz) for RTC, and HSI/6 for ADC
-    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC | RCC_PERIPHCLK_ADC;
-    PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
-    PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
-    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) { Error_Handler(); }
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC|RCC_PERIPHCLK_ADC;
+  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_HSE_DIV128;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
-
-
 
 /**
   * @brief ADC1 Initialization Function
@@ -246,38 +307,58 @@ static void MX_I2C2_Init(void)
   * @param None
   * @retval None
   */
-static void MX_RTC_Init(void) {
-    RTC_TimeTypeDef sTime = {0};
-    RTC_DateTypeDef DateToUpdate = {0};
+static void MX_RTC_Init(void)
+{
 
-    hrtc.Instance = RTC;
-    hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND; // Set the asynchronous prescaler
-    hrtc.Init.OutPut = RTC_OUTPUTSOURCE_ALARM; // Set output source
-    if (HAL_RTC_Init(&hrtc) != HAL_OK) {
-        Debug_Print("RTC Init Failed\r\n");
-        Error_Handler(); // Handle error
-    }
+  /* USER CODE BEGIN RTC_Init 0 */
 
-    // Set the time and date
-    sTime.Hours = 0x0;
-    sTime.Minutes = 0x0;
-    sTime.Seconds = 0x0;
-    if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK) {
-        Debug_Print("Set Time Failed\r\n");
-        Error_Handler(); // Handle error
-    }
+  /* USER CODE END RTC_Init 0 */
 
-    DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
-    DateToUpdate.Month = RTC_MONTH_JANUARY;
-    DateToUpdate.Date = 0x1;
-    DateToUpdate.Year = 0x0;
-    if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK) {
-        Debug_Print("Set Date Failed\r\n");
-        Error_Handler(); // Handle error
-    }
+  RTC_TimeTypeDef sTime = {0};
+  RTC_DateTypeDef DateToUpdate = {0};
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+
+  /** Initialize RTC Only
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND;
+  hrtc.Init.OutPut = RTC_OUTPUTSOURCE_ALARM;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* USER CODE BEGIN Check_RTC_BKUP */
+
+  /* USER CODE END Check_RTC_BKUP */
+
+  /** Initialize RTC and set the Time and Date
+  */
+  sTime.Hours = 0x0;
+  sTime.Minutes = 0x0;
+  sTime.Seconds = 0x0;
+
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
+  DateToUpdate.Month = RTC_MONTH_JANUARY;
+  DateToUpdate.Date = 0x1;
+  DateToUpdate.Year = 0x0;
+
+  if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
+
+  /* USER CODE END RTC_Init 2 */
+
 }
-
-
 
 /**
   * @brief SPI1 Initialization Function
@@ -373,16 +454,10 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, Relay1_Pin|Relay2_Pin|Relay3_Pin|SWITCH4_Pin
-                          |LORA_STATUS_Pin, GPIO_PIN_RESET);
+                          |LORA_STATUS_Pin|LED4_Pin|LED5_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LED1_Pin|LED2_Pin|LED3_Pin, GPIO_PIN_SET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LED4_Pin|LED5_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOA, LED1_Pin|LED2_Pin|LED3_Pin|LORA_SELECT_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;

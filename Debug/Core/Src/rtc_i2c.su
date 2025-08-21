@@ -1,6 +1,6 @@
-../Core/Src/rtc_i2c.c:12:9:decToBcd	16	static
-../Core/Src/rtc_i2c.c:22:5:bcdToDec	16	static
-../Core/Src/rtc_i2c.c:38:6:Set_Time	48	static
-../Core/Src/rtc_i2c.c:59:6:Get_Time	32	static
-../Core/Src/rtc_i2c.c:78:7:Get_Temp	40	static
-../Core/Src/rtc_i2c.c:95:6:force_temp_conv	32	static
+../Core/Src/rtc_i2c.c:8:9:decToBcd	16	static
+../Core/Src/rtc_i2c.c:12:5:bcdToDec	16	static
+../Core/Src/rtc_i2c.c:16:6:Set_Time	104	static
+../Core/Src/rtc_i2c.c:35:6:Get_Time	168	static
+../Core/Src/rtc_i2c.c:65:7:Get_Temp	88	static
+../Core/Src/rtc_i2c.c:79:6:force_temp_conv	32	static
