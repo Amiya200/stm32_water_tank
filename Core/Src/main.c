@@ -106,9 +106,10 @@ int main(void) {
   /* Infinite loop */
   while (1) {
       LoRa_Task(); // Call the LoRa task to handle communication
-
-      // === Display RTC (remains unchanged) ===
       Get_Time();
+      ADC_ReadAllChannels(&hadc1, &adcData);
+      // === Display RTC (remains unchanged) ===
+
       sprintf(lcdBuffer, "%02d:%02d:%02d", time.hour, time.minutes, time.seconds);
       lcd_put_cur(0, 0);
       lcd_send_string(lcdBuffer);

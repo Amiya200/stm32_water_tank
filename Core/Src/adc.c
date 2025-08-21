@@ -114,8 +114,8 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             else if (data->voltages[i] < DRY_RUN_THRESHOLD && motorStatus == 1)
             {
                 // If the voltage is below the dry run threshold and the motor is on
-                UART_ReadDataPacket(dataPacket, "@MT0#", sizeof("@MT0#") - 1);
-                UART_TransmitString(&huart1, dataPacket);
+//                UART_ReadDataPacket(dataPacket, "@MT0#", sizeof("@MT0#") - 1);
+//                UART_TransmitString(&huart1, dataPacket);
                 motorStatus = 0; // Set motor status to off
             }
         }
@@ -130,9 +130,9 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
     }
 
     // Check for incoming UART data
-    char receivedData[20]; // Buffer to hold received data
-    UART_ReceiveString(&huart1, receivedData, sizeof(receivedData)); // Receive data from UART
-    UART_ProcessReceivedData(receivedData); // Process the received data
+//    char receivedData[20]; // Buffer to hold received data
+//    UART_ReceiveString(&huart1, receivedData, sizeof(receivedData)); // Receive data from UART
+//    UART_ProcessReceivedData(receivedData); // Process the received data
 }
 
 /**
