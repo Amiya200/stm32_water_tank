@@ -160,13 +160,11 @@ int main(void)
 	  ADC_ReadAllChannels(&hadc1, &adcData);
 	        // === Display RTC (remains unchanged) ===
 
-	        sprintf(lcdBuffer, "%02d:%02d:%02d", time.hour, time.minutes, time.seconds);
-	        lcd_put_cur(0, 0);
-	        lcd_send_string(lcdBuffer);
 
-	        sprintf(lcdBuffer, "%02d-%02d-20%02d", time.dayofmonth, time.month, time.year);
-	        lcd_put_cur(1, 0);
-	        lcd_send_string(lcdBuffer);
+	  lcd_put_cur(0,0);
+	  lcd_send_string("Hello, World!");
+	  lcd_put_cur(1,0);
+	  lcd_send_string("STM32 + I2C LCD");
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -407,16 +405,10 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, Relay1_Pin|Relay2_Pin|Relay3_Pin|SWITCH4_Pin
-                          |LORA_STATUS_Pin, GPIO_PIN_RESET);
+                          |LORA_STATUS_Pin|LED4_Pin|LED5_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LED1_Pin|LED2_Pin|LED3_Pin, GPIO_PIN_SET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LED4_Pin|LED5_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOA, LED1_Pin|LED2_Pin|LED3_Pin|LORA_SELECT_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -456,6 +448,7 @@ static void MX_GPIO_Init(void)
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
+
 
 /* USER CODE BEGIN 4 */
 
