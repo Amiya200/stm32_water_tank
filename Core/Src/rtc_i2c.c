@@ -1,5 +1,6 @@
 #include "rtc_i2c.h"
 #include "main.h"
+#include <stdio.h>
 
 extern I2C_HandleTypeDef hi2c2; // I2C handle from main.c
 

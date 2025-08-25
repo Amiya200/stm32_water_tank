@@ -1,11 +1,27 @@
 #include "uart.h"
-#include "global.h" // Include the global header for motorStatus
+//#include <stdbool.h> // Add this line
+// RX buffers
+static uint8_t rxByte;                             // single-byte buffer for HAL_UART_Receive_IT
+static char rxBuffer[UART_RX_BUFFER_SIZE];         // internal storage buffer
+static uint16_t rxIndex = 0;                       // current index in rxBuffer
+static bool packetReady = false;                   // Flag to indicate if a complete packet is ready
 
 /**
-  * @brief Transmits a null-terminated string over UART.
-  * @param huart: Pointer to the UART handle (e.g., &huart1)
-  * @param str: Pointer to the string to transmit
-  * @retval None
+  * @brief Initialize UART reception (interrupt mode, one byte at a time).
+  */
+void UART_Init(void)
+{
+    // Clear the buffer and reset index
+    memset(rxBuffer, 0, sizeof(rxBuffer));
+    rxIndex = 0;
+    packetReady = false;
+
+    // Start UART reception (non-blocking)
+    HAL_UART_Receive_IT(&huart1, &rxByte, 1);
+}
+
+/**
+  * @brief Transmit a null-terminated string.
   */
 void UART_TransmitString(UART_HandleTypeDef *huart, const char *str)
 {
@@ -13,10 +29,7 @@ void UART_TransmitString(UART_HandleTypeDef *huart, const char *str)
 }
 
 /**
-  * @brief Transmits a single byte over UART.
-  * @param huart: Pointer to the UART handle (e.g., &huart1)
-  * @param byte: The byte to transmit
-  * @retval None
+  * @brief Transmit a single byte.
   */
 void UART_TransmitByte(UART_HandleTypeDef *huart, uint8_t byte)
 {
@@ -24,49 +37,64 @@ void UART_TransmitByte(UART_HandleTypeDef *huart, uint8_t byte)
 }
 
 /**
-  * @brief Reads a data packet into a buffer.
-  * @param buffer: Pointer to the buffer where the data will be stored
-  * @param data: Pointer to the data to be copied
-  * @param size: Size of the data to be copied
-  * @retval None
+  * @brief Callback when one byte is received (interrupt-driven).
   */
-void UART_ReadDataPacket(char *buffer, const char *data, size_t size)
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (buffer != NULL && data != NULL && size > 0)
+    if (huart->Instance == USART1)
     {
-        strncpy(buffer, data, size);
-        buffer[size] = '\0'; // Null-terminate the string
+        // Check for buffer overflow before storing the byte
+        if (rxIndex < (UART_RX_BUFFER_SIZE - 1))
+        {
+            rxBuffer[rxIndex++] = rxByte;
+
+            // Check if the received byte is the delimiter
+            if (rxByte == UART_RX_DELIMITER)
+            {
+                rxBuffer[rxIndex] = '\0'; // Null-terminate the received packet
+                packetReady = true;       // Set flag that a complete packet is ready
+            }
+        }
+        else
+        {
+            // Buffer overflow: reset buffer and index, discard current partial packet
+            rxIndex = 0;
+            memset(rxBuffer, 0, sizeof(rxBuffer));
+            packetReady = false; // No complete packet available
+            // Optionally, add an error log or indicator here
+        }
+
+        // Restart UART reception for the next byte
+        HAL_UART_Receive_IT(&huart1, &rxByte, 1);
     }
 }
 
-/**
-  * @brief Receives a null-terminated string over UART.
-  * @param huart: Pointer to the UART handle (e.g., &huart1)
-  * @param buffer: Pointer to the buffer where the received string will be stored
-  * @param size: Maximum size of the buffer
-  * @retval None
-  */
-void UART_ReceiveString(UART_HandleTypeDef *huart, char *buffer, size_t size)
+bool UART_GetReceivedPacket(char *buffer, size_t buffer_size)
 {
-    HAL_UART_Receive(huart, (uint8_t *)buffer, size - 1, HAL_MAX_DELAY); // Leave space for null terminator
-    buffer[size - 1] = '\0'; // Ensure null termination
+    if (packetReady)
+    {
+        // Ensure destination buffer is large enough
+        size_t len = strlen(rxBuffer);
+        if (len < buffer_size)
+        {
+            strncpy(buffer, rxBuffer, buffer_size - 1);
+            buffer[buffer_size - 1] = '\0'; // Ensure null-termination
+
+            // Reset internal buffer for next packet
+            memset(rxBuffer, 0, sizeof(rxBuffer));
+            rxIndex = 0;
+            packetReady = false;
+            return true;
+        }
+        else
+        {
+            // Destination buffer too small, discard internal packet
+            memset(rxBuffer, 0, sizeof(rxBuffer));
+            rxIndex = 0;
+            packetReady = false;
+            // Optionally, log an error
+        }
+    }
+    return false; // Ensure to return false if no packet is ready
 }
 
-/**
-  * @brief Processes received data and updates the motor status.
-  * @param buffer: Pointer to the buffer containing the received data
-  * @retval None
-  */
-void UART_ProcessReceivedData(char *buffer)
-{
-    if (strcmp(buffer, "@MT1#") == 0)
-    {
-        // Set motor status to ON
-        motorStatus = 1; // Now this will work as motorStatus is declared extern
-    }
-    else if (strcmp(buffer, "@MT0#") == 0)
-    {
-        // Set motor status to OFF
-        motorStatus = 0; // Now this will work as motorStatus is declared extern
-    }
-}

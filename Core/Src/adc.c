@@ -1,5 +1,5 @@
 #include "adc.h"
-#include "main.h" // Include main.h or uart_handle.h depending on your choice
+#include "main.h"
 #include "uart.h" // Include the new UART header
 #include "global.h" // Include the global header for motorStatus
 
@@ -13,11 +13,12 @@ static const uint32_t adcChannels[ADC_CHANNEL_COUNT] = {
     ADC_CHANNEL_5   // PA5
 };
 
-// Buffer to hold the data packet
-char dataPacket[9]; // Adjust size as needed
+// Buffer to hold the data packet for transmission
+// This buffer should be large enough to hold the longest message + null terminator
+char dataPacketTx[10]; // Increased size to accommodate messages like "@1:W#" + null
 
 // Define the motorStatus variable
-uint8_t motorStatus = 0; // 0: Off, 1: On
+//volatile uint8_t motorStatus = 0; // 0: Off, 1: On
 
 // ... (rest of the ADC code remains unchanged)
 
@@ -34,11 +35,6 @@ void ADC_Init(ADC_HandleTypeDef* hadc)
     }
 }
 
-/**
-  * @brief Reads all ADC channels and transmits UART messages if thresholds are met.
-  * @param hadc: Pointer to ADC handle
-  * @param data: Pointer to ADC_Data struct to store results
-  */
 /**
   * @brief Reads all ADC channels and transmits UART messages if thresholds are met.
   * @param hadc: Pointer to ADC handle
@@ -82,28 +78,28 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
                 switch (i)
                 {
                     case 0: // IN0
-                        UART_ReadDataPacket(dataPacket, "@10W#", sizeof("@10W#") - 1);
-                        UART_TransmitString(&huart1, dataPacket);
+                        sprintf(dataPacketTx, "@10W#"); // Use sprintf to format the string
+                        UART_TransmitString(&huart1, dataPacketTx);
                         motorStatus = 1; // Motor is on
                         break;
                     case 1: // IN1
-                        UART_ReadDataPacket(dataPacket, "@30W#", sizeof("@30W#") - 1);
-                        UART_TransmitString(&huart1, dataPacket);
+                        sprintf(dataPacketTx, "@30W#");
+                        UART_TransmitString(&huart1, dataPacketTx);
                         motorStatus = 1; // Motor is on
                         break;
                     case 2: // IN2
-                        UART_ReadDataPacket(dataPacket, "@70W#", sizeof("@70W#") - 1);
-                        UART_TransmitString(&huart1, dataPacket);
+                        sprintf(dataPacketTx, "@70W#");
+                        UART_TransmitString(&huart1, dataPacketTx);
                         motorStatus = 1; // Motor is on
                         break;
                     case 3: // IN3
-                        UART_ReadDataPacket(dataPacket, "@1:W#", sizeof("@1:W#") - 1);
-                        UART_TransmitString(&huart1, dataPacket);
+                        sprintf(dataPacketTx, "@1:W#");
+                        UART_TransmitString(&huart1, dataPacketTx);
                         motorStatus = 1; // Motor is on
                         break;
                     case 4: // IN4
-                        UART_ReadDataPacket(dataPacket, "@DRY#", sizeof("@DRY#") - 1);
-                        UART_TransmitString(&huart1, dataPacket);
+                        sprintf(dataPacketTx, "@DRY#");
+                        UART_TransmitString(&huart1, dataPacketTx);
                         motorStatus = 1; // Set motor status to on for dry run
                         break;
                     // Cases for IN5 are not specified for UART transmission
@@ -114,8 +110,9 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             else if (data->voltages[i] < DRY_RUN_THRESHOLD && motorStatus == 1)
             {
                 // If the voltage is below the dry run threshold and the motor is on
-//                UART_ReadDataPacket(dataPacket, "@MT0#", sizeof("@MT0#") - 1);
-//                UART_TransmitString(&huart1, dataPacket);
+                // This part was commented out in the original, keeping it commented for consistency
+                // sprintf(dataPacketTx, "@MT0#");
+                // UART_TransmitString(&huart1, dataPacketTx);
                 motorStatus = 0; // Set motor status to off
             }
         }
@@ -128,11 +125,6 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             data->maxReached[i] = 0;
         }
     }
-
-    // Check for incoming UART data
-//    char receivedData[20]; // Buffer to hold received data
-//    UART_ReceiveString(&huart1, receivedData, sizeof(receivedData)); // Receive data from UART
-//    UART_ProcessReceivedData(receivedData); // Process the received data
 }
 
 /**

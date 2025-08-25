@@ -2,10 +2,11 @@
 #define GLOBAL_H
 
 #include <stdint.h>
-#include "stm32f1xx_hal.h"
-extern UART_HandleTypeDef huart1;
+#include <stdbool.h> // Include this for bool type
 
-// Declare motorStatus as an extern variable
-extern uint8_t motorStatus; // 0: Off, 1: On
+extern volatile uint8_t motorStatus; // Declaration // Declaration
+extern volatile bool packetReady; // Declaration
 
 #endif // GLOBAL_H
+
+
