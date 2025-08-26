@@ -33,7 +33,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "model_handle.h"
-
+#include "screen.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -152,7 +152,7 @@ int main(void)
   ADC_Init(&hadc1);
   LoRa_Init(); // Initialize LoRa module
   I2C_Scan();
-
+  Screen_Init();
   UART_Init(); // Initialize UART reception (starts the first IT)
 
   Debug_Print("System Initialized\r\n");
@@ -171,7 +171,8 @@ int main(void)
   if (packetReady) {
       char buffer[128];
       if (UART_GetReceivedPacket(buffer, sizeof(buffer))) {
-          ModelHandle_ProcessReceivedPacket(buffer);
+    	  ModelHandle_ProcessUartCommand(receivedUartPacket);
+
       }
   }
 
@@ -184,25 +185,22 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-	  LoRa_Task(); // Call the LoRa task to handle communication
-	  Get_Time();
-	  ADC_ReadAllChannels(&hadc1, &adcData);
+         LoRa_Task();
+         Get_Time();
+         ADC_ReadAllChannels(&hadc1, &adcData);
 
-      // Check for and process received UART packets
-      if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-          ProcessUartCommand(receivedUartPacket);
-      }
+         // 2) UI input then UI draw
+         Screen_HandleSwitches(); // maps SW1..SW4 -> Reset/Select/Up/Down
+         Screen_Update();
 
-	  lcd_put_cur(0,0);
-	  lcd_send_string("Hello, World!");
-	  lcd_put_cur(1,0);
-	  lcd_send_string("STM32 + I2C LCD");
-    /* USER CODE END WHILE */
+         // 3) existing UART packet processing (your code)
+         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
+             ProcessUartCommand(receivedUartPacket);
+         }
 
-    /* USER CODE BEGIN 3 */
-  }
+         // model processing (timers/search/twist/countdown)
+         ModelHandle_Process();
+
   /* USER CODE END 3 */
 }
 

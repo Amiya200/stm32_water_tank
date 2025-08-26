@@ -1,23 +1,40 @@
-#ifndef __LED_H
-#define __LED_H
+#ifndef LED_H
+#define LED_H
 
-#include "stm32f1xx_hal.h"
+#include "main.h"
+#include <stdint.h>
 
-/* Initialize LEDs */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Colors available on your board (LED1..LED4) */
+typedef enum {
+    LED_COLOR_GREEN = 0,  // map to LED1
+    LED_COLOR_RED,        // map to LED2
+    LED_COLOR_BLUE,       // map to LED3
+    LED_COLOR_PURPLE,     // map to LED4  (logical name)
+    LED_COLOR_COUNT
+} LedColor;
+
+typedef enum {
+    LED_MODE_OFF = 0,
+    LED_MODE_STEADY,
+    LED_MODE_BLINK
+} LedMode;
+
+/* Runtime */
 void LED_Init(void);
-
-/* Basic Controls */
-void LED_On(uint8_t led);
-void LED_Off(uint8_t led);
-void LED_Toggle(uint8_t led);
-void LED_All_On(void);
+void LED_Task(void);                 // call often (e.g. every loop)
 void LED_All_Off(void);
 
-/* Patterns */
-void LED_Blink_All(uint32_t times, uint32_t delay_ms);
-void LED_Running(uint32_t delay_ms);
-void LED_KnightRider(uint32_t delay_ms, uint32_t cycles);
-void LED_Alternate(uint32_t times, uint32_t delay_ms);
-void LED_Wave(uint32_t delay_ms);
+/* Intent-style control (non-blocking patterns) */
+void LED_ClearAllIntents(void);
+void LED_SetIntent(LedColor color, LedMode mode, uint16_t period_ms);
+void LED_ApplyIntents(void);
 
+#ifdef __cplusplus
+}
 #endif
+
+#endif /* LED_H */

@@ -1,146 +1,111 @@
 #include "led.h"
-#include "main.h"
+#include <string.h>
 
-/* ===========================================================
-   LED Mapping (configure in CubeMX):
-   - LED1 -> PA8
-   - LED2 -> PA11
-   - LED3 -> <set in CubeMX>
-   - LED4 -> <set in CubeMX>
-   - LED5 -> <set in CubeMX>
-   =========================================================== */
+/* ===== Physical LED map (from CubeMX-generated main.h) =====
+   LED1_GPIO_Port / LED1_Pin
+   LED2_GPIO_Port / LED2_Pin
+   LED3_GPIO_Port / LED3_Pin
+   LED4_GPIO_Port / LED4_Pin
+   ========================================================== */
 
-static GPIO_TypeDef* LED_PORTS[5] = {
-    LED1_GPIO_Port,
-    LED2_GPIO_Port,
-    LED3_GPIO_Port,
-    LED4_GPIO_Port,
-    LED5_GPIO_Port
+static GPIO_TypeDef* LED_PORTS[LED_COLOR_COUNT] = {
+    [LED_COLOR_GREEN]  = LED1_GPIO_Port,
+    [LED_COLOR_RED]    = LED2_GPIO_Port,
+    [LED_COLOR_BLUE]   = LED3_GPIO_Port,
+    [LED_COLOR_PURPLE] = LED4_GPIO_Port,
 };
 
-static const uint16_t LED_PINS[5] = {
-    LED1_Pin,
-    LED2_Pin,
-    LED3_Pin,
-    LED4_Pin,
-    LED5_Pin
+static uint16_t LED_PINS[LED_COLOR_COUNT] = {
+    [LED_COLOR_GREEN]  = LED1_Pin,
+    [LED_COLOR_RED]    = LED2_Pin,
+    [LED_COLOR_BLUE]   = LED3_Pin,
+    [LED_COLOR_PURPLE] = LED4_Pin,
 };
 
-/* ===========================================================
-   Helper Functions
-   =========================================================== */
+typedef struct {
+    LedMode   mode;        // OFF / STEADY / BLINK
+    uint16_t  period_ms;   // for BLINK (toggle period)
+} LedIntent;
+
+static LedIntent s_intent[LED_COLOR_COUNT];
+static uint8_t   s_activeBlink[LED_COLOR_COUNT];
+static uint32_t  s_nextToggleAt[LED_COLOR_COUNT];
+
+static inline uint32_t now_ms(void) { return HAL_GetTick(); }
+
+static void led_write(LedColor c, GPIO_PinState st) {
+    HAL_GPIO_WritePin(LED_PORTS[c], LED_PINS[c], st);
+}
+static void led_on(LedColor c)  { led_write(c, GPIO_PIN_SET); }
+static void led_off(LedColor c) { led_write(c, GPIO_PIN_RESET); }
+
 void LED_Init(void)
 {
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    memset(s_intent, 0, sizeof(s_intent));
+    memset(s_activeBlink, 0, sizeof(s_activeBlink));
+    memset(s_nextToggleAt, 0, sizeof(s_nextToggleAt));
 
-    /* Enable GPIO clocks for all LED ports */
-    for (int i = 0; i < 5; i++) {
-        if (LED_PORTS[i] == GPIOA) __HAL_RCC_GPIOA_CLK_ENABLE();
-        if (LED_PORTS[i] == GPIOB) __HAL_RCC_GPIOB_CLK_ENABLE();
-        if (LED_PORTS[i] == GPIOC) __HAL_RCC_GPIOC_CLK_ENABLE();
-    }
-
-    /* Configure pins as Output */
-    for (int i = 0; i < 5; i++) {
-        GPIO_InitStruct.Pin = LED_PINS[i];
-        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-        HAL_GPIO_Init(LED_PORTS[i], &GPIO_InitStruct);
-
-        /* Turn off at start */
-        HAL_GPIO_WritePin(LED_PORTS[i], LED_PINS[i], GPIO_PIN_RESET);
+    for (int i = 0; i < LED_COLOR_COUNT; ++i) {
+        led_off((LedColor)i);
+        s_intent[i].mode = LED_MODE_OFF;
+        s_intent[i].period_ms = 0;
     }
 }
 
-void LED_On(uint8_t led) {
-    if (led < 5) HAL_GPIO_WritePin(LED_PORTS[led], LED_PINS[led], GPIO_PIN_SET);
-}
-
-void LED_Off(uint8_t led) {
-    if (led < 5) HAL_GPIO_WritePin(LED_PORTS[led], LED_PINS[led], GPIO_PIN_RESET);
-}
-
-void LED_Toggle(uint8_t led) {
-    if (led < 5) HAL_GPIO_TogglePin(LED_PORTS[led], LED_PINS[led]);
-}
-
-void LED_All_Off(void) {
-    for (int i = 0; i < 5; i++) HAL_GPIO_WritePin(LED_PORTS[i], LED_PINS[i], GPIO_PIN_RESET);
-}
-
-void LED_All_On(void) {
-    for (int i = 0; i < 5; i++) HAL_GPIO_WritePin(LED_PORTS[i], LED_PINS[i], GPIO_PIN_SET);
-}
-
-/* ===========================================================
-   LED Patterns
-   =========================================================== */
-
-/* Blink all LEDs together */
-void LED_Blink_All(uint32_t times, uint32_t delay_ms)
+/* call this every loop (or from a 10–20ms tick) */
+void LED_Task(void)
 {
-    for (uint32_t t = 0; t < times; t++) {
-        LED_All_On();
-        HAL_Delay(delay_ms);
-        LED_All_Off();
-        HAL_Delay(delay_ms);
-    }
-}
+    uint32_t t = now_ms();
 
-/* Sequential running LEDs (LED1 -> LED2 -> ... -> LED5) */
-void LED_Running(uint32_t delay_ms)
-{
-    for (uint8_t i = 0; i < 5; i++) {
-        LED_On(i);
-        HAL_Delay(delay_ms);
-        LED_Off(i);
-    }
-}
+    for (int i = 0; i < LED_COLOR_COUNT; ++i) {
+        switch (s_intent[i].mode) {
+        case LED_MODE_OFF:
+            s_activeBlink[i] = 0;
+            led_off((LedColor)i);
+            break;
 
-/* Knight Rider pattern (forward + backward) */
-void LED_KnightRider(uint32_t delay_ms, uint32_t cycles)
-{
-    for (uint32_t c = 0; c < cycles; c++) {
-        for (int i = 0; i < 5; i++) {
-            LED_All_Off();
-            LED_On(i);
-            HAL_Delay(delay_ms);
-        }
-        for (int i = 3; i > 0; i--) {
-            LED_All_Off();
-            LED_On(i);
-            HAL_Delay(delay_ms);
+        case LED_MODE_STEADY:
+            s_activeBlink[i] = 1;
+            led_on((LedColor)i);
+            break;
+
+        case LED_MODE_BLINK:
+        default:
+            if (s_intent[i].period_ms == 0) s_intent[i].period_ms = 500;
+            if ((int32_t)(s_nextToggleAt[i] - t) <= 0) {
+                s_activeBlink[i] = !s_activeBlink[i];
+                if (s_activeBlink[i]) led_on((LedColor)i);
+                else                  led_off((LedColor)i);
+                s_nextToggleAt[i] = t + s_intent[i].period_ms;
+            }
+            break;
         }
     }
 }
 
-/* Alternating (Odd vs Even LEDs) */
-void LED_Alternate(uint32_t times, uint32_t delay_ms)
+void LED_ClearAllIntents(void)
 {
-    for (uint32_t t = 0; t < times; t++) {
-        /* Odd LEDs on */
-        LED_All_Off();
-        LED_On(0);
-        LED_On(2);
-        LED_On(4);
-        HAL_Delay(delay_ms);
-
-        /* Even LEDs on */
-        LED_All_Off();
-        LED_On(1);
-        LED_On(3);
-        HAL_Delay(delay_ms);
+    for (int i = 0; i < LED_COLOR_COUNT; ++i) {
+        s_intent[i].mode = LED_MODE_OFF;
+        s_intent[i].period_ms = 0;
     }
 }
 
-/* Wave pattern (one by one stays ON, does not turn off until end) */
-void LED_Wave(uint32_t delay_ms)
+void LED_SetIntent(LedColor color, LedMode mode, uint16_t period_ms)
 {
-    LED_All_Off();
-    for (uint8_t i = 0; i < 5; i++) {
-        LED_On(i);
-        HAL_Delay(delay_ms);
+    if ((int)color < 0 || color >= LED_COLOR_COUNT) return;
+    s_intent[color].mode = mode;
+    s_intent[color].period_ms = period_ms;
+}
+
+/* current implementation uses intents directly in LED_Task() */
+void LED_ApplyIntents(void) { /* no-op, reserved for future resolve rules */ }
+
+void LED_All_Off(void)
+{
+    for (int i = 0; i < LED_COLOR_COUNT; ++i) {
+        s_intent[i].mode = LED_MODE_OFF;
+        s_intent[i].period_ms = 0;
+        led_off((LedColor)i);
     }
-    HAL_Delay(delay_ms);
-    LED_All_Off();
 }
