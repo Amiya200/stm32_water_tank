@@ -1,3 +1,7 @@
-../Core/Src/switches.c:10:6:Switches_Init	2
-../Core/Src/switches.c:28:6:Switch_Read	5
-../Core/Src/switches.c:42:6:Switch_WasPressed	9
+../Core/Src/switches.c:15:24:now_ms	1
+../Core/Src/switches.c:18:22:read_raw	5
+../Core/Src/switches.c:29:6:Switches_Init	2
+../Core/Src/switches.c:48:6:Switches_SetLongPressMs	1
+../Core/Src/switches.c:51:6:Switch_IsPressed	3
+../Core/Src/switches.c:67:6:Switch_WasPressed	5
+../Core/Src/switches.c:90:13:Switch_GetEvent	8

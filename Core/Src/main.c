@@ -34,12 +34,15 @@
 #include <stdio.h>
 #include "model_handle.h"
 #include "screen.h"
+#include "led.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 extern SPI_HandleTypeDef hspi1;
 char buf[30];
+char dbg[50];
+int ak = 0;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -97,6 +100,10 @@ void Debug_Print(char *msg) {
     UART_TransmitString(&huart1, msg);
 }
 
+bool Switch_WasPressed(uint8_t switchIndex);
+//void LED_SetIntent(uint8_t color, uint8_t mode, uint32_t period_ms);
+void LED_ApplyIntents(void);
+void Screen_HandleSwitches(void);
 // Function to process received UART commands
 void ProcessUartCommand(const char* command) {
     // Example processing:
@@ -154,11 +161,12 @@ int main(void)
   I2C_Scan();
   Screen_Init();
   UART_Init(); // Initialize UART reception (starts the first IT)
+  Switches_Init();
 
   Debug_Print("System Initialized\r\n");
   uint8_t modem = LoRa_ReadReg(0x1D);
   uint8_t modem2 = LoRa_ReadReg(0x1E);
-  char dbg[50];
+
 
   sprintf(dbg, "ModemCfg1=0x%02X, ModemCfg2=0x%02X\r\n", modem, modem2);
   Debug_Print(dbg);
@@ -185,22 +193,12 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-         LoRa_Task();
-         Get_Time();
-         ADC_ReadAllChannels(&hadc1, &adcData);
+  while (1)
+  {
+    /* USER CODE END WHILE */
 
-         // 2) UI input then UI draw
-         Screen_HandleSwitches(); // maps SW1..SW4 -> Reset/Select/Up/Down
-         Screen_Update();
-
-         // 3) existing UART packet processing (your code)
-         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-             ProcessUartCommand(receivedUartPacket);
-         }
-
-         // model processing (timers/search/twist/countdown)
-         ModelHandle_Process();
-
+    /* USER CODE BEGIN 3 */
+  }
   /* USER CODE END 3 */
 }
 
@@ -492,8 +490,8 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, Relay1_Pin|Relay2_Pin|Relay3_Pin|SWITCH4_Pin
-                          |LORA_STATUS_Pin|LED4_Pin|LED5_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, Relay1_Pin|Relay2_Pin|Relay3_Pin|LORA_STATUS_Pin
+                          |LED4_Pin|LED5_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, LED1_Pin|LED2_Pin|LED3_Pin|LORA_SELECT_Pin, GPIO_PIN_RESET);
@@ -503,19 +501,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : Relay1_Pin Relay2_Pin Relay3_Pin SWITCH4_Pin
-                           LORA_STATUS_Pin LED4_Pin LED5_Pin */
-  GPIO_InitStruct.Pin = Relay1_Pin|Relay2_Pin|Relay3_Pin|SWITCH4_Pin
-                          |LORA_STATUS_Pin|LED4_Pin|LED5_Pin;
+  /*Configure GPIO pins : Relay1_Pin Relay2_Pin Relay3_Pin LORA_STATUS_Pin
+                           LED4_Pin LED5_Pin */
+  GPIO_InitStruct.Pin = Relay1_Pin|Relay2_Pin|Relay3_Pin|LORA_STATUS_Pin
+                          |LED4_Pin|LED5_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SWITCH1_Pin SWITCH2_Pin SWITCH3_Pin RF_DATA_Pin */
-  GPIO_InitStruct.Pin = SWITCH1_Pin|SWITCH2_Pin|SWITCH3_Pin|RF_DATA_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  /*Configure GPIO pins : SWITCH1_Pin SWITCH2_Pin SWITCH3_Pin SWITCH4_Pin */
+  GPIO_InitStruct.Pin = SWITCH1_Pin|SWITCH2_Pin|SWITCH3_Pin|SWITCH4_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LED1_Pin LED2_Pin LED3_Pin LORA_SELECT_Pin */
@@ -524,6 +522,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : RF_DATA_Pin */
+  GPIO_InitStruct.Pin = RF_DATA_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(RF_DATA_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
