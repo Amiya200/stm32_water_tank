@@ -193,12 +193,31 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    /* USER CODE END WHILE */
+         while (1)
+         {
+             LoRa_Task();                          // if you need it
+             Get_Time();                           // optional RTC helper
+             ADC_ReadAllChannels(&hadc1, &adcData);
 
-    /* USER CODE BEGIN 3 */
-  }
+             // buttons -> UI
+             Screen_HandleSwitches();              // maps SW1..4 to Reset/Select/Up/Down
+             Screen_Update();                      // smoother pages, cursor
+
+             // comms -> model
+             if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
+                 char *p = receivedUartPacket;
+                 size_t n = strlen(receivedUartPacket);
+                 if (n >= 2 && p[0] == '@' && p[n-1] == '#') { p[n-1] = '\0'; p++; }
+                 ModelHandle_ProcessUartCommand(p);
+             }
+
+             // model -> outputs (relay/LED intents)
+             ModelHandle_Process();
+
+             // LEDs final timing (blink)
+             LED_Task();
+         }
+
   /* USER CODE END 3 */
 }
 

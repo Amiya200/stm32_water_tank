@@ -39,7 +39,10 @@ typedef enum {
 /* ===== Timing ===== */
 static uint32_t lastLcdUpdateTime = 0;
 static const uint32_t WELCOME_MS = 3000;
-static const uint32_t PAGE_MS    = 2000;
+static const uint32_t PAGE_MS = 4000; // 4 sec per page
+static UiState last_ui = UI_MAX_;
+static bool cursorVisible = true;
+static uint32_t lastCursorToggle = 0;
 
 /* ===== Externals from your codebase ===== */
 extern ADC_Data adcData;             // populated in main loop
@@ -73,7 +76,18 @@ static const char* menu_items[] = {
 /* ================= Helpers ================= */
 static void lcd_line0(const char* s){ lcd_put_cur(0,0); lcd_send_string(s); }
 static void lcd_line1(const char* s){ lcd_put_cur(1,0); lcd_send_string(s); }
-
+static void lcd_line0_full(const char* s) {
+    char ln[21];
+    snprintf(ln, sizeof(ln), "%-20s", s); // pad with spaces
+    lcd_put_cur(0,0);
+    lcd_send_string(ln);
+}
+static void lcd_line1_full(const char* s) {
+    char ln[21];
+    snprintf(ln, sizeof(ln), "%-20s", s);
+    lcd_put_cur(1,0);
+    lcd_send_string(ln);
+}
 static void goto_dash_cycle(void) {
     if (ui < UI_DASH_WATER || ui > UI_DASH_TWIST) ui = UI_DASH_WATER;
 }
@@ -135,12 +149,13 @@ static void show_dash_twist(void){
 }
 
 static void show_menu(void){
-    lcd_clear();
-    snprintf(buf, sizeof(buf), ">%s", menu_items[menu_idx]);
+    char cursor = cursorVisible ? '>' : ' ';   // blink effect
+    snprintf(buf, sizeof(buf), "%c%s", cursor, menu_items[menu_idx]);
     buf[20]='\0';
-    lcd_line0(buf);
-    lcd_line1("UP/DN:Move  SEL:OK");
+    lcd_line0_full(buf);
+    lcd_line1_full("UP/DN:Move  SEL:OK");
 }
+
 
 /* generic editor screens */
 static void show_edit_mm(const char* title, uint8_t mm){
@@ -221,6 +236,7 @@ void Screen_HandleButton(UiButton b){
     case UI_DASH_SEARCH:
     case UI_DASH_TWIST:
         if (b == BTN_SELECT) { ui = UI_MENU; }
+        lastLcdUpdateTime = HAL_GetTick(); // reset cycle timer
         break;
 
     /* ===== Menu navigation ===== */
@@ -385,6 +401,11 @@ void Screen_Update(void){
             if (ui > UI_DASH_TWIST) ui = UI_DASH_WATER;
             lastLcdUpdateTime = now;
         }
+    }
+    // Clear only when UI page changes
+    if (ui != last_ui) {
+        lcd_clear();
+        last_ui = ui;
     }
 
     /* render current state */
