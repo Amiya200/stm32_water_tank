@@ -84,12 +84,19 @@ static void MX_USART1_UART_Init(void);
 static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
 void I2C_Scan(void) {
-    for (uint8_t i = 1; i < 128; i++) {
-        if (HAL_I2C_IsDeviceReady(&hi2c2, (i << 1), 2, 10) == HAL_OK) {
-            sprintf(buf, "Found device at 0x%02X\r\n", i);
-            Debug_Print(buf);
-        }
-    }
+	 if (HAL_I2C_IsDeviceReady(&hi2c2, SLAVE_ADDRESS_LCD, 2, 10) == HAL_OK) {
+	        Debug_Print("✅ LCD ACK at configured address.\r\n");
+	        lcd_init();
+	        lcd_clear();
+	        lcd_put_cur(0, 0);
+	        lcd_send_string("LCD FOUND");
+	        lcd_put_cur(1, 0);
+	        lcd_send_string("I2C OK");
+	    } else {
+	        Debug_Print("❌ LCD not responding at configured address.\r\n");
+	        Debug_Print("   Tip: Many boards use 0x27 or 0x3F (8-bit: 0x4E/0x7E).\r\n");
+	        Debug_Print("   Update SLAVE_ADDRESS_LCD in lcd_i2c.h if needed.\r\n");
+	    }
 }
 /* USER CODE END PFP */
 
@@ -118,6 +125,41 @@ void ProcessUartCommand(const char* command) {
     }
     // Add more command processing as needed
 }
+
+
+
+void Hardware_Test(void)
+{
+    /* === Modem config debug === */
+    uint8_t modem=0x12, modem2=0x34; // example
+    sprintf(dbg, "ModemCfg1=0x%02X, ModemCfg2=0x%02X\r\n", modem, modem2);
+    Debug_Print(dbg);
+
+    /* === DS3231 check === */
+//    if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDRESS, 2, 100) != HAL_OK) {
+//        Debug_Print("❌ DS3231 not responding!\r\n");
+//    } else {
+//        Debug_Print("✅ DS3231 detected!\r\n");
+//    }
+
+    /* === LCD check === */
+    if (HAL_I2C_IsDeviceReady(&hi2c2, SLAVE_ADDRESS_LCD, 2, 100) != HAL_OK) {
+        Debug_Print("❌ LCD not responding!\r\n");
+    } else {
+        Debug_Print("✅ LCD detected!\r\n");
+        lcd_init();
+        lcd_clear();
+        lcd_put_cur(0,0);
+        lcd_send_string("LCD OK!");
+        lcd_put_cur(1,0);
+        lcd_send_string("HELONIX");
+        ak =10;
+    }
+}
+
+/* === Button → LED test === */
+
+
 /* USER CODE END 0 */
 
 /**
@@ -150,7 +192,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_ADC1_Init();
-  MX_RTC_Init();
+//  MX_RTC_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_I2C2_Init();
@@ -192,31 +234,42 @@ int main(void)
   /* USER CODE END 2 */
 
   /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
+//  /* USER CODE BEGIN WHILE */
          while (1)
          {
-             LoRa_Task();                          // if you need it
-             Get_Time();                           // optional RTC helper
-             ADC_ReadAllChannels(&hadc1, &adcData);
+        	 lcd_self_test();
 
-             // buttons -> UI
-             Screen_HandleSwitches();              // maps SW1..4 to Reset/Select/Up/Down
-             Screen_Update();                      // smoother pages, cursor
+             /* --- Periodic data acquisition --- */
+             ADC_ReadAllChannels(&hadc1, &adcData);   // update voltages
+             Get_Time();                              // update RTC
+             LoRa_Task();                             // maintain LoRa stack
 
-             // comms -> model
+             /* --- UI handling (switches + LCD) --- */
+             Screen_HandleSwitches();                 // debounced switches → UI
+             Screen_Update();                         // auto-cycle dashboard, smoother cursor
+
+             /* --- UART command handling --- */
              if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
                  char *p = receivedUartPacket;
                  size_t n = strlen(receivedUartPacket);
-                 if (n >= 2 && p[0] == '@' && p[n-1] == '#') { p[n-1] = '\0'; p++; }
-                 ModelHandle_ProcessUartCommand(p);
+                 if (n >= 2 && p[0] == '@' && p[n-1] == '#') {
+                     p[n-1] = '\0';  // strip end marker
+                     p++;            // strip start marker
+                 }
+                 ModelHandle_ProcessUartCommand(p);   // parse + update model
              }
 
-             // model -> outputs (relay/LED intents)
-             ModelHandle_Process();
+             /* --- Business logic: model → hardware --- */
+             ModelHandle_Process();   // compute intents for motor, relays, LEDs, timers
+             Relay_All(false);        // Example: you can still drive relays individually in model
+             LED_Task();              // blink patterns / status LEDs
 
-             // LEDs final timing (blink)
-             LED_Task();
+             /* --- Cooperative delay for smoothness --- */
+             HAL_Delay(10);           // ~100Hz loop rate (good for UI responsiveness)
          }
+
+
+
 
   /* USER CODE END 3 */
 }
@@ -225,48 +278,37 @@ int main(void)
   * @brief System Clock Configuration
   * @retval None
   */
-void SystemClock_Config(void)
-{
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+void SystemClock_Config(void) {
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC|RCC_PERIPHCLK_ADC;
-  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_HSE_DIV128;
-  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    // Use HSI (8 MHz internal) with PLL
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2; // HSI/2 = 4 MHz
+    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;             // 4*16 = 64 MHz
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) { Error_Handler(); }
+
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+                                | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK; // Updated line
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) { Error_Handler(); }
+
+    // Use LSI (internal ~40 kHz) for RTC, and HSI/6 for ADC
+    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC | RCC_PERIPHCLK_ADC;
+    PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+    PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) { Error_Handler(); }
 }
+
 
 /**
   * @brief ADC1 Initialization Function

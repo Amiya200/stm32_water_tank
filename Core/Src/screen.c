@@ -76,6 +76,7 @@ static const char* menu_items[] = {
 /* ================= Helpers ================= */
 static void lcd_line0(const char* s){ lcd_put_cur(0,0); lcd_send_string(s); }
 static void lcd_line1(const char* s){ lcd_put_cur(1,0); lcd_send_string(s); }
+
 static void lcd_line0_full(const char* s) {
     char ln[21];
     snprintf(ln, sizeof(ln), "%-20s", s); // pad with spaces
