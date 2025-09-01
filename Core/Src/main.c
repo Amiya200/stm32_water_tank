@@ -204,27 +204,27 @@ int main(void)
   Screen_Init();
   UART_Init(); // Initialize UART reception (starts the first IT)
   Switches_Init();
-
-  Debug_Print("System Initialized\r\n");
+//
+//  Debug_Print("System Initialized\r\n");
   uint8_t modem = LoRa_ReadReg(0x1D);
   uint8_t modem2 = LoRa_ReadReg(0x1E);
-
-
-  sprintf(dbg, "ModemCfg1=0x%02X, ModemCfg2=0x%02X\r\n", modem, modem2);
-  Debug_Print(dbg);
-  if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDRESS, 2, 100) != HAL_OK) {
-      Debug_Print("❌ DS3231 not responding!\r\n");
-  } else {
-      Debug_Print("✅ DS3231 detected!\r\n");
-  }
-  // DELETE this whole block in main.c (right after peripheral init)
-  if (packetReady) {
-      char buffer[128];
-      if (UART_GetReceivedPacket(buffer, sizeof(buffer))) {
-    	  ModelHandle_ProcessUartCommand(receivedUartPacket);
-
-      }
-  }
+//
+//
+//  sprintf(dbg, "ModemCfg1=0x%02X, ModemCfg2=0x%02X\r\n", modem, modem2);
+//  Debug_Print(dbg);
+//  if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDRESS, 2, 100) != HAL_OK) {
+//      Debug_Print("❌ DS3231 not responding!\r\n");
+//  } else {
+//      Debug_Print("✅ DS3231 detected!\r\n");
+//  }
+//  // DELETE this whole block in main.c (right after peripheral init)
+//  if (packetReady) {
+//      char buffer[128];
+//      if (UART_GetReceivedPacket(buffer, sizeof(buffer))) {
+//    	  ModelHandle_ProcessUartCommand(receivedUartPacket);
+//
+//      }
+//  }
 
          // Process all active modes
          ModelHandle_Process();
@@ -237,16 +237,13 @@ int main(void)
 //  /* USER CODE BEGIN WHILE */
          while (1)
          {
-        	 lcd_self_test();
-
+             /* --- UI handling (switches + LCD) --- */
+             Screen_HandleSwitches();  // Check buttons and update UI state
+             Screen_Update();          // Refresh display and cursor blink
              /* --- Periodic data acquisition --- */
              ADC_ReadAllChannels(&hadc1, &adcData);   // update voltages
              Get_Time();                              // update RTC
              LoRa_Task();                             // maintain LoRa stack
-
-             /* --- UI handling (switches + LCD) --- */
-             Screen_HandleSwitches();                 // debounced switches → UI
-             Screen_Update();                         // auto-cycle dashboard, smoother cursor
 
              /* --- UART command handling --- */
              if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
