@@ -200,7 +200,7 @@ int main(void)
   lcd_init();
   ADC_Init(&hadc1);
   LoRa_Init(); // Initialize LoRa module
-  I2C_Scan();
+//  I2C_Scan();
   Screen_Init();
   UART_Init(); // Initialize UART reception (starts the first IT)
   Switches_Init();
@@ -260,8 +260,8 @@ int main(void)
              ModelHandle_Process();   // compute intents for motor, relays, LEDs, timers
              Relay_All(false);        // Example: you can still drive relays individually in model
              LED_Task();              // blink patterns / status LEDs
-
-             /* --- Cooperative delay for smoothness --- */
+//
+//             /* --- Cooperative delay for smoothness --- */
              HAL_Delay(10);           // ~100Hz loop rate (good for UI responsiveness)
          }
 
