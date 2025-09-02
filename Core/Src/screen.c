@@ -131,27 +131,32 @@ static void format_menu_line(char* buf, size_t bufsize, int idx, bool selected){
 
 static void show_welcome(void){
     lcd_clear();
-    lcd_line0(" Welcome to HELONIX");
-    lcd_line1("  Embedded System   ");
+    lcd_line0("  Welcome to ");
+    lcd_line1("   HELONIX   ");
 }
 
-static void show_dash(void){
+static void show_dash(void) {
     char line0[17], line1[17];
 
-    // Line0: Motor status + Countdown status
-    const char* motor = Motor_GetStatus() ? "ON" : "OFF";
-    const char* cnt = countdownActive ? (countdownMode ? "ON" : "ONF") : "NA"; // ONF => running in off mode (approx)
-    snprintf(line0, sizeof(line0), "Motor:%-3s Cnt:%-3s", motor, cnt);
+    // Motor status
+    const char *motor = Motor_GetStatus() ? "ON " : "OFF";
+    snprintf(line0, sizeof(line0), "Motor: %-3s", motor);
 
-    // Line1: Water voltage or current mode
-    if (adcData.voltages[0] > 2.5f) snprintf(line1,sizeof(line1),"Water: Full       ");
-    else if (adcData.voltages[0] > 1.0f) snprintf(line1,sizeof(line1),"Water: Half       ");
-    else if (adcData.voltages[0] > 0.1f) snprintf(line1,sizeof(line1),"Water: Low        ");
-    else snprintf(line1,sizeof(line1),"Water: Empty      ");
+    // Water level logic
+    float v = adcData.voltages[0];
+    const char *level;
+    if (v > 2.5f) level = "FULL ";
+    else if (v > 1.0f) level = "HALF ";
+    else if (v > 0.1f) level = "LOW  ";
+    else level = "EMPTY";
 
+    snprintf(line1, sizeof(line1), "Water: %-5s", level);
+
+    // Push to LCD
     lcd_line0(line0);
     lcd_line1(line1);
 }
+
 
 static void show_menu(void){
     // Show two menu items (top: menu_view_top, bottom: menu_view_top+1)
@@ -315,10 +320,13 @@ void Screen_Update(void){
     }
 
     if (screenNeedsRefresh || ui != last_ui) {
+    	bool fullRedraw = (ui != last_ui);  // only clear if state changes
         last_ui = ui;
         screenNeedsRefresh = false;
 
-        lcd_clear();
+        if (fullRedraw) {
+               lcd_clear();   // clear only on state change
+           }
         switch (ui) {
             case UI_WELCOME: show_welcome(); break;
             case UI_DASH: show_dash(); break;
