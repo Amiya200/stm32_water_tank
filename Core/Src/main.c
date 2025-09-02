@@ -241,27 +241,27 @@ int main(void)
              Screen_HandleSwitches();  // Check buttons and update UI state
              Screen_Update();          // Refresh display and cursor blink
              /* --- Periodic data acquisition --- */
-             ADC_ReadAllChannels(&hadc1, &adcData);   // update voltages
-             Get_Time();                              // update RTC
-             LoRa_Task();                             // maintain LoRa stack
-
-             /* --- UART command handling --- */
-             if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-                 char *p = receivedUartPacket;
-                 size_t n = strlen(receivedUartPacket);
-                 if (n >= 2 && p[0] == '@' && p[n-1] == '#') {
-                     p[n-1] = '\0';  // strip end marker
-                     p++;            // strip start marker
-                 }
-                 ModelHandle_ProcessUartCommand(p);   // parse + update model
-             }
-
-             /* --- Business logic: model → hardware --- */
-             ModelHandle_Process();   // compute intents for motor, relays, LEDs, timers
-             Relay_All(false);        // Example: you can still drive relays individually in model
-             LED_Task();              // blink patterns / status LEDs
+//             ADC_ReadAllChannels(&hadc1, &adcData);   // update voltages
+//             Get_Time();                              // update RTC
+//             LoRa_Task();                             // maintain LoRa stack
 //
-//             /* --- Cooperative delay for smoothness --- */
+//             /* --- UART command handling --- */
+//             if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
+//                 char *p = receivedUartPacket;
+//                 size_t n = strlen(receivedUartPacket);
+//                 if (n >= 2 && p[0] == '@' && p[n-1] == '#') {
+//                     p[n-1] = '\0';  // strip end marker
+//                     p++;            // strip start marker
+//                 }
+//                 ModelHandle_ProcessUartCommand(p);   // parse + update model
+//             }
+//
+//             /* --- Business logic: model → hardware --- */
+//             ModelHandle_Process();   // compute intents for motor, relays, LEDs, timers
+//             Relay_All(false);        // Example: you can still drive relays individually in model
+//             LED_Task();              // blink patterns / status LEDs
+
+             /* --- Cooperative delay for smoothness --- */
              HAL_Delay(10);           // ~100Hz loop rate (good for UI responsiveness)
          }
 
