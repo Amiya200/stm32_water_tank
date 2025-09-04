@@ -10,4 +10,5 @@
 ../Core/Src/lora.c:153:6:LoRa_SetTx	1
 ../Core/Src/lora.c:159:6:LoRa_SendPacket	3
 ../Core/Src/lora.c:189:9:LoRa_ReceivePacket	3
-../Core/Src/lora.c:209:6:LoRa_Task	22
+../Core/Src/lora.c:211:9:LoRa_TestConnectivity_Transmitter	3
+../Core/Src/lora.c:252:6:LoRa_Task	22

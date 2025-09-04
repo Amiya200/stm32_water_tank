@@ -243,8 +243,16 @@ int main(void)
              /* --- Periodic data acquisition --- */
              ADC_ReadAllChannels(&hadc1, &adcData);   // update voltages
              Get_Time();                              // update RTC
-             LoRa_Task();                             // maintain LoRa stack
-//
+             LoRa_Init();
+
+             if (LoRa_TestConnectivity_Transmitter()) {
+                 Debug_Print("LoRa transmitter test: SUCCESS\r\n");
+             } else {
+                 Debug_Print("LoRa transmitter test: FAILED\r\n");
+             }
+
+//             LoRa_Task();                             // maintain LoRa stack
+
              /* --- UART command handling --- */
              if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
                  char *p = receivedUartPacket;

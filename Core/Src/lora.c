@@ -74,7 +74,7 @@ void LoRa_Reset(void) {
     HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_RESET);
     HAL_Delay(2);
     HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_SET);
-    HAL_Delay(10);
+    HAL_Delay(2);
 }
 
 /* --- set frequency (Hz) --- */
@@ -204,7 +204,50 @@ uint8_t LoRa_ReceivePacket(uint8_t *buffer) {
     }
     return 0;
 }
+/**
+ * @brief Test LoRa connectivity as a transmitter by sending a test message.
+ * @return uint8_t 1 if transmission successful, 0 if timeout or failure.
+ */
+uint8_t LoRa_TestConnectivity_Transmitter(void) {
+    const uint8_t test_msg[] = "TEST";
+    uint32_t startTick;
 
+    LoRa_SetStandby(); // Ensure module is in standby before sending
+
+    // Reset FIFO pointers
+    LoRa_WriteReg(0x0E, 0x00);
+    LoRa_WriteReg(0x0D, 0x00);
+
+    // Write test message to FIFO
+    LoRa_WriteBuffer(0x00, test_msg, sizeof(test_msg) - 1);
+    LoRa_WriteReg(0x22, sizeof(test_msg) - 1);
+
+    // Clear IRQ flags
+    LoRa_WriteReg(0x12, 0xFF);
+
+    // Set to TX mode
+    LoRa_SetTx();
+
+    // Wait for TxDone flag or timeout
+    startTick = HAL_GetTick();
+    while ((LoRa_ReadReg(0x12) & 0x08) == 0) {
+        if ((HAL_GetTick() - startTick) > LORA_TIMEOUT) {
+            // Timeout occurred
+            LoRa_WriteReg(0x12, 0xFF); // Clear IRQs
+            LoRa_SetRxContinuous(); // Return to RX mode
+            return 0; // Transmission failed
+        }
+        HAL_Delay(1);
+    }
+
+    // Clear TxDone flag
+    LoRa_WriteReg(0x12, 0x08);
+
+    // Return to RX mode after transmission
+    LoRa_SetRxContinuous();
+
+    return 1; // Transmission successful
+}
 /* --- LoRa Task --- */
 void LoRa_Task(void) {
     // Set the initial mode
@@ -223,7 +266,7 @@ void LoRa_Task(void) {
         char errMsg[LORA_BUFFER_SIZE];
         sprintf(errMsg, "LoRa not found! RegVersion=0x%02X\r\n", version);
         Debug_Print(errMsg);
-        HAL_Delay(2000);
+        HAL_Delay(2);
         return; // retry until chip responds
     }
 
@@ -235,7 +278,7 @@ void LoRa_Task(void) {
             z = 5;
             LoRa_SendPacket(tx_msg, sizeof(tx_msg) - 1);
             Debug_Print("Sent: HELLO_TX\r\n");
-            HAL_Delay(2000); // Send every 2 seconds
+            HAL_Delay(5); // Send every 2 seconds
             break;
 
         case LORA_MODE_RECEIVER:
@@ -262,14 +305,14 @@ void LoRa_Task(void) {
                         break;
                     }
                 }
-                HAL_Delay(25);
+                HAL_Delay(5);
             }
 
             // Step 3: Handle failed connection
             if (!connectionStatus) {
                 Debug_Print("Connection failed. No PING received.\r\n");
                 z = 7;
-                HAL_Delay(1000); // retry delay
+                HAL_Delay(5); // retry delay
             } else {
                 // Step 4: Wait for HELLO after PING->ACK
                 Debug_Print("Waiting for HELLO...\r\n");
@@ -290,7 +333,7 @@ void LoRa_Task(void) {
                             break;
                         }
                     }
-                    HAL_Delay(25);
+                    HAL_Delay(2);
                 }
 
                 if (!connectionStatus) {
@@ -299,7 +342,7 @@ void LoRa_Task(void) {
                 }
             }
 
-            HAL_Delay(100);
+            HAL_Delay(5);
             break;
 
         case LORA_MODE_TRANCEIVER:
@@ -343,7 +386,7 @@ void LoRa_Task(void) {
                         break;
                     }
                 }
-                HAL_Delay(25);
+                HAL_Delay(2);
             }
 
             if (!connectionStatus) {
@@ -353,12 +396,12 @@ void LoRa_Task(void) {
                 Debug_Print("Connection: OK\r\n");
             }
 
-            HAL_Delay(1000); // Delay before next cycle in transceiver mode
+            HAL_Delay(5); // Delay before next cycle in transceiver mode
             break;
 
         default:
             Debug_Print("Invalid LoRa Mode!\r\n");
-            HAL_Delay(1000);
+            HAL_Delay(5);
             break;
     }
 }
