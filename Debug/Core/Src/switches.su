@@ -1,0 +1,8 @@
+../Core/Src/switches.c:16:24:now_ms	8	static
+../Core/Src/switches.c:19:22:read_raw	16	static
+../Core/Src/switches.c:31:6:Switches_Init	32	static
+../Core/Src/switches.c:50:6:Switches_SetLongPressMs	16	static
+../Core/Src/switches.c:53:13:update_state	24	static
+../Core/Src/switches.c:69:6:Switch_IsPressed	16	static
+../Core/Src/switches.c:77:6:Switch_WasPressed	24	static
+../Core/Src/switches.c:89:13:Switch_GetEvent	24	static

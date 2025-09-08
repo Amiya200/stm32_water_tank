@@ -1,0 +1,14 @@
+../Core/Src/lora.c:39:6:LoRa_WriteReg	1
+../Core/Src/lora.c:46:9:LoRa_ReadReg	1
+../Core/Src/lora.c:56:6:LoRa_WriteBuffer	1
+../Core/Src/lora.c:64:6:LoRa_ReadBuffer	1
+../Core/Src/lora.c:73:6:LoRa_Reset	1
+../Core/Src/lora.c:81:6:LoRa_SetFrequency	1
+../Core/Src/lora.c:90:6:LoRa_Init	1
+../Core/Src/lora.c:137:6:LoRa_SetStandby	1
+../Core/Src/lora.c:145:6:LoRa_SetRxContinuous	1
+../Core/Src/lora.c:153:6:LoRa_SetTx	1
+../Core/Src/lora.c:159:6:LoRa_SendPacket	3
+../Core/Src/lora.c:189:9:LoRa_ReceivePacket	3
+../Core/Src/lora.c:211:9:LoRa_TestConnectivity_Transmitter	3
+../Core/Src/lora.c:252:6:LoRa_Task	22
