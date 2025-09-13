@@ -1,3 +1,4 @@
-../Core/Src/adc.c:29:6:ADC_Init	2
-../Core/Src/adc.c:43:6:ADC_ReadAllChannels	13
-../Core/Src/adc.c:136:9:ADC_CheckMaxVoltage	3
+../Core/Src/adc.c:38:14:readChannelVoltage	4
+../Core/Src/adc.c:65:6:ADC_Init	2
+../Core/Src/adc.c:73:6:ADC_ReadAllChannels	21
+../Core/Src/adc.c:157:9:ADC_CheckMaxVoltage	3
