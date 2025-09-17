@@ -1,13 +1,8 @@
 ../Core/Src/main.c:86:6:I2C_Scan	1
 ../Core/Src/main.c:105:6:Debug_Print	1
 ../Core/Src/main.c:115:6:ProcessUartCommand	3
-<<<<<<< HEAD
 ../Core/Src/main.c:131:6:Hardware_Test	1
 ../Core/Src/main.c:169:5:main	5
-=======
-../Core/Src/main.c:131:6:Hardware_Test	2
-../Core/Src/main.c:169:5:main	6
->>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
 ../Core/Src/main.c:288:6:SystemClock_Config	4
 ../Core/Src/main.c:323:13:MX_ADC1_Init	3
 ../Core/Src/main.c:370:13:MX_I2C2_Init	2
