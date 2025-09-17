@@ -245,6 +245,7 @@ int main(void)
              Get_Time();                              // update RTC
              LoRa_Init();
 
+<<<<<<< HEAD
 //             if (LoRa_TestConnectivity_Transmitter()) {
 //                 Debug_Print("LoRa transmitter test: SUCCESS\r\n");
 //             } else {
@@ -252,6 +253,15 @@ int main(void)
 //             }
 
              LoRa_Task();                             // maintain LoRa stack
+=======
+             if (LoRa_TestConnectivity_Transmitter()) {
+                 Debug_Print("LoRa transmitter test: SUCCESS\r\n");
+             } else {
+                 Debug_Print("LoRa transmitter test: FAILED\r\n");
+             }
+
+//             LoRa_Task();                             // maintain LoRa stack
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
 
              /* --- UART command handling --- */
              if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {

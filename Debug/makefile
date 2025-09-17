@@ -60,8 +60,13 @@ all: main-build
 main-build: stm32_water_tank-main.elf secondary-outputs
 
 # Tool invocations
+<<<<<<< HEAD
 stm32_water_tank-main.elf stm32_water_tank-main.map: $(OBJS) $(USER_OBJS) C:\Users\embedded\Desktop\ak_workspace\stm32_water_tank-main\STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
 	arm-none-eabi-gcc -o "stm32_water_tank-main.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"C:\Users\embedded\Desktop\ak_workspace\stm32_water_tank-main\STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="stm32_water_tank-main.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+=======
+WT1.1.elf WT1.1.map: $(OBJS) $(USER_OBJS) C:\Users\amiyg\Desktop\New\ folder\WT1.1\STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "WT1.1.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"C:\Users\amiyg\Desktop\New folder\WT1.1\STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="WT1.1.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
 	@echo 'Finished building target: $@'
 	@echo ' '
 

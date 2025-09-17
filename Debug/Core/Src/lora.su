@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ../Core/Src/lora.c:34:6:LoRa_WriteReg	24	static
 ../Core/Src/lora.c:41:9:LoRa_ReadReg	24	static
 ../Core/Src/lora.c:51:6:LoRa_WriteBuffer	24	static
@@ -11,3 +12,19 @@
 ../Core/Src/lora.c:128:6:LoRa_SendPacket	24	static
 ../Core/Src/lora.c:159:9:LoRa_ReceivePacket	24	static
 ../Core/Src/lora.c:177:6:LoRa_Task	104	static
+=======
+../Core/Src/lora.c:39:6:LoRa_WriteReg	24	static
+../Core/Src/lora.c:46:9:LoRa_ReadReg	24	static
+../Core/Src/lora.c:56:6:LoRa_WriteBuffer	24	static
+../Core/Src/lora.c:64:6:LoRa_ReadBuffer	24	static
+../Core/Src/lora.c:73:6:LoRa_Reset	8	static
+../Core/Src/lora.c:81:6:LoRa_SetFrequency	32	static
+../Core/Src/lora.c:90:6:LoRa_Init	8	static
+../Core/Src/lora.c:137:6:LoRa_SetStandby	8	static
+../Core/Src/lora.c:145:6:LoRa_SetRxContinuous	8	static
+../Core/Src/lora.c:153:6:LoRa_SetTx	8	static
+../Core/Src/lora.c:159:6:LoRa_SendPacket	24	static
+../Core/Src/lora.c:189:9:LoRa_ReceivePacket	24	static
+../Core/Src/lora.c:211:9:LoRa_TestConnectivity_Transmitter	24	static
+../Core/Src/lora.c:252:6:LoRa_Task	104	static
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d

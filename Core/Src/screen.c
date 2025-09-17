@@ -50,7 +50,11 @@ typedef enum {
 static uint32_t lastLcdUpdateTime = 0;
 static const uint32_t WELCOME_MS = 3000;
 static const uint32_t CURSOR_BLINK_MS = 500;
+<<<<<<< HEAD
 static const uint32_t AUTO_BACK_MS = 60000;
+=======
+static const uint32_t AUTO_BACK_MS = 60000; // optional auto-back after inactivity
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
 
 /* ===== UI state ===== */
 static UiState ui = UI_WELCOME;
@@ -60,9 +64,15 @@ static bool cursorVisible = true;
 static uint32_t lastCursorToggle = 0;
 static uint32_t lastUserAction = 0;
 
+<<<<<<< HEAD
 /* ===== Externals ===== */
 extern ADC_Data adcData;
 extern TimerSlot timerSlots[5];
+=======
+/* ===== Externals (from your project) ===== */
+extern ADC_Data adcData;
+extern TimerSlot timerSlots[5]; // not manipulated directly in this code (structure unknown)
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
 extern SearchSettings searchSettings;
 extern TwistSettings  twistSettings;
 extern volatile bool  countdownActive;
@@ -85,19 +95,33 @@ static const char* main_menu[] = {
 #define MAIN_MENU_COUNT (sizeof(main_menu)/sizeof(main_menu[0]))
 
 /* ===== Cursor/menu bookkeeping ===== */
+<<<<<<< HEAD
 static int menu_idx = 0;
 static int menu_view_top = 0;
 
 /* ===== Temp edit variables ===== */
+=======
+static int menu_idx = 0;        // index within menu
+static int menu_view_top = 0;   // top index shown on screen (for scrolling)
+
+/* ===== Temp edit variables (holds values while editing) ===== */
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
 static uint8_t edit_timer_on_h = 6, edit_timer_on_m = 30;
 static uint8_t edit_timer_off_h = 18, edit_timer_off_m = 30;
 static uint16_t edit_search_gap_s = 60, edit_search_dry_s = 10;
 static uint16_t edit_twist_on_s = 5, edit_twist_off_s = 5;
 static uint16_t edit_countdown_min = 5;
 
+<<<<<<< HEAD
 /* ===== LCD Helpers ===== */
 static inline void lcd_line(uint8_t row, const char* s) {
     char ln[17];
+=======
+/* ===== LCD Helpers (16 chars) ===== */
+static inline void lcd_line(uint8_t row, const char* s) {
+    char ln[17];
+    // ensure exactly 16 chars (pad with spaces)
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
     snprintf(ln, sizeof(ln), "%-16.16s", s);
     lcd_put_cur(row, 0);
     lcd_send_string(ln);
@@ -106,6 +130,7 @@ static inline void lcd_line0(const char* s){ lcd_line(0,s); }
 static inline void lcd_line1(const char* s){ lcd_line(1,s); }
 
 /* ===== Utilities ===== */
+<<<<<<< HEAD
 static void refreshInactivityTimer(void){ lastUserAction = HAL_GetTick(); }
 static void goto_menu_top(void){ menu_idx = 0; menu_view_top = 0; }
 
@@ -121,6 +146,28 @@ static void format_menu_line(char* buf, size_t bufsize, int idx, bool selected){
     }
 }
 
+=======
+static void refreshInactivityTimer(void){
+    lastUserAction = HAL_GetTick();
+}
+static void goto_menu_top(void){
+    menu_idx = 0;
+    menu_view_top = 0;
+}
+
+/* ===== Helper: format menu line (no nested functions) ===== */
+static void format_menu_line(char* buf, size_t bufsize, int idx, bool selected){
+    if (idx < MAIN_MENU_COUNT && idx >= 0) {
+        char prefix = selected ? '>' : ' ';
+        char item[16];
+        snprintf(item, sizeof(item), "%-15.15s", main_menu[idx]);
+        snprintf(buf, bufsize, "%c%s", prefix, item);
+    } else {
+        snprintf(buf, bufsize, "                "); // blank line
+    }
+}
+
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
 /* ===== Render functions ===== */
 
 static void show_welcome(void){
@@ -131,6 +178,7 @@ static void show_welcome(void){
 
 static void show_dash(void) {
     char line0[17], line1[17];
+<<<<<<< HEAD
     // Motor status
     const char *motor = Motor_GetStatus() ? "ON" : "OFF";
     snprintf(line0,sizeof(line0),"Motor:%-3s",motor);
@@ -227,6 +275,112 @@ static void show_twist(void){
 /* === apply + rest of code remains the same (no changes needed) === */
 // (keep your Screen_Update, Screen_Init, Screen_HandleButton etc. logic untouched)
 // Just keep all snprintf() lines trimmed to <=16 characters like above
+=======
+
+    // Motor status
+    const char *motor = Motor_GetStatus() ? "ON " : "OFF";
+    snprintf(line0, sizeof(line0), "Motor: %-3s", motor);
+
+    // Water level logic
+    float v = adcData.voltages[0];
+    const char *level;
+    if (v > 2.5f) level = "FULL ";
+    else if (v > 1.0f) level = "HALF ";
+    else if (v > 0.1f) level = "LOW  ";
+    else level = "EMPTY";
+
+    snprintf(line1, sizeof(line1), "Water: %-5s", level);
+
+    // Push to LCD
+    lcd_line0(line0);
+    lcd_line1(line1);
+}
+
+
+static void show_menu(void){
+    // Show two menu items (top: menu_view_top, bottom: menu_view_top+1)
+    char line0[17], line1[17];
+
+    // Ensure menu_view_top keeps cursor visible
+    if (menu_idx < menu_view_top) {
+        menu_view_top = menu_idx;
+    } else if (menu_idx > menu_view_top + 1) {
+        menu_view_top = menu_idx - 1;
+    }
+
+    int top = menu_view_top;
+    int bottom = top + 1;
+
+    format_menu_line(line0, sizeof(line0), top, menu_idx == top && cursorVisible);
+    format_menu_line(line1, sizeof(line1), bottom, menu_idx == bottom && cursorVisible);
+
+    lcd_line0(line0);
+    lcd_line1(line1);
+}
+
+/* Manual mode screen */
+static void show_manual(void){
+    char line0[17], line1[17];
+    snprintf(line0,sizeof(line0),"Manual Mode       ");
+    if (Motor_GetStatus()) snprintf(line1,sizeof(line1),">Stop           Back");
+    else snprintf(line1,sizeof(line1),">Start          Back");
+    lcd_line0(line0);
+    lcd_line1(line1);
+}
+
+static void show_semi_auto(void){
+    char line0[17], line1[17];
+    snprintf(line0,sizeof(line0),"Semi-Auto Mode    ");
+    if (semiAutoEnabled) snprintf(line1,sizeof(line1),">Disable        Back");
+    else snprintf(line1,sizeof(line1),">Enable         Back");
+    lcd_line0(line0);
+    lcd_line1(line1);
+}
+
+/* Timer mode display */
+static void show_timer(void){
+    char l0[17], l1[17];
+    snprintf(l0,sizeof(l0),"Timer1 ON %02d:%02d   ", edit_timer_on_h, edit_timer_on_m);
+    snprintf(l1,sizeof(l1),"Timer1 OFF %02d:%02d  ", edit_timer_off_h, edit_timer_off_m);
+    lcd_line0(l0);
+    lcd_line1(l1);
+}
+
+/* Search mode display */
+static void show_search(void){
+    char l0[17], l1[17];
+    snprintf(l0,sizeof(l0),"Gap:%3ds Dry:%3ds  ", edit_search_gap_s, edit_search_dry_s);
+    snprintf(l1,sizeof(l1),">Edit           Back");
+    lcd_line0(l0);
+    lcd_line1(l1);
+}
+
+/* Countdown display */
+static void show_countdown(void){
+    char l0[17], l1[17];
+    if (countdownActive) {
+        // Show remaining minutes:seconds if possible
+        uint32_t sec = countdownDuration;
+        uint32_t min = sec / 60;
+        uint32_t s = sec % 60;
+        snprintf(l0,sizeof(l0),"Countdown %02d:%02d   ", (int)min, (int)s);
+    } else {
+        snprintf(l0,sizeof(l0),"Countdown Inactive ");
+    }
+    snprintf(l1,sizeof(l1),">Set        Start Back");
+    lcd_line0(l0);
+    lcd_line1(l1);
+}
+
+/* Twist mode display */
+static void show_twist(void){
+    char l0[17], l1[17];
+    snprintf(l0,sizeof(l0),"Twist ON:%3ds      ", edit_twist_on_s);
+    snprintf(l1,sizeof(l1),"Twist OFF:%3ds     ", edit_twist_off_s);
+    lcd_line0(l0);
+    lcd_line1(l1);
+}
+>>>>>>> 98979338ca7bfb3b77713f55d952a9e70c09570d
 
 /* ===== Apply functions (write edits to real settings) ===== */
 static void apply_search_settings(void){
