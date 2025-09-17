@@ -4,21 +4,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
+/* === Structures === */
 typedef struct {
-    uint32_t onTimeSeconds;   // seconds since midnight
-    uint32_t offTimeSeconds;  // seconds since midnight
     bool     active;
+    uint32_t onTimeSeconds;
+    uint32_t offTimeSeconds;
     bool     executedToday;
 } TimerSlot;
 
 typedef struct {
     bool     searchActive;
-    uint32_t testingGapSeconds;  // time between tests
-    uint32_t dryRunTimeSeconds;  // short test duration
+    uint32_t testingGapSeconds;
+    uint32_t dryRunTimeSeconds;
 } SearchSettings;
 
 typedef struct {
@@ -27,39 +24,25 @@ typedef struct {
     uint32_t offDurationSeconds;
 } TwistSettings;
 
-/* Public state used by UI or other modules */
-extern volatile uint8_t  motorStatus;         // 0/1
-extern volatile bool     countdownActive;
-extern volatile bool     countdownMode;       // true => ON countdown
-extern volatile uint32_t countdownDuration;   // remaining seconds
+/* === Globals === */
+extern volatile uint8_t  motorStatus;
+extern TimerSlot         timerSlots[5];
+extern SearchSettings    searchSettings;
+extern TwistSettings     twistSettings;
 
-extern TimerSlot       timerSlots[5];
-extern SearchSettings  searchSettings;
-extern TwistSettings   twistSettings;
-
-/* API */
-uint32_t ModelHandle_TimeToSeconds(uint8_t hh, uint8_t mm);
-void     ModelHandle_SecondsToTime(uint32_t sec, uint8_t* hh, uint8_t* mm);
-
-void ModelHandle_ProcessUartCommand(const char* cmd);
+/* === API === */
 void ModelHandle_Process(void);
+void ModelHandle_ProcessUartCommand(const char* cmd);
 
-/* status / flags */
-bool Motor_GetStatus(void);
+uint32_t ModelHandle_TimeToSeconds(uint8_t hh, uint8_t mm);
+void ModelHandle_SecondsToTime(uint32_t sec, uint8_t* hh, uint8_t* mm);
 
-/* protection flag setters (call from ADC/LoRa layer) */
 void ModelHandle_SetDryRun(bool on);
 void ModelHandle_SetOverLoad(bool on);
 void ModelHandle_SetOverUnderVolt(bool on);
 void ModelHandle_ClearMaxRunFlag(void);
-/* Alias for legacy main.c call site */
-void ModelHandle_ProcessReceivedPacket(const char* pkt);
 
-/* optional debug */
-void ModelHandle_DebugPrint(const char* msg);
+/* ✅ Added for screen.c */
+bool Motor_GetStatus(void);
 
-#ifdef __cplusplus
-}
 #endif
-
-#endif /* MODEL_HANDLE_H */

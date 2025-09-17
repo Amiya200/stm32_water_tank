@@ -203,6 +203,7 @@ void LoRa_Task(void) {
             snprintf(dbg, sizeof(dbg), "RX: %s\r\n", rxBuffer);
             Debug_Print(dbg);
 
+            z=123;
             if (strcmp((char*)rxBuffer, LORA_PING_MSG) == 0) {
                 uint8_t ack[] = LORA_ACK_MSG;
                 LoRa_SendPacket(ack, sizeof(ack) - 1);

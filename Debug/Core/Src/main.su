@@ -1,4 +1,4 @@
-../Core/Src/main.c:86:6:I2C_Scan	8	static
+../Core/Src/main.c:86:6:I2C_Scan	4	static
 ../Core/Src/main.c:105:6:Debug_Print	16	static
 ../Core/Src/main.c:115:6:ProcessUartCommand	16	static
 ../Core/Src/main.c:131:6:Hardware_Test	16	static

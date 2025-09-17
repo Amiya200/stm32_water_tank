@@ -1,40 +1,44 @@
 #include "adc.h"
 #include "main.h"
-#include "uart.h"     // UART_TransmitString
-#include "global.h"   // motorStatus
+#include "uart.h"
+#include "global.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <math.h>
 
-/* ======================== Tunables ========================= */
 #ifndef THR
-#define THR                       1.0f   /* threshold (V) */
+#define THR                       1.0f
 #endif
 
-#define EMA_ALPHA                 0.3f   /* low = smoother */
-#define HYST_DELTA                0.10f  /* hysteresis margin */
-#define GROUND_THRESHOLD           0.5f  /* below this => 0 */
-#define DRY_VOLTAGE_THRESHOLD     0.05f  /* "almost 0" for OFF detect */
-#define DRY_COUNT_THRESHOLD          3   /* consecutive low samples */
+#define EMA_ALPHA                 0.3f
+#define HYST_DELTA                0.10f
+#define GROUND_THRESHOLD           0.5f
+#define DRY_VOLTAGE_THRESHOLD     0.05f
+#define DRY_COUNT_THRESHOLD          3
+#define PRINT_DELTA                0.05f  // only print if change > 0.05V
 
-/* ======================== Internal State ========================= */
+// ✅ NEW: Exported for Live Expressions
+float g_adcVoltages[ADC_CHANNEL_COUNT] = {0};
+
 static float    s_filtered[ADC_CHANNEL_COUNT] = {0};
 static uint8_t  s_level_flags[ADC_CHANNEL_COUNT] = {0};
 static uint8_t  s_low_counts[ADC_CHANNEL_COUNT] = {0};
+static float    s_prev_volt[ADC_CHANNEL_COUNT] = {0};
 
 static const uint32_t adcChannels[ADC_CHANNEL_COUNT] = {
-    ADC_CHANNEL_0,  // PA0
-    ADC_CHANNEL_1,  // PA1
-    ADC_CHANNEL_2,  // PA2
-    ADC_CHANNEL_3,  // PA3
-    ADC_CHANNEL_4,  // PA4
-    ADC_CHANNEL_5   // PA5
+    ADC_CHANNEL_0,
+    ADC_CHANNEL_1,
+    ADC_CHANNEL_2,
+    ADC_CHANNEL_3,
+    ADC_CHANNEL_4,
+    ADC_CHANNEL_5
 };
 
 static char dataPacketTx[16];
 
-/* ======================== Helper ========================= */
+/* --- helper: sample one channel --- */
 static float readChannelVoltage(ADC_HandleTypeDef *hadc, uint32_t channel)
 {
     ADC_ChannelConfTypeDef sConfig = {0};
@@ -44,24 +48,20 @@ static float readChannelVoltage(ADC_HandleTypeDef *hadc, uint32_t channel)
 
     if (HAL_ADC_ConfigChannel(hadc, &sConfig) != HAL_OK)
         return 0.0f;
-
     if (HAL_ADC_Start(hadc) != HAL_OK)
         return 0.0f;
 
-    float voltage = 0.0f;
-
+    float v = 0.0f;
     if (HAL_ADC_PollForConversion(hadc, 10) == HAL_OK)
     {
         uint32_t raw = HAL_ADC_GetValue(hadc);
-        voltage = (raw * 3.3f) / 4095.0f;
+        v = (raw * 3.3f) / 4095.0f;
     }
-
     HAL_ADC_Stop(hadc);
-    return voltage;
+    return v;
 }
 
-/* ======================== Public API ========================= */
-
+/* --- Public API --- */
 void ADC_Init(ADC_HandleTypeDef* hadc)
 {
     if (HAL_ADCEx_Calibration_Start(hadc) != HAL_OK)
@@ -72,32 +72,38 @@ void ADC_Init(ADC_HandleTypeDef* hadc)
 
 void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
 {
+    bool changed = false;
+
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
     {
-        float voltage = readChannelVoltage(hadc, adcChannels[i]);
+        float v = readChannelVoltage(hadc, adcChannels[i]);
 
-        /* apply EMA smoothing */
         if (s_filtered[i] == 0.0f)
-            s_filtered[i] = voltage;
+            s_filtered[i] = v;
         else
-            s_filtered[i] = (EMA_ALPHA * voltage) + (1.0f - EMA_ALPHA) * s_filtered[i];
+            s_filtered[i] = EMA_ALPHA * v + (1 - EMA_ALPHA) * s_filtered[i];
 
-        voltage = s_filtered[i];
+        v = s_filtered[i];
 
-        /* handle ground-level clipping */
-        if (voltage < GROUND_THRESHOLD)
-            voltage = 0.0f;
+        if (v < GROUND_THRESHOLD)
+            v = 0.0f;
 
-        data->voltages[i] = voltage;
-        data->rawValues[i] = (uint16_t)((voltage * 4095.0f) / 3.3f);
-        data->maxReached[i] = (voltage >= 3.2f) ? 1 : 0;
+        data->voltages[i] = v;
+        data->rawValues[i] = (uint16_t)((v * 4095.0f) / 3.3f);
+        data->maxReached[i] = (v >= 3.2f);
 
-        /* ================== Threshold detection with hysteresis ================== */
-        if (!s_level_flags[i] && voltage >= THR)
+        // ✅ NEW: export to debugger live
+        g_adcVoltages[i] = v;
+
+        if (fabsf(v - s_prev_volt[i]) > PRINT_DELTA) {
+            changed = true;
+            s_prev_volt[i] = v;
+        }
+
+        /* --- threshold and debounce logic --- */
+        if (!s_level_flags[i] && v >= THR)
         {
             s_level_flags[i] = 1;
-
-            /* send UART based on channel */
             switch (i)
             {
                 case 0: snprintf(dataPacketTx, sizeof(dataPacketTx), "@10W#"); break;
@@ -113,13 +119,12 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             motorStatus = 1;
             s_low_counts[i] = 0;
         }
-        else if (s_level_flags[i] && voltage < (THR - HYST_DELTA))
+        else if (s_level_flags[i] && v < (THR - HYST_DELTA))
         {
             s_level_flags[i] = 0;
         }
 
-        /* ================== Debounce for motor off ================== */
-        if (voltage < DRY_VOLTAGE_THRESHOLD)
+        if (v < DRY_VOLTAGE_THRESHOLD)
         {
             if (s_low_counts[i] < 0xFF) s_low_counts[i]++;
         }
@@ -131,33 +136,33 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
         if (motorStatus == 1 && s_low_counts[i] >= DRY_COUNT_THRESHOLD)
         {
             motorStatus = 0;
-            // Optional: UART_TransmitString(&huart1, "@MT0#");
             memset(s_low_counts, 0, sizeof(s_low_counts));
         }
     }
 
-    /* ===== Debug print all channel data ===== */
-    char dbg[128];
-    int pos = 0;
-    pos += snprintf(dbg + pos, sizeof(dbg) - pos, "[ADC] ");
-    for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
+    /* print only if changed */
+    if (changed)
     {
-        pos += snprintf(dbg + pos, sizeof(dbg) - pos,
-                        "CH%d:%4u(%.2fV)%s ",
-                        i,
-                        data->rawValues[i],
-                        data->voltages[i],
-                        data->maxReached[i] ? "!" : "");
+        char dbg[128];
+        int pos = snprintf(dbg, sizeof(dbg), "[ADC] ");
+        for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
+        {
+//            pos += snprintf(dbg+pos, sizeof(dbg)-pos,
+//                            "CH%d:%4u(%.2fV)%s ",
+//                            i,
+//                            data->rawValues[i],
+//                            data->voltages[i],
+//                            data->maxReached[i] ? "!" : "");
+        }
+        dbg[sizeof(dbg)-1] = '\0';
+        UART_TransmitString(&huart1, dbg);
+        UART_TransmitString(&huart1, "\r\n");
     }
-    dbg[sizeof(dbg)-1] = '\0';
-    UART_TransmitString(&huart1, dbg);
-    UART_TransmitString(&huart1, "\r\n");
 }
 
 uint8_t ADC_CheckMaxVoltage(ADC_Data* data, float threshold)
 {
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
         if (data->voltages[i] >= threshold) return 1;
-
     return 0;
 }

@@ -84,19 +84,19 @@ static void MX_USART1_UART_Init(void);
 static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
 void I2C_Scan(void) {
-	 if (HAL_I2C_IsDeviceReady(&hi2c2, SLAVE_ADDRESS_LCD, 2, 10) == HAL_OK) {
-	        Debug_Print("✅ LCD ACK at configured address.\r\n");
-	        lcd_init();
-	        lcd_clear();
-	        lcd_put_cur(0, 0);
-	        lcd_send_string("LCD FOUND");
-	        lcd_put_cur(1, 0);
-	        lcd_send_string("I2C OK");
-	    } else {
-	        Debug_Print("❌ LCD not responding at configured address.\r\n");
-	        Debug_Print("   Tip: Many boards use 0x27 or 0x3F (8-bit: 0x4E/0x7E).\r\n");
-	        Debug_Print("   Update SLAVE_ADDRESS_LCD in lcd_i2c.h if needed.\r\n");
-	    }
+//	 if (HAL_I2C_IsDeviceReady(&hi2c2, SLAVE_ADDRESS_LCD, 2, 10) == HAL_OK) {
+//	        Debug_Print("✅ LCD ACK at configured address.\r\n");
+//	        lcd_init();
+//	        lcd_clear();
+//	        lcd_put_cur(0, 0);
+//	        lcd_send_string("LCD FOUND");
+//	        lcd_put_cur(1, 0);
+//	        lcd_send_string("I2C OK");
+//	    } else {
+//	        Debug_Print("❌ LCD not responding at configured address.\r\n");
+//	        Debug_Print("   Tip: Many boards use 0x27 or 0x3F (8-bit: 0x4E/0x7E).\r\n");
+//	        Debug_Print("   Update SLAVE_ADDRESS_LCD in lcd_i2c.h if needed.\r\n");
+//	    }
 }
 /* USER CODE END PFP */
 
@@ -143,18 +143,18 @@ void Hardware_Test(void)
 //    }
 
     /* === LCD check === */
-    if (HAL_I2C_IsDeviceReady(&hi2c2, SLAVE_ADDRESS_LCD, 2, 100) != HAL_OK) {
-        Debug_Print("❌ LCD not responding!\r\n");
-    } else {
-        Debug_Print("✅ LCD detected!\r\n");
-        lcd_init();
-        lcd_clear();
-        lcd_put_cur(0,0);
-        lcd_send_string("LCD OK!");
-        lcd_put_cur(1,0);
-        lcd_send_string("HELONIX");
-        ak =10;
-    }
+//    if (HAL_I2C_IsDeviceReady(&hi2c2, SLAVE_ADDRESS_LCD, 2, 100) != HAL_OK) {
+//        Debug_Print("❌ LCD not responding!\r\n");
+//    } else {
+//        Debug_Print("✅ LCD detected!\r\n");
+//        lcd_init();
+//        lcd_clear();
+//        lcd_put_cur(0,0);
+//        lcd_send_string("LCD OK!");
+//        lcd_put_cur(1,0);
+//        lcd_send_string("HELONIX");
+//        ak =10;
+//    }
 }
 
 /* === Button → LED test === */
@@ -251,7 +251,7 @@ int main(void)
 //                 Debug_Print("LoRa transmitter test: FAILED\r\n");
 //             }
 
-//             LoRa_Task();                             // maintain LoRa stack
+             LoRa_Task();                             // maintain LoRa stack
 
              /* --- UART command handling --- */
              if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
