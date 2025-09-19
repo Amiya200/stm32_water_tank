@@ -11,273 +11,160 @@
   * Copyright (c) 2020 STMicroelectronics.
   * All rights reserved.
   *
-  * This software component is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
+  * This software component is licensed under terms that can be found in the
+  * LICENSE file in the root directory of this software component.
   * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
   */
 /* USER CODE END Header */
+
 /* Includes ------------------------------------------------------------------*/
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  * @developer      : Amiya Krishna Gupta
+  * @start_date     : 11 August 2025
+  ******************************************************************************
+  */
+/* USER CODE END Header */
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
-
-#include "lcd_i2c.h"   // I2C LCD driver
-#include "rtc_i2c.h"   // RTC driver
-#include "global.h"    // Global variables like motorStatus
-#include "adc.h"       // ADC wrapper
-#include "lora.h"      // LoRa driver
-#include "uart.h"      // UART driver
-#include <string.h>
-#include <stdio.h>
+#include "lcd_i2c.h"
+#include "rtc_i2c.h"
+#include "global.h"
+#include "adc.h"
+#include "lora.h"
+#include "uart.h"
 #include "model_handle.h"
 #include "screen.h"
 #include "led.h"
-/* USER CODE END Includes */
+#include "relay.h"
+#include <stdio.h>
+#include <string.h>
 
 /* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
 extern SPI_HandleTypeDef hspi1;
-char buf[30];
-char dbg[50];
-int ak = 0;
-/* USER CODE END PTD */
 
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-// LoRa Modes
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
+typedef struct {
+    uint8_t Hours;
+    uint8_t Minutes;
+    uint8_t Seconds;
+    uint8_t Date;
+    uint8_t Month;
+    uint16_t Year;
+} DebugTime_t;
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
-
 I2C_HandleTypeDef hi2c2;
-
 RTC_HandleTypeDef hrtc;
-
 SPI_HandleTypeDef hspi1;
-
 UART_HandleTypeDef huart1;
 
-/* USER CODE BEGIN PV */
-char lcdBuffer[20];
-ADC_Data adcData;            // ADC readings
-
-// Buffer for processing received UART data
+ADC_Data adcData;
 char receivedUartPacket[UART_RX_BUFFER_SIZE];
-/* USER CODE END PV */
+DebugTime_t debugTime;
+char dbg[80];
 
-/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
-static void MX_RTC_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_I2C2_Init(void);
-/* USER CODE BEGIN PFP */
-void I2C_Scan(void) {
-//	 if (HAL_I2C_IsDeviceReady(&hi2c2, SLAVE_ADDRESS_LCD, 2, 10) == HAL_OK) {
-//	        Debug_Print("✅ LCD ACK at configured address.\r\n");
-//	        lcd_init();
-//	        lcd_clear();
-//	        lcd_put_cur(0, 0);
-//	        lcd_send_string("LCD FOUND");
-//	        lcd_put_cur(1, 0);
-//	        lcd_send_string("I2C OK");
-//	    } else {
-//	        Debug_Print("❌ LCD not responding at configured address.\r\n");
-//	        Debug_Print("   Tip: Many boards use 0x27 or 0x3F (8-bit: 0x4E/0x7E).\r\n");
-//	        Debug_Print("   Update SLAVE_ADDRESS_LCD in lcd_i2c.h if needed.\r\n");
-//	    }
-}
-/* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
 void Debug_Print(char *msg) {
-    // Use the new UART_TransmitString function
     UART_TransmitString(&huart1, msg);
 }
 
-bool Switch_WasPressed(uint8_t switchIndex);
-//void LED_SetIntent(uint8_t color, uint8_t mode, uint32_t period_ms);
-void LED_ApplyIntents(void);
-void Screen_HandleSwitches(void);
-// Function to process received UART commands
-void ProcessUartCommand(const char* command) {
-    // Example processing:
-    if (strcmp(command, "@MOTOR_ON#") == 0) {
-        // Turn motor on logic
-        Debug_Print("Received command: MOTOR ON\r\n");
-        motorStatus = 1;
-    } else if (strcmp(command, "@MOTOR_OFF#") == 0) {
-        // Turn motor off logic
-        Debug_Print("Received command: MOTOR OFF\r\n");
-        motorStatus = 0;
-    }
-    // Add more command processing as needed
-}
-
-
-
-void Hardware_Test(void)
-{
-    /* === Modem config debug === */
-    uint8_t modem=0x12, modem2=0x34; // example
-    sprintf(dbg, "ModemCfg1=0x%02X, ModemCfg2=0x%02X\r\n", modem, modem2);
-    Debug_Print(dbg);
-
-    /* === DS3231 check === */
-//    if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDRESS, 2, 100) != HAL_OK) {
-//        Debug_Print("❌ DS3231 not responding!\r\n");
-//    } else {
-//        Debug_Print("✅ DS3231 detected!\r\n");
-//    }
-
-    /* === LCD check === */
-//    if (HAL_I2C_IsDeviceReady(&hi2c2, SLAVE_ADDRESS_LCD, 2, 100) != HAL_OK) {
-//        Debug_Print("❌ LCD not responding!\r\n");
-//    } else {
-//        Debug_Print("✅ LCD detected!\r\n");
-//        lcd_init();
-//        lcd_clear();
-//        lcd_put_cur(0,0);
-//        lcd_send_string("LCD OK!");
-//        lcd_put_cur(1,0);
-//        lcd_send_string("HELONIX");
-//        ak =10;
-//    }
-}
-
-/* === Button → LED test === */
-
-
-/* USER CODE END 0 */
-
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
+    HAL_Init();
+    SystemClock_Config();
 
-  /* USER CODE BEGIN 1 */
+    MX_GPIO_Init();
+    MX_USART1_UART_Init();
+    UART_Init();
+    MX_ADC1_Init();
+    RTC_InitWithBackup();      // ✅ RTC setup with backup
+    MX_SPI1_Init();
+    MX_I2C2_Init();
 
-  /* USER CODE END 1 */
+    lcd_init();
+    ADC_Init(&hadc1);
+    LoRa_Init();
+    Screen_Init();
+    UART_Init();
+    Switches_Init();
 
-  /* MCU Configuration--------------------------------------------------------*/
+    Debug_Print("System Initialized\r\n");
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+    // ⚡ UNCOMMENT only once after flashing new code:
+//    RTC_SetTimeDate(0, 30, 18, 5, 19, 9, 2025);
 
-  /* USER CODE BEGIN Init */
+    uint8_t lastSecond = 255;
 
-  /* USER CODE END Init */
+    while (1)
+    {
+        Screen_HandleSwitches();
+        Screen_Update();
+        ADC_ReadAllChannels(&hadc1, &adcData);
 
-  /* Configure the system clock */
-  SystemClock_Config();
+        RTC_TimeTypeDef sTime;
+        RTC_DateTypeDef sDate;
+        HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+        HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
-  /* USER CODE BEGIN SysInit */
+        if (sTime.Seconds != lastSecond)
+        {
+            lastSecond = sTime.Seconds;
 
-  /* USER CODE END SysInit */
+            debugTime.Hours   = sTime.Hours;
+            debugTime.Minutes = sTime.Minutes;
+            debugTime.Seconds = sTime.Seconds;
+            debugTime.Date    = sDate.Date;
+            debugTime.Month   = sDate.Month;
+            debugTime.Year    = 2025 + sDate.Year;
 
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_ADC1_Init();
-//  MX_RTC_Init();
-  MX_SPI1_Init();
-  MX_USART1_UART_Init();
-  MX_I2C2_Init();
-  /* USER CODE BEGIN 2 */
-  lcd_init();
-  ADC_Init(&hadc1);
-  LoRa_Init(); // Initialize LoRa module
-//  I2C_Scan();
-  Screen_Init();
-  UART_Init(); // Initialize UART reception (starts the first IT)
-  Switches_Init();
-//
-//  Debug_Print("System Initialized\r\n");
-  uint8_t modem = LoRa_ReadReg(0x1D);
-  uint8_t modem2 = LoRa_ReadReg(0x1E);
-//
-//
-//  sprintf(dbg, "ModemCfg1=0x%02X, ModemCfg2=0x%02X\r\n", modem, modem2);
-//  Debug_Print(dbg);
-//  if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDRESS, 2, 100) != HAL_OK) {
-//      Debug_Print("❌ DS3231 not responding!\r\n");
-//  } else {
-//      Debug_Print("✅ DS3231 detected!\r\n");
-//  }
-//  // DELETE this whole block in main.c (right after peripheral init)
-//  if (packetReady) {
-//      char buffer[128];
-//      if (UART_GetReceivedPacket(buffer, sizeof(buffer))) {
-//    	  ModelHandle_ProcessUartCommand(receivedUartPacket);
-//
-//      }
-//  }
+            sprintf(dbg, "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d\r\n",
+                    debugTime.Hours, debugTime.Minutes, debugTime.Seconds,
+                    debugTime.Date, debugTime.Month, debugTime.Year);
+            Debug_Print(dbg);
+        }
 
-         // Process all active modes
-         ModelHandle_Process();
+        if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
+            char *p = receivedUartPacket;
+            size_t n = strlen(receivedUartPacket);
+            if (n >= 2 && p[0] == '@' && p[n-1] == '#') {
+                p[n-1] = '\0';
+                p++;
+            }
+            ModelHandle_ProcessUartCommand(p);
+        }
 
-  // Set initial LoRa mode
+        ModelHandle_Process();
+        Relay_All(false);
+        LED_Task();
 
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-//  /* USER CODE BEGIN WHILE */
-         while (1)
-         {
-             /* --- UI handling (switches + LCD) --- */
-             Screen_HandleSwitches();  // Check buttons and update UI state
-             Screen_Update();          // Refresh display and cursor blink
-             /* --- Periodic data acquisition --- */
-             ADC_ReadAllChannels(&hadc1, &adcData);   // update voltages
-             Get_Time();                              // update RTC
-             LoRa_Init();
-
-//             if (LoRa_TestConnectivity_Transmitter()) {
-//                 Debug_Print("LoRa transmitter test: SUCCESS\r\n");
-//             } else {
-//                 Debug_Print("LoRa transmitter test: FAILED\r\n");
-//             }
-
-             LoRa_Task();                             // maintain LoRa stack
-
-             /* --- UART command handling --- */
-             if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-                 char *p = receivedUartPacket;
-                 size_t n = strlen(receivedUartPacket);
-                 if (n >= 2 && p[0] == '@' && p[n-1] == '#') {
-                     p[n-1] = '\0';  // strip end marker
-                     p++;            // strip start marker
-                 }
-                 ModelHandle_ProcessUartCommand(p);   // parse + update model
-             }
-
-             /* --- Business logic: model → hardware --- */
-             ModelHandle_Process();   // compute intents for motor, relays, LEDs, timers
-             Relay_All(false);        // Example: you can still drive relays individually in model
-             LED_Task();              // blink patterns / status LEDs
-
-             /* --- Cooperative delay for smoothness --- */
-             HAL_Delay(1);           // ~100Hz loop rate (good for UI responsiveness)
-         }
-
-
-
-
-  /* USER CODE END 3 */
+        HAL_Delay(50);
+    }
 }
+
+
+
+/* === RTC FIXED === */
+
+
+/* === rest ADC/I2C/SPI/UART/GPIO functions unchanged === */
+
+
+
+
+
 
 /**
   * @brief System Clock Configuration
@@ -400,71 +287,11 @@ static void MX_I2C2_Init(void)
   * @brief RTC Initialization Function
   * @param None
   * @retval None
+  *
   */
-static void MX_RTC_Init(void)
-{
 
-  /* USER CODE BEGIN RTC_Init 0 */
+/* === Other peripheral init functions remain unchanged (ADC, I2C, SPI, UART, GPIO) === */
 
-  /* USER CODE END RTC_Init 0 */
-
-  RTC_TimeTypeDef sTime = {0};
-  RTC_DateTypeDef DateToUpdate = {0};
-  RTC_AlarmTypeDef sAlarm = {0};
-
-  /* USER CODE BEGIN RTC_Init 1 */
-
-  /* USER CODE END RTC_Init 1 */
-
-  /** Initialize RTC Only
-  */
-  hrtc.Instance = RTC;
-  hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND;
-  hrtc.Init.OutPut = RTC_OUTPUTSOURCE_ALARM;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /* USER CODE BEGIN Check_RTC_BKUP */
-
-  /* USER CODE END Check_RTC_BKUP */
-
-  /** Initialize RTC and set the Time and Date
-  */
-  sTime.Hours = 0x13;
-  sTime.Minutes = 0x0;
-  sTime.Seconds = 0x0;
-
-  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
-  DateToUpdate.Month = RTC_MONTH_JANUARY;
-  DateToUpdate.Date = 0x1;
-  DateToUpdate.Year = 0x0;
-
-  if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Enable the Alarm A
-  */
-  sAlarm.AlarmTime.Hours = 0x13;
-  sAlarm.AlarmTime.Minutes = 0x0;
-  sAlarm.AlarmTime.Seconds = 0x0;
-  sAlarm.Alarm = RTC_ALARM_A;
-  if (HAL_RTC_SetAlarm_IT(&hrtc, &sAlarm, RTC_FORMAT_BCD) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN RTC_Init 2 */
-
-  /* USER CODE END RTC_Init 2 */
-
-}
 
 /**
   * @brief SPI1 Initialization Function
@@ -610,14 +437,16 @@ static void MX_GPIO_Init(void)
   */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
-  /* USER CODE END Error_Handler_Debug */
+    /* Print an error and blink an LED to show we're in the error handler */
+    Debug_Print("** Error_Handler entered **\r\n");
+
+    /* Try to indicate error by toggling LED1 (or any LED defined in your MX_GPIO_Init) */
+    for (;;) {
+        HAL_GPIO_TogglePin(GPIOA, LED1_Pin);
+        HAL_Delay(250);
+    }
 }
+
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number

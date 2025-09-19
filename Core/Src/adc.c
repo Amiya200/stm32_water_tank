@@ -28,12 +28,12 @@ static uint8_t  s_low_counts[ADC_CHANNEL_COUNT] = {0};
 static float    s_prev_volt[ADC_CHANNEL_COUNT] = {0};
 
 static const uint32_t adcChannels[ADC_CHANNEL_COUNT] = {
-    ADC_CHANNEL_0,
-    ADC_CHANNEL_1,
-    ADC_CHANNEL_2,
-    ADC_CHANNEL_3,
-    ADC_CHANNEL_4,
-    ADC_CHANNEL_5
+    ADC_CHANNEL_0,//dry run
+    ADC_CHANNEL_1,//water level
+    ADC_CHANNEL_2,//water level
+    ADC_CHANNEL_3,//water level
+    ADC_CHANNEL_4,//water level
+    ADC_CHANNEL_5//water level
 };
 
 static char dataPacketTx[16];
