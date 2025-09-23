@@ -1,80 +1,144 @@
 #include "rtc_i2c.h"
-#include "main.h"
 #include <stdio.h>
 
-extern RTC_HandleTypeDef hrtc;
-TIME time;
+/* Probe both popular addresses:
+   - DS3231 genuine: 7-bit 0x68  -> HAL 8-bit = 0xD0
+   - Your module reported: 0x57   -> HAL 8-bit = 0xAE
+*/
+#define DS3231_ADDR_68   (0x68u << 1)
+#define DS3231_ADDR_57   (0x57u << 1)
 
-extern void Debug_Print(char *msg);
+/* Global time object */
+RTC_Time_t time;
 
-/* ------------------ RTC Init with Backup ------------------ */
-void RTC_InitWithBackup(void)
+/* Selected I2C address (HAL 8-bit) after probe */
+static uint16_t s_rtc_addr = 0;
+
+/* ---------- helpers ---------- */
+static uint8_t dec2bcd(uint8_t v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
+static uint8_t bcd2dec(uint8_t v) { return (uint8_t)(((v >> 4) * 10) + (v & 0x0F)); }
+
+/* Zeller/Sakamoto-style weekday (Mon=1 … Sun=7) */
+static uint8_t dow_from_ymd(uint16_t y, uint8_t m, uint8_t d)
 {
-    HAL_PWR_EnableBkUpAccess();
+    static const uint8_t t[] = {0,3,2,5,0,3,5,1,4,6,2,4};
+    if (m < 3) y--;
+    /* 0=Sunday … 6=Saturday */
+    uint8_t w = (uint8_t)((y + y/4 - y/100 + y/400 + t[m-1] + d) % 7);
+    /* Map to Mon=1 … Sun=7 */
+    return (w == 0) ? 7 : w;          /* 7=Sunday */
+}
 
-    __HAL_RCC_LSI_ENABLE();
-    while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET);
-
-    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
-    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-    PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
-    HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit);
-
-    __HAL_RCC_RTC_ENABLE();
-
-    hrtc.Instance = RTC;
-    hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND;
-    hrtc.Init.OutPut = RTC_OUTPUTSOURCE_NONE;
-
-    if (HAL_RTC_Init(&hrtc) != HAL_OK)
-    {
-        Debug_Print("RTC Init failed\r\n");
+/* ---------- probe + init ---------- */
+void RTC_Init(void)
+{
+    /* Probe 0x68 first, then 0x57 */
+    if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDR_68, 2, 50) == HAL_OK) {
+        s_rtc_addr = DS3231_ADDR_68;
+    } else if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDR_57, 2, 50) == HAL_OK) {
+        s_rtc_addr = DS3231_ADDR_57;
+    } else {
+        s_rtc_addr = 0; /* not found */
         return;
     }
 
-    if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1) == 0x32F2)
-        Debug_Print("RTC already initialized\r\n");
-    else
-        Debug_Print("RTC not initialized. Please set time/date now.\r\n");
+    /* Clear CH (clock halt) bit if set (seconds @ reg 0x00, bit7) */
+    uint8_t sec;
+    if (HAL_I2C_Mem_Read(&hi2c2, s_rtc_addr, 0x00, 1, &sec, 1, HAL_MAX_DELAY) == HAL_OK) {
+        if (sec & 0x80u) {
+            sec &= 0x7Fu;
+            (void)HAL_I2C_Mem_Write(&hi2c2, s_rtc_addr, 0x00, 1, &sec, 1, HAL_MAX_DELAY);
+        }
+    }
 }
 
-/* ------------------ Set Time + Date ------------------ */
+/* ---------- set time/date ---------- */
 void RTC_SetTimeDate(uint8_t sec, uint8_t min, uint8_t hour,
                      uint8_t dow, uint8_t dom, uint8_t month, uint16_t year)
 {
-    RTC_TimeTypeDef sTime = {0};
-    RTC_DateTypeDef sDate = {0};
+    if (!s_rtc_addr) return;
 
-    sTime.Hours   = hour;
-    sTime.Minutes = min;
-    sTime.Seconds = sec;
-    HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    /* Force valid ranges (defensive) */
+    if (sec  > 59) sec = 0;
+    if (min  > 59) min = 0;
+    if (hour > 23) hour = 0;
+    if (dow   < 1 || dow > 7)    dow = 1;
+    if (dom   < 1 || dom > 31)   dom = 1;
+    if (month < 1 || month > 12) month = 1;
+    if (year  < 2000) year = 2000; else if (year > 2099) year = 2099;
 
-    sDate.WeekDay = dow;
-    sDate.Date    = dom;
-    sDate.Month   = month;
-    sDate.Year    = (uint8_t)(year - 2000);
-    HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+    /* Write 7 bytes starting at 0x00:
+       00: seconds (bit7 = CH, must be 0 to run)
+       01: minutes
+       02: hours (24h: bit6=0, bits5:4 tens of hours)
+       03: day-of-week (1..7)
+       04: day-of-month
+       05: month (bit7=century; keep 0)
+       06: year (00..99)
+    */
+    uint8_t buf[7];
+    buf[0] = dec2bcd(sec)  & 0x7Fu;  /* ensure CH=0 */
+    buf[1] = dec2bcd(min)  & 0x7Fu;
+    buf[2] = dec2bcd(hour) & 0x3Fu;  /* force 24h: bit6=0 */
+    buf[3] = dec2bcd(dow)  & 0x07u;
+    buf[4] = dec2bcd(dom)  & 0x3Fu;
+    buf[5] = dec2bcd(month)& 0x1Fu;  /* century bit=0 */
+    buf[6] = dec2bcd((uint8_t)(year - 2000));
 
-    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, 0x32F2);
-
-    Debug_Print("RTC time/date set successfully\r\n");
+    (void)HAL_I2C_Mem_Write(&hi2c2, s_rtc_addr, 0x00, 1, buf, 7, HAL_MAX_DELAY);
 }
 
-/* ------------------ Get Time + Date ------------------ */
+void RTC_SetTimeDate_AutoDOW(uint8_t sec, uint8_t min, uint8_t hour,
+                             uint8_t dom, uint8_t month, uint16_t year)
+{
+    uint8_t dow = dow_from_ymd(year, month, dom); /* 1..7 */
+    RTC_SetTimeDate(sec, min, hour, dow, dom, month, year);
+}
+
+/* ---------- read time/date ---------- */
 void RTC_GetTimeDate(void)
 {
-    RTC_TimeTypeDef gTime = {0};
-    RTC_DateTypeDef gDate = {0};
+    if (!s_rtc_addr) return;
 
-    HAL_RTC_GetTime(&hrtc, &gTime, RTC_FORMAT_BIN);
-    HAL_RTC_GetDate(&hrtc, &gDate, RTC_FORMAT_BIN);
+    uint8_t r[7];
+    if (HAL_I2C_Mem_Read(&hi2c2, s_rtc_addr, 0x00, 1, r, 7, HAL_MAX_DELAY) != HAL_OK) {
+        return;
+    }
 
-    time.seconds    = gTime.Seconds;
-    time.minutes    = gTime.Minutes;
-    time.hour       = gTime.Hours;
-    time.dayofweek  = gDate.WeekDay;
-    time.dayofmonth = gDate.Date;
-    time.month      = gDate.Month;
-    time.year       = 2000 + gDate.Year;
+    /* Seconds / Minutes */
+    time.seconds = bcd2dec(r[0] & 0x7Fu);
+    time.minutes = bcd2dec(r[1] & 0x7Fu);
+
+    /* Hours: handle 12h or 24h formats robustly */
+    if (r[2] & 0x40u) {
+        /* 12-hour mode: bit5 = AM/PM (1=PM), bits4..0 = 1..12 */
+        uint8_t hr12 = bcd2dec(r[2] & 0x1Fu);
+        uint8_t pm   = (r[2] & 0x20u) ? 1u : 0u;
+        if (hr12 == 12) {
+            time.hour = pm ? 12 : 0;      /* 12AM -> 0, 12PM -> 12 */
+        } else {
+            time.hour = pm ? (hr12 + 12) : hr12;
+        }
+    } else {
+        /* 24-hour mode: bits5..0 are BCD hour */
+        time.hour = bcd2dec(r[2] & 0x3Fu);
+    }
+
+    /* DOW / Date / Month / Year */
+    time.dayofweek  = bcd2dec(r[3] & 0x07u);              /* 1..7 */
+    time.dayofmonth = bcd2dec(r[4] & 0x3Fu);              /* 1..31 */
+    time.month      = bcd2dec(r[5] & 0x1Fu);              /* 1..12 (ignore century) */
+    time.year       = 2000u + bcd2dec(r[6]);              /* 2000..2099 */
+}
+
+/* ---------- debug dump (first 7 registers) ---------- */
+void RTC_DumpRegisters(void)
+{
+    if (!s_rtc_addr) return;
+    uint8_t r[7];
+    if (HAL_I2C_Mem_Read(&hi2c2, s_rtc_addr, 0x00, 1, r, 7, HAL_MAX_DELAY) != HAL_OK) return;
+
+    printf("RTC regs: ");
+    for (int i = 0; i < 7; i++) printf("%02X ", r[i]);
+    printf("\r\n");
 }

@@ -1,3 +1,8 @@
-../Core/Src/rtc_i2c.c:11:6:RTC_InitWithBackup	4
-../Core/Src/rtc_i2c.c:42:6:RTC_SetTimeDate	1
-../Core/Src/rtc_i2c.c:65:6:RTC_GetTimeDate	1
+../Core/Src/rtc_i2c.c:18:16:dec2bcd	1
+../Core/Src/rtc_i2c.c:19:16:bcd2dec	1
+../Core/Src/rtc_i2c.c:22:16:dow_from_ymd	3
+../Core/Src/rtc_i2c.c:33:6:RTC_Init	5
+../Core/Src/rtc_i2c.c:56:6:RTC_SetTimeDate	13
+../Core/Src/rtc_i2c.c:91:6:RTC_SetTimeDate_AutoDOW	1
+../Core/Src/rtc_i2c.c:99:6:RTC_GetTimeDate	7
+../Core/Src/rtc_i2c.c:135:6:RTC_DumpRegisters	4

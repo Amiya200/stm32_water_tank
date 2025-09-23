@@ -206,7 +206,7 @@ void RTC_Alarm_IRQHandler(void)
   /* USER CODE BEGIN RTC_Alarm_IRQn 0 */
 
   /* USER CODE END RTC_Alarm_IRQn 0 */
-  HAL_RTC_AlarmIRQHandler(&hrtc);
+//  HAL_RTC_AlarmIRQHandler(&hrtc);
   /* USER CODE BEGIN RTC_Alarm_IRQn 1 */
 
   /* USER CODE END RTC_Alarm_IRQn 1 */
