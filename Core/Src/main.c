@@ -76,11 +76,14 @@ int main(void)
     /* === RTC Initialization === */
     RTC_Init();                   /* probe + clear CH */
     RTC_GetTimeDate();            /* read once */
-//    RTC_SetTimeDate_AutoDOW(0, 38, 14, 23, 9, 2025);
+//    RTC_SetTimeDate_AutoDOW(0, 31, 11, 25, 9, 2025);
 
     Debug_Print("System Initialized\r\n");
 
     uint8_t lastSecond = 255;
+
+    /* inside while(1) loop in main.c */
+
 
     while (1)
     {
@@ -112,11 +115,12 @@ int main(void)
 
         /* Other tasks */
         ModelHandle_Process();
-        Relay_All(false);
+        // ❌ Relay_All(false);  <-- removed, was overriding relay control
         LED_Task();
 
-        HAL_Delay(50);
+        HAL_Delay(20);  // faster responsiveness (was 50)
     }
+
 }
 
 /* ======= the rest of your MX_* and Error_Handler code unchanged ======= */

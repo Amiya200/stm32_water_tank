@@ -1,5 +1,5 @@
 Core/Src/model_handle.o: ../Core/Src/model_handle.c \
- ../Core/Inc/model_handle.h ../Core/Inc/relay.h \
+ ../Core/Inc/model_handle.h ../Core/Inc/adc.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h \
  ../Core/Inc/stm32f1xx_hal_conf.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_rcc.h \
@@ -29,10 +29,10 @@ Core/Src/model_handle.o: ../Core/Src/model_handle.c \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_rtc_ex.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_spi.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h \
- ../Core/Inc/led.h ../Core/Inc/main.h ../Core/Inc/global.h \
- ../Core/Inc/adc.h
+ ../Core/Inc/relay.h ../Core/Inc/led.h ../Core/Inc/main.h \
+ ../Core/Inc/global.h ../Core/Inc/adc.h
 ../Core/Inc/model_handle.h:
-../Core/Inc/relay.h:
+../Core/Inc/adc.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h:
 ../Core/Inc/stm32f1xx_hal_conf.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_rcc.h:
@@ -62,6 +62,7 @@ Core/Src/model_handle.o: ../Core/Src/model_handle.c \
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_rtc_ex.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_spi.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h:
+../Core/Inc/relay.h:
 ../Core/Inc/led.h:
 ../Core/Inc/main.h:
 ../Core/Inc/global.h:

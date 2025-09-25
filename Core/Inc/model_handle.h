@@ -3,46 +3,60 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "adc.h"
 
-/* === Structures === */
+/* ===== Timer slot ===== */
 typedef struct {
     bool     active;
     uint32_t onTimeSeconds;
     uint32_t offTimeSeconds;
-    bool     executedToday;
 } TimerSlot;
 
+/* ===== Search mode settings ===== */
 typedef struct {
     bool     searchActive;
-    uint32_t testingGapSeconds;
-    uint32_t dryRunTimeSeconds;
+    uint16_t testingGapSeconds;
+    uint16_t dryRunTimeSeconds;
 } SearchSettings;
 
+/* ===== Twist mode settings ===== */
 typedef struct {
     bool     twistActive;
-    uint32_t onDurationSeconds;
-    uint32_t offDurationSeconds;
+    uint16_t onDurationSeconds;
+    uint16_t offDurationSeconds;
 } TwistSettings;
 
-/* === Globals === */
+/* ===== Public State ===== */
 extern volatile uint8_t  motorStatus;
+
+extern volatile bool     countdownActive;
+extern volatile bool     countdownMode;
+extern volatile uint32_t countdownDuration;
+
 extern TimerSlot         timerSlots[5];
 extern SearchSettings    searchSettings;
 extern TwistSettings     twistSettings;
 
-/* === API === */
-void ModelHandle_Process(void);
-void ModelHandle_ProcessUartCommand(const char* cmd);
+extern volatile bool senseDryRun;
+extern volatile bool senseOverLoad;
+extern volatile bool senseOverUnderVolt;
+extern volatile bool senseMaxRunReached;
 
+/* ===== API ===== */
 uint32_t ModelHandle_TimeToSeconds(uint8_t hh, uint8_t mm);
-void ModelHandle_SecondsToTime(uint32_t sec, uint8_t* hh, uint8_t* mm);
+void     ModelHandle_SecondsToTime(uint32_t sec, uint8_t* hh, uint8_t* mm);
 
+void ModelHandle_ProcessUartCommand(const char* cmd);
+void ModelHandle_Process(void);
+
+/* External setters */
 void ModelHandle_SetDryRun(bool on);
 void ModelHandle_SetOverLoad(bool on);
 void ModelHandle_SetOverUnderVolt(bool on);
 void ModelHandle_ClearMaxRunFlag(void);
 
-/* ✅ Added for screen.c */
+/* Motor accessors */
 bool Motor_GetStatus(void);
+void ModelHandle_SetMotor(bool on);   // ✅ Public API for screen.c and others
 
-#endif
+#endif /* MODEL_HANDLE_H */

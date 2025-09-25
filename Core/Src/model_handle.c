@@ -72,6 +72,12 @@ static void motor_apply(bool on)
     }
 }
 
+/* Public API for motor control */
+void ModelHandle_SetMotor(bool on)
+{
+    motor_apply(on);
+}
+
 /* ===== Countdown ===== */
 static void countdown_start(bool onMode, uint32_t seconds)
 {
@@ -176,8 +182,8 @@ static void timer_tick(void)
 /* ===== Protections ===== */
 static void protections_tick(void)
 {
-    /* ✅ Dry run: motor ON but ADC5 shows water missing */
-    if (motorStatus == 1U && adcData.voltages[5] > 0.1f) {
+    /* ✅ Dry run: motor ON but ADC channel 0 shows water missing */
+    if (motorStatus == 1U && adcData.voltages[0] < 0.1f) {
         senseDryRun = true;
         motor_apply(false);
     } else {
@@ -237,7 +243,7 @@ void ModelHandle_ProcessUartCommand(const char* cmd)
     else if (strcmp(cmd, "MOTOR_OFF") == 0) {
         motor_apply(false);
     }
-    /* ... rest of your command parsing unchanged ... */
+    /* ... add other commands as needed ... */
 }
 
 /* ===== External setters ===== */
@@ -257,7 +263,7 @@ void ModelHandle_Process(void)
     leds_from_model();
 }
 
-/* ===== ✅ Added for screen.c ===== */
+/* ===== Public getter ===== */
 bool Motor_GetStatus(void)
 {
     return (motorStatus == 1U);
