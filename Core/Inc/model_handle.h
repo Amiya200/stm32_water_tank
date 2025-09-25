@@ -57,6 +57,10 @@ void ModelHandle_ClearMaxRunFlag(void);
 
 /* Motor accessors */
 bool Motor_GetStatus(void);
-void ModelHandle_SetMotor(bool on);   // ✅ Public API for screen.c and others
+extern volatile bool manualOverride;
+
+void ModelHandle_ClearManualOverride(void);
+void ModelHandle_SetMotor(bool on);
+
 
 #endif /* MODEL_HANDLE_H */

@@ -69,6 +69,7 @@ extern volatile bool  countdownActive;
 extern volatile uint32_t countdownDuration;
 extern volatile bool  countdownMode;
 static bool semiAutoEnabled = false;
+extern void ModelHandle_ClearManualOverride(void);
 
 extern bool Motor_GetStatus(void);
 
@@ -503,24 +504,39 @@ static void menu_select(void){
         case UI_MENU:
             // perform action based on menu_idx
             switch (menu_idx){
-                case 0: ui = UI_MANUAL; break;
-                case 1: ui = UI_SEMI_AUTO; break;
-                case 2: ui = UI_TIMER; break;
-                case 3: ui = UI_SEARCH; break;
-                case 4: ui = UI_COUNTDOWN; break;
-                case 5: ui = UI_TWIST; break;
-                case 6: ui = UI_DASH; break;
-                default: ui = UI_DASH; break;
+                case 0:  // Manual Mode
+                    ui = UI_MANUAL;
+                    break;
+                case 1:  // Semi-Auto
+                    ui = UI_SEMI_AUTO;
+                    break;
+                case 2:  // Timer
+                    ui = UI_TIMER;
+                    break;
+                case 3:  // Search
+                    ui = UI_SEARCH;
+                    break;
+                case 4:  // Countdown
+                    ui = UI_COUNTDOWN;
+                    break;
+                case 5:  // Twist
+                    ui = UI_TWIST;
+                    break;
+                case 6:  // Back
+                    ui = UI_DASH;
+                    break;
+                default:
+                    ui = UI_DASH;
+                    break;
             }
             break;
 
         case UI_MANUAL:
             // Toggle motor on select
-
-            if (Motor_GetStatus()) ModelHandle_SetMotor(false);
-
-            else ModelHandle_SetMotor(true);
-
+            if (Motor_GetStatus())
+                ModelHandle_SetMotor(false);
+            else
+                ModelHandle_SetMotor(true);
             screenNeedsRefresh = true;
             break;
 
@@ -546,19 +562,15 @@ static void menu_select(void){
             ui = UI_TIMER; break;
 
         case UI_SEARCH:
-            // enter edit gap
             ui = UI_SEARCH_EDIT_GAP; break;
-
         case UI_SEARCH_EDIT_GAP:
-            // after editing gap go to dry
-            apply_search_settings(); // partial apply
+            apply_search_settings();
             ui = UI_SEARCH_EDIT_DRY; break;
         case UI_SEARCH_EDIT_DRY:
             apply_search_settings();
             ui = UI_SEARCH; break;
 
         case UI_COUNTDOWN:
-            // if countdown active, SELECT stops it, otherwise go to set/start
             if (countdownActive) {
                 countdownActive = false;
             } else {
@@ -567,23 +579,18 @@ static void menu_select(void){
             break;
         case UI_COUNTDOWN_EDIT_MIN:
             apply_countdown_settings();
-            // start countdown
             countdownActive = true;
             ui = UI_COUNTDOWN;
             break;
 
         case UI_TWIST:
-            // SELECT enters edit ON duration
             ui = UI_TWIST_EDIT_ON; break;
         case UI_TWIST_EDIT_ON:
-            // next selects edit off
             ui = UI_TWIST_EDIT_OFF; break;
         case UI_TWIST_EDIT_OFF:
-            // finished editing twist -> apply
             apply_twist_settings();
             ui = UI_TWIST; break;
 
-        /* Edit screens handled above */
         default:
             ui = UI_DASH;
             break;
@@ -600,15 +607,23 @@ static void menu_reset(void){
         case UI_WELCOME:
             // do nothing
             break;
+
         case UI_DASH:
             // already at dash - go to welcome
             ui = UI_WELCOME;
             break;
+
         case UI_MENU:
             // go back to dash
             ui = UI_DASH;
             break;
+
         case UI_MANUAL:
+            // Leaving manual mode → clear manual override
+            ModelHandle_ClearManualOverride();
+            ui = UI_MENU;
+            break;
+
         case UI_SEMI_AUTO:
         case UI_TIMER:
         case UI_SEARCH:
@@ -617,6 +632,7 @@ static void menu_reset(void){
             // return to menu
             ui = UI_MENU;
             break;
+
         case UI_TIMER_EDIT_ON_H:
         case UI_TIMER_EDIT_ON_M:
         case UI_TIMER_EDIT_OFF_H:
@@ -629,12 +645,15 @@ static void menu_reset(void){
             // cancel edits, go to parent screen (menu for simplicity)
             ui = UI_MENU;
             break;
+
         default:
             ui = UI_DASH;
             break;
     }
+
     screenNeedsRefresh = true;
 }
+
 
 /* Public button handler used by switch polling */
 void Screen_HandleButton(UiButton b){

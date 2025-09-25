@@ -38,6 +38,8 @@ volatile bool senseDryRun         = false;
 volatile bool senseOverLoad       = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
+volatile bool manualOverride = false;
+
 
 static const uint32_t MAX_CONT_RUN_MS = 2UL * 60UL * 60UL * 1000UL; // 2h
 static bool           maxRunTimerArmed = false;
@@ -75,8 +77,16 @@ static void motor_apply(bool on)
 /* Public API for motor control */
 void ModelHandle_SetMotor(bool on)
 {
+    manualOverride = true;   // 🚩 engage override
     motor_apply(on);
 }
+
+
+void ModelHandle_ClearManualOverride(void)
+{
+    manualOverride = false;
+}
+
 
 /* ===== Countdown ===== */
 static void countdown_start(bool onMode, uint32_t seconds)
@@ -182,7 +192,11 @@ static void timer_tick(void)
 /* ===== Protections ===== */
 static void protections_tick(void)
 {
-    /* ✅ Dry run: motor ON but ADC channel 0 shows water missing */
+    if (manualOverride) {
+        // 🚩 skip protections in manual mode
+        return;
+    }
+
     if (motorStatus == 1U && adcData.voltages[0] < 0.1f) {
         senseDryRun = true;
         motor_apply(false);
@@ -204,6 +218,7 @@ static void protections_tick(void)
         maxRunTimerArmed = false;
     }
 }
+
 
 /* ===== LED synthesis ===== */
 static void leds_from_model(void)

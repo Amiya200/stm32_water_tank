@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#include "model_handle.h"
 
 #ifndef THR
 #define THR                       1.0f
@@ -165,10 +166,14 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             s_low_counts[i] = 0;
         }
 
-        if (motorStatus == 1 && s_low_counts[i] >= DRY_COUNT_THRESHOLD) {
-            motorStatus = 0;
-            memset(s_low_counts, 0, sizeof(s_low_counts));
+        if (!manualOverride) {
+            if (motorStatus == 1 && s_low_counts[i] >= DRY_COUNT_THRESHOLD) {
+                motorStatus = 0;
+                memset(s_low_counts, 0, sizeof(s_low_counts));
+            }
         }
+
+
     }
 
     // === NEW: read AC voltage & current with averaging + smoothing ===
