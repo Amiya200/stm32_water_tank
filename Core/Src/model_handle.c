@@ -14,19 +14,30 @@ extern ADC_Data adcData;
 /* ===== Public model state ===== */
 volatile uint8_t  motorStatus = 0;
 
-volatile bool     countdownActive   = false;
+/* Mode trackers */
+volatile bool manualActive    = false;
+volatile bool countdownActive = false;
+volatile bool twistActive     = false;
+volatile bool searchActive    = false;
+volatile bool timerActive     = false;
+volatile bool semiAutoActive  = false;
+
+/* Countdown */
 volatile bool     countdownMode     = true;
 volatile uint32_t countdownDuration = 0;
 static   uint32_t countdownDeadline = 0;
 
+/* Timer */
 TimerSlot timerSlots[5] = {0};
 
+/* Search */
 SearchSettings searchSettings = {
     .searchActive        = false,
-    .testingGapSeconds   = 30,
-    .dryRunTimeSeconds   = 10,
+    .testingGapSeconds   = 60,
+    .dryRunTimeSeconds   = 20,
 };
 
+/* Twist */
 TwistSettings twistSettings = {
     .twistActive         = false,
     .onDurationSeconds   = 20,
@@ -38,10 +49,10 @@ volatile bool senseDryRun         = false;
 volatile bool senseOverLoad       = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
-volatile bool manualOverride = false;
+volatile bool manualOverride      = false;
 
-
-static const uint32_t MAX_CONT_RUN_MS = 2UL * 60UL * 60UL * 1000UL; // 2h
+/* Max runtime protection (2h default) */
+static const uint32_t MAX_CONT_RUN_MS = 2UL * 60UL * 60UL * 1000UL;
 static bool           maxRunTimerArmed = false;
 static uint32_t       maxRunStartTick  = 0;
 
@@ -58,8 +69,8 @@ void ModelHandle_SecondsToTime(uint32_t sec, uint8_t* hh, uint8_t* mm) {
     if (mm) *mm = (uint8_t)((sec % 3600UL) / 60UL);
 }
 
-/* ===== Motor ===== */
-static void motor_apply(bool on)
+/* ===== Motor Control ===== */
+static inline void motor_apply(bool on)
 {
     Relay_Set(1, on);
     motorStatus = on ? 1U : 0U;
@@ -74,31 +85,53 @@ static void motor_apply(bool on)
     }
 }
 
-/* Public API for motor control */
-void ModelHandle_SetMotor(bool on)
+static inline void start_motor(void) { motor_apply(true); }
+static inline void stop_motor(void)  { motor_apply(false); }
+
+/* ===== Manual Mode ===== */
+/* Toggle manual ON/OFF (button short press) */
+void ModelHandle_ToggleManual(void)
 {
-    manualOverride = true;   // 🚩 engage override
-    motor_apply(on);
+    manualOverride = true;   // manual bypass enabled
+    manualActive   = !manualActive;
+
+    if (manualActive) {
+        start_motor();
+        printf("Manual ON\r\n");
+    } else {
+        stop_motor();
+        printf("Manual OFF\r\n");
+    }
 }
 
-
-void ModelHandle_ClearManualOverride(void)
+/* Manual long press = restart device */
+void ModelHandle_ManualLongPress(void)
 {
     manualOverride = false;
+    manualActive   = false;
+
+    printf("Manual Long Press → Restarting into last mode...\r\n");
+    HAL_Delay(100);
+    NVIC_SystemReset();   // hardware reset, system boots into last saved mode
 }
 
-
 /* ===== Countdown ===== */
-static void countdown_start(bool onMode, uint32_t seconds)
+static void countdown_start(uint32_t seconds)
 {
     if (seconds == 0) { countdownActive = false; return; }
-    countdownMode     = onMode;
+
+    countdownMode     = true;
     countdownDuration = seconds;
     countdownActive   = true;
-    countdownDeadline = now_ms() + (seconds * 1000UL);
 
-    if (onMode) motor_apply(true);
-    else        motor_apply(false);
+    manualActive   = false;
+    twistActive    = false;
+    searchActive   = false;
+    timerActive    = false;
+    semiAutoActive = false;
+
+    countdownDeadline = now_ms() + (seconds * 1000UL);
+    start_motor();
 }
 
 static void countdown_tick(void)
@@ -107,8 +140,7 @@ static void countdown_tick(void)
 
     uint32_t tnow = now_ms();
     if ((int32_t)(countdownDeadline - tnow) <= 0) {
-        if (countdownMode) motor_apply(false);
-        else               motor_apply(true);
+        stop_motor();
         countdownActive   = false;
         countdownDuration = 0;
         return;
@@ -116,6 +148,11 @@ static void countdown_tick(void)
 
     uint32_t remaining_ms = countdownDeadline - tnow;
     countdownDuration = (remaining_ms + 999) / 1000;
+
+    if (adcData.voltages[4] < 0.1f) {
+        stop_motor();
+        countdownActive = false;
+    }
 }
 
 /* ===== Twist ===== */
@@ -124,18 +161,25 @@ static uint32_t twist_phase_deadline = 0;
 
 static void twist_tick(void)
 {
-    if (!twistSettings.twistActive) return;
+    if (!twistSettings.twistActive) { twistActive = false; return; }
+    twistActive = true;
 
     uint32_t tnow = now_ms();
     if ((int32_t)(twist_phase_deadline - tnow) > 0) return;
 
     twist_on_phase = !twist_on_phase;
     if (twist_on_phase) {
-        motor_apply(true);
+        start_motor();
         twist_phase_deadline = tnow + (twistSettings.onDurationSeconds * 1000UL);
     } else {
-        motor_apply(false);
+        stop_motor();
         twist_phase_deadline = tnow + (twistSettings.offDurationSeconds * 1000UL);
+    }
+
+    if (adcData.voltages[4] < 0.1f) {
+        stop_motor();
+        twistSettings.twistActive = false;
+        twistActive = false;
     }
 }
 
@@ -145,23 +189,35 @@ static uint32_t search_phase_deadline = 0;
 
 static void search_tick(void)
 {
-    if (!searchSettings.searchActive) return;
+    if (!searchSettings.searchActive) { searchActive = false; return; }
+    searchActive = true;
 
     uint32_t tnow = now_ms();
     if ((int32_t)(search_phase_deadline - tnow) > 0) return;
 
     if (!search_in_test) {
         search_in_test = true;
-        motor_apply(true);
+        start_motor();
         search_phase_deadline = tnow + (searchSettings.dryRunTimeSeconds * 1000UL);
     } else {
-        motor_apply(false);
-        search_in_test = false;
-        search_phase_deadline = tnow + (searchSettings.testingGapSeconds * 1000UL);
+        if (adcData.voltages[0] < 0.1f) {
+            stop_motor();
+            search_in_test = false;
+            search_phase_deadline = tnow + (searchSettings.testingGapSeconds * 1000UL);
+        } else {
+            if (adcData.voltages[4] < 0.1f) {
+                stop_motor();
+                searchSettings.searchActive = false;
+                searchActive = false;
+            } else {
+                start_motor();
+                search_phase_deadline = tnow + 5000;
+            }
+        }
     }
 }
 
-/* ===== Timer (daily window) ===== */
+/* ===== Timer ===== */
 static uint32_t seconds_since_midnight(void)
 {
     uint32_t ms = now_ms() % (24UL*3600UL*1000UL);
@@ -170,6 +226,7 @@ static uint32_t seconds_since_midnight(void)
 
 static void timer_tick(void)
 {
+    timerActive = false;
     uint32_t nowS = seconds_since_midnight();
 
     for (int i = 0; i < 5; i++) {
@@ -184,7 +241,16 @@ static void timer_tick(void)
         }
 
         if (i == 0) {
-            motor_apply(inWindow);
+            if (inWindow) {
+                timerActive = true;
+                if (adcData.voltages[0] < 0.1f) {
+                    stop_motor();
+                } else {
+                    start_motor();
+                }
+            } else {
+                stop_motor();
+            }
         }
     }
 }
@@ -192,33 +258,29 @@ static void timer_tick(void)
 /* ===== Protections ===== */
 static void protections_tick(void)
 {
-    if (manualOverride) {
-        // 🚩 skip protections in manual mode
-        return;
-    }
+    if (manualOverride) return; // skip for manual
 
     if (motorStatus == 1U && adcData.voltages[0] < 0.1f) {
         senseDryRun = true;
-        motor_apply(false);
+        stop_motor();
     } else {
         senseDryRun = false;
     }
 
     if (senseOverLoad && motorStatus == 1U) {
-        motor_apply(false);
+        stop_motor();
     }
 
     if (senseOverUnderVolt) {
-        motor_apply(false);
+        stop_motor();
     }
 
     if (maxRunTimerArmed && (now_ms() - maxRunStartTick) >= MAX_CONT_RUN_MS) {
-        motor_apply(false);
+        stop_motor();
         senseMaxRunReached = true;
         maxRunTimerArmed = false;
     }
 }
-
 
 /* ===== LED synthesis ===== */
 static void leds_from_model(void)
@@ -228,7 +290,7 @@ static void leds_from_model(void)
     if (motorStatus == 1U) {
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 0);
     }
-    if (countdownActive && countdownMode) {
+    if (countdownActive) {
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 500);
     }
     if (senseDryRun) {
@@ -253,19 +315,81 @@ void ModelHandle_ProcessUartCommand(const char* cmd)
     if (!cmd || !*cmd) return;
 
     if (strcmp(cmd, "MOTOR_ON") == 0) {
-        motor_apply(true);
+        manualOverride = true;
+        manualActive   = true;
+        start_motor();
+        printf("Manual ON (UART)\r\n");
     }
     else if (strcmp(cmd, "MOTOR_OFF") == 0) {
-        motor_apply(false);
+        manualOverride = true;
+        manualActive   = false;
+        stop_motor();
+        printf("Manual OFF (UART)\r\n");
     }
-    /* ... add other commands as needed ... */
+    else if (strcmp(cmd, "SEMI_AUTO_START") == 0) {
+        ModelHandle_StartSemiAuto();
+    }
 }
 
-/* ===== External setters ===== */
-void ModelHandle_SetDryRun(bool on)        { senseDryRun = on; }
-void ModelHandle_SetOverLoad(bool on)      { senseOverLoad = on; }
-void ModelHandle_SetOverUnderVolt(bool on) { senseOverUnderVolt = on; }
-void ModelHandle_ClearMaxRunFlag(void)     { senseMaxRunReached = false; }
+
+/* Public API for motor control */
+void ModelHandle_SetMotor(bool on)
+{
+    manualOverride = true;   // force manual override
+    Relay_Set(1, on);
+    motorStatus = on ? 1U : 0U;
+}
+
+void ModelHandle_ClearManualOverride(void)
+{
+    manualOverride = false;
+}
+
+/* === Semi-Auto === */
+
+static bool isTankFull(void)
+{
+    int submergedCount = 0;
+    for (int i = 0; i < 5; i++) {
+        if (adcData.voltages[i] < 0.1f) submergedCount++;
+    }
+    return (submergedCount >= 4); // consider FULL when 4 or more sensors submerged
+}
+
+void ModelHandle_StartSemiAuto(void)
+{
+    semiAutoActive = true;
+    manualOverride = false;
+    manualActive   = false;
+
+    // If not full, start motor
+    if (!isTankFull()) {
+        start_motor();
+        printf("Semi-Auto Started\r\n");
+    } else {
+        stop_motor();
+        semiAutoActive = false;
+        printf("Semi-Auto Not Started: Already Full\r\n");
+    }
+}
+
+
+static void semi_auto_tick(void)
+{
+    if (!semiAutoActive) return;
+
+    if (isTankFull()) {
+        stop_motor();
+        semiAutoActive   = false;
+        maxRunTimerArmed = false;
+        printf("Semi-Auto Complete: Tank Full\r\n");
+    } else {
+        // keep motor running until full
+        if (!Motor_GetStatus()) {
+            start_motor();
+        }
+    }
+}
 
 /* ===== Main tick ===== */
 void ModelHandle_Process(void)
@@ -274,9 +398,11 @@ void ModelHandle_Process(void)
     twist_tick();
     search_tick();
     timer_tick();
+    semi_auto_tick();   // <-- now fixed
     protections_tick();
     leds_from_model();
 }
+
 
 /* ===== Public getter ===== */
 bool Motor_GetStatus(void)
