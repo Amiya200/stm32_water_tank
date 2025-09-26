@@ -109,6 +109,8 @@ void ADC_Init(ADC_HandleTypeDef* hadc)
 void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
 {
     bool changed = false;
+    char loraPacket[32];   // buffer for LoRa payload
+    loraPacket[0] = '\0';
 
     // === Process water sensor channels ===
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
@@ -121,27 +123,24 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             s_filtered[i] = EMA_ALPHA * v + (1 - EMA_ALPHA) * s_filtered[i];
 
         v = s_filtered[i];
-
         if (v < GROUND_THRESHOLD)
             v = 0.0f;
 
-        data->voltages[i] = v;
-        data->rawValues[i] = (uint16_t)((v * ADC_RES) / VREF);
+        data->voltages[i]   = v;
+        data->rawValues[i]  = (uint16_t)((v * ADC_RES) / VREF);
         data->maxReached[i] = (v >= 3.2f);
+        g_adcVoltages[i]    = v;
 
-        g_adcVoltages[i] = v;
-
+        // Detect meaningful change
         if (fabsf(v - s_prev_volt[i]) > PRINT_DELTA) {
             changed = true;
             s_prev_volt[i] = v;
         }
 
-        /* --- threshold and debounce logic --- */
-        if (!s_level_flags[i] && v >= THR)
-        {
+        // Normal threshold logic (sets motorStatus, etc.)
+        if (!s_level_flags[i] && v >= THR) {
             s_level_flags[i] = 1;
-            switch (i)
-            {
+            switch (i) {
                 case 0: snprintf(dataPacketTx, sizeof(dataPacketTx), "@10W#"); break;
                 case 1: snprintf(dataPacketTx, sizeof(dataPacketTx), "@30W#"); break;
                 case 2: snprintf(dataPacketTx, sizeof(dataPacketTx), "@70W#"); break;
@@ -149,17 +148,20 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
                 case 4: snprintf(dataPacketTx, sizeof(dataPacketTx), "@DRY#"); break;
                 default: dataPacketTx[0] = '\0'; break;
             }
-            if (dataPacketTx[0])
-                UART_TransmitString(&huart1, dataPacketTx);
-
             motorStatus = 1;
             s_low_counts[i] = 0;
+
+            // append to LoRa packet buffer
+            if (dataPacketTx[0]) {
+                strncat(loraPacket, dataPacketTx, sizeof(loraPacket)-strlen(loraPacket)-1);
+                strncat(loraPacket, ";", sizeof(loraPacket)-strlen(loraPacket)-1);
+            }
         }
-        else if (s_level_flags[i] && v < (THR - HYST_DELTA))
-        {
+        else if (s_level_flags[i] && v < (THR - HYST_DELTA)) {
             s_level_flags[i] = 0;
         }
 
+        // dry run debounce
         if (v < DRY_VOLTAGE_THRESHOLD) {
             if (s_low_counts[i] < 0xFF) s_low_counts[i]++;
         } else {
@@ -172,36 +174,11 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
                 memset(s_low_counts, 0, sizeof(s_low_counts));
             }
         }
-
-
     }
 
-    // === NEW: read AC voltage & current with averaging + smoothing ===
-    g_acVoltage_raw = readChannelAveraged(hadc, ADC_CHANNEL_AC_VOLTAGE, AC_AVG_SAMPLES) * VOLTAGE_DIV_RATIO;
-    g_acCurrent_raw = (readChannelAveraged(hadc, ADC_CHANNEL_AC_CURRENT, AC_AVG_SAMPLES) - ACS712_ZERO_OFFSET) / ACS712_SENSITIVITY;
-
-    // Apply EMA smoothing
-    g_acVoltage_avg = (AC_EMA_ALPHA * g_acVoltage_raw) + ((1.0f - AC_EMA_ALPHA) * g_acVoltage_avg);
-    g_acCurrent_avg = (AC_EMA_ALPHA * g_acCurrent_raw) + ((1.0f - AC_EMA_ALPHA) * g_acCurrent_avg);
-
-    // === Overload detection ===
-    g_overload = false;
-    if (fabsf(g_acCurrent_avg) > AC_OVERLOAD_CURRENT || g_acVoltage_avg > AC_OVERVOLTAGE) {
-        g_overload = true;
-        LED_SetIntent(LED_COLOR_RED, LED_MODE_STEADY, 0);  // 🔴 show overload
-    } else {
-        LED_SetIntent(LED_COLOR_RED, LED_MODE_OFF, 0);
-    }
-
-    // === Debug print (only if water level changed) ===
-    if (changed) {
-        char dbg[128];
-//        snprintf(dbg, sizeof(dbg),
-//                 "[AC] V=%.1fV I=%.2fA (raw V=%.1f I=%.2f) %s\r\n",
-//                 g_acVoltage_avg, g_acCurrent_avg,
-//                 g_acVoltage_raw, g_acCurrent_raw,
-//                 g_overload ? "OVERLOAD" : "OK");
-        UART_TransmitString(&huart1, dbg);
+    // === Send LoRa packet only if ADC changed ===
+    if (changed && loraPacket[0] != '\0') {
+        LoRa_SendPacket((uint8_t*)loraPacket, strlen(loraPacket));
     }
 }
 

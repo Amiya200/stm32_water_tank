@@ -2,33 +2,30 @@
 #include "stm32f1xx_hal.h"
 #include <string.h>
 #include <stdio.h>
+#include "model_handle.h"   // for motor control
+#include "global.h"
 
 extern SPI_HandleTypeDef hspi1;
 
-// LoRa Modes
+/* ---------------- LoRa Modes ---------------- */
 #define LORA_MODE_TRANSMITTER 1
 #define LORA_MODE_RECEIVER    2
-#define LORA_MODE_TRANCEIVER  3 // Both Transmitter and Receiver
+#define LORA_MODE_TRANCEIVER  3 // Both
 
-// NSS Pin Control
+/* ---------------- NSS Pin Control ---------------- */
 #define NSS_LOW()   HAL_GPIO_WritePin(LORA_NSS_PORT, LORA_NSS_PIN, GPIO_PIN_RESET)
 #define NSS_HIGH()  HAL_GPIO_WritePin(LORA_NSS_PORT, LORA_NSS_PIN, GPIO_PIN_SET)
 
-// Constants
-#define LORA_FREQUENCY 433000000UL // Frequency in Hz
-#define LORA_TIMEOUT   2000        // Timeout for TxDone in milliseconds
-#define LORA_PING_MSG  "PING"
-#define LORA_ACK_MSG   "ACK"
-#define LORA_HELLO_MSG "HELLO"
-#define LORA_BUFFER_SIZE 64        // Debug buffer size
+/* ---------------- Constants ---------------- */
+#define LORA_FREQUENCY   433000000UL // Frequency in Hz
+#define LORA_TIMEOUT     2000        // Timeout for TxDone in ms
+#define LORA_BUFFER_SIZE 64
 
-// Globals
-static uint8_t z = 0;
-uint8_t connectionStatus = 0; // 0 = lost, 1 = OK
+/* ---------------- Globals ---------------- */
 uint8_t loraMode = LORA_MODE_TRANSMITTER;
 
-uint8_t rxBuffer[64]; // LoRa RX
-uint8_t txBuffer[64]; // LoRa TX
+uint8_t rxBuffer[64]; // RX
+uint8_t txBuffer[64]; // TX
 
 /* ---------------- Low-level SPI helpers ---------------- */
 void LoRa_WriteReg(uint8_t addr, uint8_t data) {
@@ -117,6 +114,9 @@ void LoRa_Init(void) {
 
     // Clear IRQs
     LoRa_WriteReg(0x12, 0xFF);
+
+    // Start RX by default
+    LoRa_SetRxContinuous();
 }
 
 /* ---------------- Mode control ---------------- */
@@ -126,6 +126,8 @@ void LoRa_SetTx(void) { LoRa_WriteReg(0x01, 0x83); }
 
 /* ---------------- Send packet ---------------- */
 void LoRa_SendPacket(const uint8_t *buffer, uint8_t size) {
+    if (loraMode == LORA_MODE_RECEIVER) return; // RX-only → don't send
+
     LoRa_SetStandby();
 
     // FIFO reset
@@ -167,82 +169,30 @@ uint8_t LoRa_ReceivePacket(uint8_t *buffer) {
         uint8_t addr = LoRa_ReadReg(0x10);
         LoRa_WriteReg(0x0D, addr);
         LoRa_ReadBuffer(0x00, buffer, len);
+        buffer[len] = '\0'; // null-terminate
         LoRa_WriteReg(0x12, 0xFF);
         return len;
     }
     return 0;
 }
 
-/* ---------------- LoRa Task (non-blocking) ---------------- */
+/* ---------------- Interpret received packet ---------------- */
+static void LoRa_HandleReceived(const char *msg) {
+    if (strstr(msg, "@ON#")) {
+        ModelHandle_SetMotor(true);   // turn ON motor
+    } else if (strstr(msg, "@DRY#")) {
+        ModelHandle_SetMotor(false);  // turn OFF motor (dry run detected)
+    }
+}
+
+/* ---------------- LoRa Task ---------------- */
 void LoRa_Task(void) {
-    static uint32_t lastPing = 0;
-    char dbg[LORA_BUFFER_SIZE];
-
-    // Verify chip
-    uint8_t version = LoRa_ReadReg(0x42);
-    if (version != 0x12) {
-        snprintf(dbg, sizeof(dbg), "LoRa not found! RegVersion=0x%02X\r\n", version);
-        Debug_Print(dbg);
-        return;
+    // Always check receive side
+    uint8_t len = LoRa_ReceivePacket(rxBuffer);
+    if (len > 0) {
+        LoRa_HandleReceived((char*)rxBuffer);
     }
 
-    switch (loraMode) {
-    case LORA_MODE_TRANSMITTER:
-        if (HAL_GetTick() - lastPing > 1000) { // every 1s
-            uint8_t msg[] = "HELLO_TX";
-            LoRa_SendPacket(msg, sizeof(msg) - 1);
-            Debug_Print("TX: HELLO_TX\r\n");
-            lastPing = HAL_GetTick();
-        }
-        break;
-
-    case LORA_MODE_RECEIVER: {
-        uint8_t len = LoRa_ReceivePacket(rxBuffer);
-        if (len > 0) {
-            rxBuffer[len] = '\0';
-            snprintf(dbg, sizeof(dbg), "RX: %s\r\n", rxBuffer);
-            Debug_Print(dbg);
-
-            z=123;
-            if (strcmp((char*)rxBuffer, LORA_PING_MSG) == 0) {
-                uint8_t ack[] = LORA_ACK_MSG;
-                LoRa_SendPacket(ack, sizeof(ack) - 1);
-                Debug_Print("Sent ACK\r\n");
-                connectionStatus = 1;
-            } else if (strcmp((char*)rxBuffer, LORA_HELLO_MSG) == 0) {
-                Debug_Print("HELLO received, Connection OK\r\n");
-                connectionStatus = 1;
-            }
-        }
-        break;
-    }
-
-    case LORA_MODE_TRANCEIVER: {
-        uint8_t len = LoRa_ReceivePacket(rxBuffer);
-        if (len > 0) {
-            rxBuffer[len] = '\0';
-            snprintf(dbg, sizeof(dbg), "RX: %s\r\n", rxBuffer);
-            Debug_Print(dbg);
-
-            if (strcmp((char*)rxBuffer, LORA_PING_MSG) == 0) {
-                uint8_t ack[] = LORA_ACK_MSG;
-                LoRa_SendPacket(ack, sizeof(ack) - 1);
-                Debug_Print("Sent ACK\r\n");
-            }
-        }
-
-        // Send PING every 500ms
-        if (HAL_GetTick() - lastPing > 500) {
-            uint8_t msg[] = LORA_PING_MSG;
-            LoRa_SendPacket(msg, sizeof(msg) - 1);
-            Debug_Print("Sent PING\r\n");
-            lastPing = HAL_GetTick();
-        }
-        break;
-    }
-
-    default:
-        Debug_Print("Invalid LoRa mode!\r\n");
-        break;
-    }
+    // Transmitter has no auto-send anymore.
+    // Actual data is sent by ADC_ReadAllChannels() calling LoRa_SendPacket().
 }
