@@ -139,7 +139,7 @@ int main(void)
   /* === RTC Initialization === */
   RTC_Init();                   /* probe + clear CH */
   RTC_GetTimeDate();            /* read once */
-//    RTC_SetTimeDate_AutoDOW(0, 31, 11, 25, 9, 2025);
+//    RTC_SetTimeDate_AutoDOW(0, 14, 13, 29, 9, 2025);
 
   Debug_Print("System Initialized\r\n");
 
