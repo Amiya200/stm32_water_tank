@@ -1,3 +1,5 @@
+//error in the sir function decleration
+
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
@@ -174,11 +176,12 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_ADC1_Init();
-  MX_RTC_Init();
+//  MX_RTC_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_I2C2_Init();
   MX_TIM3_Init();
+  UART_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_Base_Start(&htim3);
@@ -193,37 +196,15 @@ int main(void)
   LED_Init();
 
 
-//  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcBuffer, ADC_BUFFER_SIZE);
-
+  ACS712_Init(&hadc1);
   /* === RTC Initialization === */
-//  RTC_Init();                   /* probe + clear CH */
-//  RTC_GetTimeDate();            /* read once */
+  RTC_Init();                   /* probe + clear CH */
+  RTC_GetTimeDate();            /* read once */
 //    RTC_SetTimeDate_AutoDOW(0, 14, 13, 29, 9, 2025);
 
-//  Debug_Print("System Initialized\r\n");
+  Debug_Print("System Initialized\r\n");
 
   uint8_t lastSecond = 255;
-
-  // Initialize LCD
-
-  ACS712_Init(&hadc1);
-  lcd_init();
-  lcd_clear();
-  lcd_put_cur(0,0);
-  lcd_send_string("AC Monitor Init");
-
-  HAL_Delay(1000);
-  lcd_clear();
-
-  char line1[17]; // 16 chars + null
-  char line2[17];
-
-//  float acCurrent, acVoltage;
-//  HAL_ADC_Start(&hadc1);
-
-	  HAL_GPIO_WritePin(Relay1_GPIO_Port, Relay1_Pin, 1);
-//	  HAL_GPIO_WritePin(Relay2_GPIO_Port, Relay2_Pin, 0);
-//	  HAL_GPIO_WritePin(Relay3_GPIO_Port, Relay3_Pin, 0);
 
   /* inside while(1) loop in main.c */
 
@@ -234,85 +215,40 @@ int main(void)
   while (1)
   {
 
+	  ACS712_Update();
+	  RF_SendCode(1766904, 24);
+      /* App tasks */
+      Screen_HandleSwitches();
+      Screen_Update();
+      ADC_ReadAllChannels(&hadc1, &adcData);
 
-	  // --- Update ACS712 readings (both current & voltage) ---
-	  ACS712_Update();    // updates g_currentA and g_voltageV automatically
+      /* === Update time once per second === */
+      RTC_GetTimeDate();
+      if (time.seconds != lastSecond) {
+          lastSecond = time.seconds;
 
-	  // --- Prepare display strings ---
-	  snprintf(line1, sizeof(line1), "I:%5.2f A", g_currentA);  // e.g., "I: 12.45 A"
-	  snprintf(line2, sizeof(line2), "V:%5.1f V", g_voltageV);  // e.g., "V: 11.9 V"
+          snprintf(dbg, sizeof(dbg),
+                   "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d (DOW=%d)\r\n",
+                   time.hour, time.minutes, time.seconds,
+                   time.dayofmonth, time.month, time.year,
+                   time.dayofweek);
+          Debug_Print(dbg);
+      }
 
-	  // --- Clear and Display on LCD ---
-	  lcd_put_cur(0, 0);
-	  lcd_send_string("                ");  // clear line 1
-	  lcd_put_cur(0, 0);
-	  lcd_send_string(line1);
+      /* UART command handling */
+      if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
+          char *p = receivedUartPacket;
+          size_t n = strlen(receivedUartPacket);
+          if (n >= 2 && p[0] == '@' && p[n-1] == '#') { p[n-1] = '\0'; p++; }
+          ModelHandle_ProcessUartCommand(p);
+      }
 
-	  lcd_put_cur(1, 0);
-	  lcd_send_string("                ");  // clear line 2
-	  lcd_put_cur(1, 0);
-	  lcd_send_string(line2);
+      /* Other tasks */
+      ModelHandle_Process();
+      // ❌ Relay_All(false);  <-- removed, was overriding relay control
+      LED_Task();
 
-	  // --- Update interval ---
-	  HAL_Delay(300);  // update every 0.3 seconds
-
-
-
-
-
-
-
-//	  acCurrent = ACS712_ReadACCurrent();
-////	  acVoltage = ACS712_ReadACVoltage();
-//
-////	  acCurrent = 10.2f;
-//	  acVoltage = 11.8f;
-//
-//	  snprintf(line1, sizeof(line1), "I: %.2f A  ", acCurrent);
-//	  snprintf(line2, sizeof(line2), "V: %.1f V  ", acVoltage);
-//
-//	  lcd_put_cur(0,0);
-//	  lcd_send_string(line1);
-//	  lcd_put_cur(1,0);
-//	  lcd_send_string(line2);
-//	  HAL_Delay(1000);
-
-
-
-//
-//	  RF_SendCode(1766904, 24);
-//      /* App tasks */
-//      Screen_HandleSwitches();
-//      Screen_Update();
-//      ADC_ReadAllChannels(&hadc1, &adcData);
-//
-//      /* === Update time once per second === */
-//      RTC_GetTimeDate();
-//      if (time.seconds != lastSecond) {
-//          lastSecond = time.seconds;
-//
-//          snprintf(dbg, sizeof(dbg),
-//                   "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d (DOW=%d)\r\n",
-//                   time.hour, time.minutes, time.seconds,
-//                   time.dayofmonth, time.month, time.year,
-//                   time.dayofweek);
-//          Debug_Print(dbg);
-//      }
-//
-//      /* UART command handling */
-//      if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-//          char *p = receivedUartPacket;
-//          size_t n = strlen(receivedUartPacket);
-//          if (n >= 2 && p[0] == '@' && p[n-1] == '#') { p[n-1] = '\0'; p++; }
-//          ModelHandle_ProcessUartCommand(p);
-//      }
-//
-//      /* Other tasks */
-//      ModelHandle_Process();
-//      // ❌ Relay_All(false);  <-- removed, was overriding relay control
-//      LED_Task();
-//
-//      HAL_Delay(20);  // faster responsiveness (was 50)
+      HAL_Delay(20);  // faster responsiveness (was 50)
 
     /* USER CODE END WHILE */
 
@@ -320,6 +256,7 @@ int main(void)
   }
   /* USER CODE END 3 */
 }
+
 
 /**
   * @brief System Clock Configuration
