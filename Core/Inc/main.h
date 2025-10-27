@@ -57,10 +57,6 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define AC_voltage_Pin GPIO_PIN_6
-#define AC_voltage_GPIO_Port GPIOA
-#define AC_current_Pin GPIO_PIN_7
-#define AC_current_GPIO_Port GPIOA
 #define Relay1_Pin GPIO_PIN_0
 #define Relay1_GPIO_Port GPIOB
 #define Relay2_Pin GPIO_PIN_1

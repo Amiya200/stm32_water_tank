@@ -29,6 +29,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "rf.h"
+
+#include "stdio.h"
+
+#include "acs712.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,7 +42,15 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define ADC_CHANNEL_COUNT 7
+uint16_t adcBuffer[ADC_CHANNEL_COUNT];
+#define ADC_BUFFER_SIZE ADC_CHANNEL_COUNT
+float g_adcAvg[ADC_CHANNEL_COUNT] = {0};
+float g_vADC_ACS = 0.0f;
 
+
+extern float g_currentA;
+extern float g_voltageV;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -84,6 +96,51 @@ void Debug_Print(char *msg) {
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void DisplayDummyData(void)
+{
+
+	  char line1[17];
+	  char line2[17];
+	  float acCurrent = 2;  // dummy
+	  float acVoltage = 26; // dummy
+
+	  // Format strings with fixed width to overwrite old values
+	  snprintf(line1, sizeof(line1), "I:%6.2f A", acCurrent);
+	  snprintf(line2, sizeof(line2), "V:%6.1f V", acVoltage);
+
+	  // Display without clearing
+	  lcd_put_cur(0, 0);
+	  lcd_send_string(line1);
+
+	  lcd_put_cur(1, 0);
+	  lcd_send_string(line2);
+}
+
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if (hadc->Instance == ADC1)
+    {
+        for (int i = 0; i < ADC_CHANNEL_COUNT; i++)
+        {
+            float v = (adcBuffer[i] * ACS712_VREF_ADC) / ACS712_ADC_RESOLUTION;
+            g_adcAvg[i] = 0.9f * g_adcAvg[i] + 0.1f * v;
+        }
+
+        // CH7 is last (index 6 if ranks = 0–5 + 7)
+        g_vADC_ACS = g_adcAvg[6];
+    }
+}
+
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if (hadc->Instance == ADC1)
+    {
+        // Optional: handle mid-buffer events (for faster updates)
+    }
+}
+
 
 /* USER CODE END 0 */
 
@@ -117,12 +174,11 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_ADC1_Init();
-//  MX_RTC_Init();
+  MX_RTC_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_I2C2_Init();
   MX_TIM3_Init();
-  UART_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_Base_Start(&htim3);
@@ -136,14 +192,38 @@ int main(void)
   Relay_Init();
   LED_Init();
 
+
+//  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adcBuffer, ADC_BUFFER_SIZE);
+
   /* === RTC Initialization === */
-  RTC_Init();                   /* probe + clear CH */
-  RTC_GetTimeDate();            /* read once */
+//  RTC_Init();                   /* probe + clear CH */
+//  RTC_GetTimeDate();            /* read once */
 //    RTC_SetTimeDate_AutoDOW(0, 14, 13, 29, 9, 2025);
 
-  Debug_Print("System Initialized\r\n");
+//  Debug_Print("System Initialized\r\n");
 
   uint8_t lastSecond = 255;
+
+  // Initialize LCD
+
+  ACS712_Init(&hadc1);
+  lcd_init();
+  lcd_clear();
+  lcd_put_cur(0,0);
+  lcd_send_string("AC Monitor Init");
+
+  HAL_Delay(1000);
+  lcd_clear();
+
+  char line1[17]; // 16 chars + null
+  char line2[17];
+
+//  float acCurrent, acVoltage;
+//  HAL_ADC_Start(&hadc1);
+
+	  HAL_GPIO_WritePin(Relay1_GPIO_Port, Relay1_Pin, 1);
+//	  HAL_GPIO_WritePin(Relay2_GPIO_Port, Relay2_Pin, 0);
+//	  HAL_GPIO_WritePin(Relay3_GPIO_Port, Relay3_Pin, 0);
 
   /* inside while(1) loop in main.c */
 
@@ -154,39 +234,85 @@ int main(void)
   while (1)
   {
 
-	  RF_SendCode(1766904, 24);
-      /* App tasks */
-      Screen_HandleSwitches();
-      Screen_Update();
-      ADC_ReadAllChannels(&hadc1, &adcData);
 
-      /* === Update time once per second === */
-      RTC_GetTimeDate();
-      if (time.seconds != lastSecond) {
-          lastSecond = time.seconds;
+	  // --- Update ACS712 readings (both current & voltage) ---
+	  ACS712_Update();    // updates g_currentA and g_voltageV automatically
 
-          snprintf(dbg, sizeof(dbg),
-                   "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d (DOW=%d)\r\n",
-                   time.hour, time.minutes, time.seconds,
-                   time.dayofmonth, time.month, time.year,
-                   time.dayofweek);
-          Debug_Print(dbg);
-      }
+	  // --- Prepare display strings ---
+	  snprintf(line1, sizeof(line1), "I:%5.2f A", g_currentA);  // e.g., "I: 12.45 A"
+	  snprintf(line2, sizeof(line2), "V:%5.1f V", g_voltageV);  // e.g., "V: 11.9 V"
 
-      /* UART command handling */
-      if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-          char *p = receivedUartPacket;
-          size_t n = strlen(receivedUartPacket);
-          if (n >= 2 && p[0] == '@' && p[n-1] == '#') { p[n-1] = '\0'; p++; }
-          ModelHandle_ProcessUartCommand(p);
-      }
+	  // --- Clear and Display on LCD ---
+	  lcd_put_cur(0, 0);
+	  lcd_send_string("                ");  // clear line 1
+	  lcd_put_cur(0, 0);
+	  lcd_send_string(line1);
 
-      /* Other tasks */
-      ModelHandle_Process();
-      // ❌ Relay_All(false);  <-- removed, was overriding relay control
-      LED_Task();
+	  lcd_put_cur(1, 0);
+	  lcd_send_string("                ");  // clear line 2
+	  lcd_put_cur(1, 0);
+	  lcd_send_string(line2);
 
-      HAL_Delay(20);  // faster responsiveness (was 50)
+	  // --- Update interval ---
+	  HAL_Delay(300);  // update every 0.3 seconds
+
+
+
+
+
+
+
+//	  acCurrent = ACS712_ReadACCurrent();
+////	  acVoltage = ACS712_ReadACVoltage();
+//
+////	  acCurrent = 10.2f;
+//	  acVoltage = 11.8f;
+//
+//	  snprintf(line1, sizeof(line1), "I: %.2f A  ", acCurrent);
+//	  snprintf(line2, sizeof(line2), "V: %.1f V  ", acVoltage);
+//
+//	  lcd_put_cur(0,0);
+//	  lcd_send_string(line1);
+//	  lcd_put_cur(1,0);
+//	  lcd_send_string(line2);
+//	  HAL_Delay(1000);
+
+
+
+//
+//	  RF_SendCode(1766904, 24);
+//      /* App tasks */
+//      Screen_HandleSwitches();
+//      Screen_Update();
+//      ADC_ReadAllChannels(&hadc1, &adcData);
+//
+//      /* === Update time once per second === */
+//      RTC_GetTimeDate();
+//      if (time.seconds != lastSecond) {
+//          lastSecond = time.seconds;
+//
+//          snprintf(dbg, sizeof(dbg),
+//                   "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d (DOW=%d)\r\n",
+//                   time.hour, time.minutes, time.seconds,
+//                   time.dayofmonth, time.month, time.year,
+//                   time.dayofweek);
+//          Debug_Print(dbg);
+//      }
+//
+//      /* UART command handling */
+//      if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
+//          char *p = receivedUartPacket;
+//          size_t n = strlen(receivedUartPacket);
+//          if (n >= 2 && p[0] == '@' && p[n-1] == '#') { p[n-1] = '\0'; p++; }
+//          ModelHandle_ProcessUartCommand(p);
+//      }
+//
+//      /* Other tasks */
+//      ModelHandle_Process();
+//      // ❌ Relay_All(false);  <-- removed, was overriding relay control
+//      LED_Task();
+//
+//      HAL_Delay(20);  // faster responsiveness (was 50)
 
     /* USER CODE END WHILE */
 
@@ -199,32 +325,47 @@ int main(void)
   * @brief System Clock Configuration
   * @retval None
   */
-void SystemClock_Config(void) {
-    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-    // Use HSI (8 MHz internal) with PLL
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
-    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16; // 64 MHz
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) { Error_Handler(); }
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
-    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-                                | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) { Error_Handler(); }
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-    // Use HSI/6 for ADC
-    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
-    PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
-    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) { Error_Handler(); }
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC|RCC_PERIPHCLK_ADC;
+  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /**
@@ -248,12 +389,12 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 8;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -264,6 +405,69 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = ADC_REGULAR_RANK_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_6;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_7;
+  sConfig.Rank = ADC_REGULAR_RANK_7;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Rank = ADC_REGULAR_RANK_8;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -313,70 +517,70 @@ static void MX_I2C2_Init(void)
   * @param None
   * @retval None
   */
-//static void MX_RTC_Init(void)
-//{
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
 //
-//  /* USER CODE BEGIN RTC_Init 0 */
+  /* USER CODE END RTC_Init 0 */
+
+  RTC_TimeTypeDef sTime = {0};
+  RTC_DateTypeDef DateToUpdate = {0};
+  RTC_AlarmTypeDef sAlarm = {0};
+
+  /* USER CODE BEGIN RTC_Init 1 */
 //
-//  /* USER CODE END RTC_Init 0 */
+  /* USER CODE END RTC_Init 1 */
+
+  /** Initialize RTC Only
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND;
+  hrtc.Init.OutPut = RTC_OUTPUTSOURCE_ALARM;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* USER CODE BEGIN Check_RTC_BKUP */
 //
-//  RTC_TimeTypeDef sTime = {0};
-//  RTC_DateTypeDef DateToUpdate = {0};
-//  RTC_AlarmTypeDef sAlarm = {0};
+  /* USER CODE END Check_RTC_BKUP */
+
+  /** Initialize RTC and set the Time and Date
+  */
+  sTime.Hours = 0x13;
+  sTime.Minutes = 0x0;
+  sTime.Seconds = 0x0;
+
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
+  DateToUpdate.Month = RTC_MONTH_JANUARY;
+  DateToUpdate.Date = 0x1;
+  DateToUpdate.Year = 0x0;
+
+  if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Enable the Alarm A
+  */
+  sAlarm.AlarmTime.Hours = 0x13;
+  sAlarm.AlarmTime.Minutes = 0x0;
+  sAlarm.AlarmTime.Seconds = 0x0;
+  sAlarm.Alarm = RTC_ALARM_A;
+  if (HAL_RTC_SetAlarm_IT(&hrtc, &sAlarm, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
 //
-//  /* USER CODE BEGIN RTC_Init 1 */
-//
-//  /* USER CODE END RTC_Init 1 */
-//
-//  /** Initialize RTC Only
-//  */
-//  hrtc.Instance = RTC;
-//  hrtc.Init.AsynchPrediv = RTC_AUTO_1_SECOND;
-//  hrtc.Init.OutPut = RTC_OUTPUTSOURCE_ALARM;
-//  if (HAL_RTC_Init(&hrtc) != HAL_OK)
-//  {
-//    Error_Handler();
-//  }
-//
-//  /* USER CODE BEGIN Check_RTC_BKUP */
-//
-//  /* USER CODE END Check_RTC_BKUP */
-//
-//  /** Initialize RTC and set the Time and Date
-//  */
-//  sTime.Hours = 0x13;
-//  sTime.Minutes = 0x0;
-//  sTime.Seconds = 0x0;
-//
-//  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
-//  {
-//    Error_Handler();
-//  }
-//  DateToUpdate.WeekDay = RTC_WEEKDAY_MONDAY;
-//  DateToUpdate.Month = RTC_MONTH_JANUARY;
-//  DateToUpdate.Date = 0x1;
-//  DateToUpdate.Year = 0x0;
-//
-//  if (HAL_RTC_SetDate(&hrtc, &DateToUpdate, RTC_FORMAT_BCD) != HAL_OK)
-//  {
-//    Error_Handler();
-//  }
-//
-//  /** Enable the Alarm A
-//  */
-//  sAlarm.AlarmTime.Hours = 0x13;
-//  sAlarm.AlarmTime.Minutes = 0x0;
-//  sAlarm.AlarmTime.Seconds = 0x0;
-//  sAlarm.Alarm = RTC_ALARM_A;
-//  if (HAL_RTC_SetAlarm_IT(&hrtc, &sAlarm, RTC_FORMAT_BCD) != HAL_OK)
-//  {
-//    Error_Handler();
-//  }
-//  /* USER CODE BEGIN RTC_Init 2 */
-//
-//  /* USER CODE END RTC_Init 2 */
-//
-//}
+  /* USER CODE END RTC_Init 2 */
+
+}
 
 /**
   * @brief SPI1 Initialization Function
@@ -508,7 +712,6 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -518,11 +721,6 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, LED1_Pin|LED2_Pin|LED3_Pin|LORA_SELECT_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : AC_voltage_Pin AC_current_Pin */
-  GPIO_InitStruct.Pin = AC_voltage_Pin|AC_current_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : Relay1_Pin Relay2_Pin Relay3_Pin LORA_STATUS_Pin
                            LED4_Pin LED5_Pin */

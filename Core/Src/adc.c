@@ -24,16 +24,16 @@
 // === AC / Current sensing config ===
 #define VREF                      3.3f
 #define ADC_RES                   4095.0f
-#define VOLTAGE_DIV_RATIO         66.67f   // ⚠️ adjust for your divider (e.g. 220V -> 3.3V)
-#define ACS712_SENSITIVITY        0.066f   // V/A for ACS712-30A (185mV/A=5A, 100mV/A=20A, 66mV/A=30A)
-#define ACS712_ZERO_OFFSET        (VREF / 2.0f)  // ~1.65V at 0A
-
-#define AC_OVERLOAD_CURRENT       5.0f     // Ampere threshold (adjust to motor rating)
-#define AC_OVERVOLTAGE            260.0f   // Volt threshold (adjust as needed)
-
-// === Averaging and smoothing ===
-#define AC_AVG_SAMPLES            20      // number of samples to average
-#define AC_EMA_ALPHA              0.2f    // smoothing factor for EMA
+//#define VOLTAGE_DIV_RATIO         66.67f   // ⚠️ adjust for your divider (e.g. 220V -> 3.3V)
+//#define ACS712_SENSITIVITY        0.066f   // V/A for ACS712-30A (185mV/A=5A, 100mV/A=20A, 66mV/A=30A)
+//#define ACS712_ZERO_OFFSET        (VREF / 2.0f)  // ~1.65V at 0A
+//
+//#define AC_OVERLOAD_CURRENT       5.0f     // Ampere threshold (adjust to motor rating)
+//#define AC_OVERVOLTAGE            260.0f   // Volt threshold (adjust as needed)
+//
+//// === Averaging and smoothing ===
+//#define AC_AVG_SAMPLES            20      // number of samples to average
+//#define AC_EMA_ALPHA              0.2f    // smoothing factor for EMA
 
 // === Exported for monitoring (Live Expressions) ===
 float g_adcVoltages[ADC_CHANNEL_COUNT] = {0};

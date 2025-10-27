@@ -1,3 +1,4 @@
+"./Core/Src/acs712.o"
 "./Core/Src/adc.o"
 "./Core/Src/global.o"
 "./Core/Src/lcd_i2c.o"
