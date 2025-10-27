@@ -112,7 +112,13 @@ static inline void motor_apply(bool on)
         maxRunTimerArmed = false;
     }
 }
-static inline void start_motor(void) { motor_apply(true); }
+static inline void start_motor(void)
+{
+    Relay_Set(1, true);
+    motorStatus = 1U;
+    printf("Relay1 -> %s\r\n", Relay_Get(1) ? "ON" : "OFF");
+}
+
 static inline void stop_motor(void)  { motor_apply(false); }
 
 /* =========================
@@ -482,16 +488,26 @@ static uint32_t seconds_since_midnight(void)
            ((uint32_t)time.minutes * 60UL) +
            (uint32_t)time.seconds;
 }
+// Replace your existing timer_tick() with this guarded version
 static void timer_tick(void)
 {
+    // 🚫 Do not let timer logic interfere with Manual mode
+    if (manualOverride && manualActive) {
+        timerActive = false;
+        return;
+    }
+
     timerActive = false;
     uint32_t nowS = seconds_since_midnight();
 
     static uint32_t timerRetryDeadline = 0;
 
+    bool anySlotActive = false;
+
     for (int i = 0; i < 3; i++) {
         TimerSlot* s = &timerSlots[i];
         if (!s->active) continue;
+        anySlotActive = true;
 
         bool inWindow;
         if (s->onTimeSeconds <= s->offTimeSeconds) {
@@ -521,6 +537,10 @@ static void timer_tick(void)
         }
     }
 
+    // If no timers are configured/active, do NOT touch the motor
+    if (!anySlotActive) return;
+
+    // Timers exist but we're outside any window -> ensure motor is off
     stop_motor();
     timerRetryDeadline = 0;
 }
