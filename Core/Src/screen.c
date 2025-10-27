@@ -209,8 +209,12 @@ static void show_timer(void){
 
 static void show_search(void){
     char l0[17], l1[17];
-    snprintf(l0,sizeof(l0),"Gap:%3ds Dry:%3ds",edit_search_gap_s,edit_search_dry_s);
-    snprintf(l1,sizeof(l1),">Edit     Back");
+    snprintf(l0,sizeof(l0),"Sr %s G%us P%us",
+             searchSettings.searchActive ? "ON " : "OFF",
+             (unsigned)searchSettings.testingGapSeconds,
+             (unsigned)searchSettings.dryRunTimeSeconds);
+    snprintf(l1,sizeof(l1),">%s   Edit",
+             searchSettings.searchActive ? "Stop" : "Enable");
     lcd_line0(l0);
     lcd_line1(l1);
 }
@@ -236,11 +240,20 @@ static void show_countdown(void){
 
 static void show_twist(void){
     char l0[17], l1[17];
-    snprintf(l0,sizeof(l0),"Twist ON:%3ds",edit_twist_on_s);
-    snprintf(l1,sizeof(l1),"Twist OFF:%3ds",edit_twist_off_s);
+
+    const char* status = twistSettings.twistActive ? "ON " : "OFF";
+    snprintf(l0,sizeof(l0),"Tw %s %2ds/%2ds", status,
+             (int)twistSettings.onDurationSeconds,
+             (int)twistSettings.offDurationSeconds);
+
+    // primary action on SELECT is Enable/Stop; UP/DOWN goes to edit
+    snprintf(l1,sizeof(l1),">%s   Edit",
+             twistSettings.twistActive ? "Stop" : "Enable");
+
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 
 /* ===== Apply functions ===== */
 static void apply_search_settings(void){
@@ -522,11 +535,27 @@ static void menu_select(void){
             break;
 
 
-        case UI_TWIST: ui = UI_TWIST_EDIT_ON; break;
-        case UI_TWIST_EDIT_ON: ui = UI_TWIST_EDIT_OFF; break;
+        case UI_TWIST:
+            // SELECT toggles enable/stop; UP/DOWN will switch to edit states
+            if (twistSettings.twistActive) {
+                ModelHandle_StopTwist();
+            } else {
+                // use current edit buffers (or the applied values) to start
+                ModelHandle_StartTwist(edit_twist_on_s, edit_twist_off_s);
+            }
+            screenNeedsRefresh = true;
+            break;
+
+        case UI_TWIST_EDIT_ON:      ui = UI_TWIST_EDIT_OFF; break;
         case UI_TWIST_EDIT_OFF:
-            apply_twist_settings();
+            apply_twist_settings();   // writes into twistSettings
+            // If active, apply live (optional, keeps running with new values)
+            if (twistSettings.twistActive) {
+                ModelHandle_StartTwist(twistSettings.onDurationSeconds,
+                                       twistSettings.offDurationSeconds);
+            }
             ui = UI_TWIST; break;
+
 
         default: break;
     }
@@ -561,54 +590,161 @@ static void menu_reset(void){
 }
 
 /* ===== Public button handler ===== */
-void Screen_HandleButton(UiButton b){
-    if (b == BTN_RESET){
+void Screen_HandleButton(UiButton b)
+{
+    if (b == BTN_NONE) return;
+
+    /* Quick RESET → manual toggle (your existing behavior) */
+    if (b == BTN_RESET) {
         ModelHandle_ToggleManual();
         return;
     }
+
+    /* =======================
+       UP key
+       ======================= */
     if (b == BTN_UP) {
         switch (ui) {
             case UI_MENU: if (menu_idx > 0) menu_idx--; break;
-            case UI_TIMER_EDIT_ON_H: if (edit_timer_on_h < 23) edit_timer_on_h++; break;
-            case UI_TIMER_EDIT_ON_M: if (edit_timer_on_m < 59) edit_timer_on_m++; break;
+
+            /* Timer edits */
+            case UI_TIMER_EDIT_ON_H:  if (edit_timer_on_h  < 23) edit_timer_on_h++;  break;
+            case UI_TIMER_EDIT_ON_M:  if (edit_timer_on_m  < 59) edit_timer_on_m++;  break;
             case UI_TIMER_EDIT_OFF_H: if (edit_timer_off_h < 23) edit_timer_off_h++; break;
             case UI_TIMER_EDIT_OFF_M: if (edit_timer_off_m < 59) edit_timer_off_m++; break;
-            case UI_SEARCH_EDIT_GAP:  edit_search_gap_s += 5; break;
-            case UI_SEARCH_EDIT_DRY:  edit_search_dry_s += 1; break;
+
+            /* Search edits */
+            case UI_SEARCH:            ui = UI_SEARCH_EDIT_GAP; screenNeedsRefresh = true; return;
+            case UI_SEARCH_EDIT_GAP:   edit_search_gap_s += 5;  break;
+            case UI_SEARCH_EDIT_DRY:   edit_search_dry_s += 1;  break;
+
+            /* Countdown edits */
             case UI_COUNTDOWN_EDIT_MIN: edit_countdown_min++; break;
-            case UI_COUNTDOWN_EDIT_REP: edit_countdown_rep++; break; // NEW
-            case UI_COUNTDOWN_TOGGLE:
-                // toggle between Enable/Edit
-                // We'll simulate a small cursor toggle
-                // For now, just re-use DOWN to go back to edit
-                ui = UI_COUNTDOWN_EDIT_MIN;
+            case UI_COUNTDOWN_EDIT_REP: edit_countdown_rep++; break;
+            case UI_COUNTDOWN_TOGGLE:   ui = UI_COUNTDOWN_EDIT_MIN; screenNeedsRefresh = true; return;
+
+            /* Twist edits */
+            case UI_TWIST:             ui = UI_TWIST_EDIT_ON; screenNeedsRefresh = true; return;
+            case UI_TWIST_EDIT_ON:     if (edit_twist_on_s  < 600) edit_twist_on_s++;  break;
+            case UI_TWIST_EDIT_OFF:    if (edit_twist_off_s < 600) edit_twist_off_s++; break;
+
+            default: break;
+        }
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* =======================
+       DOWN key
+       ======================= */
+    if (b == BTN_DOWN) {
+        switch (ui) {
+            case UI_MENU: if (menu_idx < (int)(MAIN_MENU_COUNT - 1)) menu_idx++; break;
+
+            /* Timer edits */
+            case UI_TIMER_EDIT_ON_H:  if (edit_timer_on_h  > 0) edit_timer_on_h--;  break;
+            case UI_TIMER_EDIT_ON_M:  if (edit_timer_on_m  > 0) edit_timer_on_m--;  break;
+            case UI_TIMER_EDIT_OFF_H: if (edit_timer_off_h > 0) edit_timer_off_h--; break;
+            case UI_TIMER_EDIT_OFF_M: if (edit_timer_off_m > 0) edit_timer_off_m--; break;
+
+            /* Search edits */
+            case UI_SEARCH:            ui = UI_SEARCH_EDIT_GAP; screenNeedsRefresh = true; return;
+            case UI_SEARCH_EDIT_GAP:   if (edit_search_gap_s > 1) edit_search_gap_s -= 5; break;
+            case UI_SEARCH_EDIT_DRY:   if (edit_search_dry_s > 1) edit_search_dry_s -= 1; break;
+
+            /* Countdown edits */
+            case UI_COUNTDOWN_EDIT_MIN: if (edit_countdown_min > 1) edit_countdown_min--; break;
+            case UI_COUNTDOWN_EDIT_REP: if (edit_countdown_rep > 1) edit_countdown_rep--; break;
+
+            /* Twist edits */
+            case UI_TWIST_EDIT_ON:   if (edit_twist_on_s  > 1) edit_twist_on_s--;  break;
+            case UI_TWIST_EDIT_OFF:  if (edit_twist_off_s > 1) edit_twist_off_s--; break;
+
+            default: break;
+        }
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* =======================
+       SELECT key
+       ======================= */
+    if (b == BTN_SELECT) {
+        switch (ui) {
+
+            /* ---- Search main: Enable/Stop ---- */
+            case UI_SEARCH:
+                if (searchSettings.searchActive) {
+                    ModelHandle_StopSearch();
+                } else {
+                    uint16_t gap_s   = (uint16_t)edit_search_gap_s;  if (gap_s   == 0) gap_s   = 5;
+                    uint16_t probe_s = (uint16_t)edit_search_dry_s;  if (probe_s == 0) probe_s = 3;
+                    ModelHandle_StartSearch(gap_s, probe_s);
+                }
                 screenNeedsRefresh = true;
                 return;
 
-            case UI_TWIST_EDIT_ON:   edit_twist_on_s += 1; break;
-            case UI_TWIST_EDIT_OFF:  edit_twist_off_s += 1; break;
-            default: break;
+            /* ---- Search edit flow ---- */
+            case UI_SEARCH_EDIT_GAP:
+                ui = UI_SEARCH_EDIT_DRY;
+                screenNeedsRefresh = true;
+                return;
+
+            case UI_SEARCH_EDIT_DRY:
+                if (edit_search_gap_s < 1) edit_search_gap_s = 1;
+                if (edit_search_dry_s < 1) edit_search_dry_s = 1;
+
+                searchSettings.testingGapSeconds = (uint16_t)edit_search_gap_s;
+                searchSettings.dryRunTimeSeconds = (uint16_t)edit_search_dry_s;
+
+                if (searchSettings.searchActive) {
+                    ModelHandle_StartSearch((uint16_t)searchSettings.testingGapSeconds,
+                                            (uint16_t)searchSettings.dryRunTimeSeconds);
+                }
+                ui = UI_SEARCH;
+                screenNeedsRefresh = true;
+                return;
+
+            /* ---- Twist main: Enable/Stop ---- */
+            case UI_TWIST:
+                if (twistSettings.twistActive) {
+                    ModelHandle_StopTwist();
+                } else {
+                    uint16_t on_s  = (uint16_t)edit_twist_on_s;  if (on_s  == 0) on_s  = 1;
+                    uint16_t off_s = (uint16_t)edit_twist_off_s; if (off_s == 0) off_s = 1;
+                    ModelHandle_StartTwist(on_s, off_s);
+                }
+                screenNeedsRefresh = true;
+                return;
+
+            /* ---- Twist edit ---- */
+            case UI_TWIST_EDIT_ON:
+                ui = UI_TWIST_EDIT_OFF;
+                screenNeedsRefresh = true;
+                return;
+
+            case UI_TWIST_EDIT_OFF:
+                if (edit_twist_off_s < 1)   edit_twist_off_s = 1;
+                if (edit_twist_off_s > 600) edit_twist_off_s = 600;
+                if (edit_twist_on_s  < 1)   edit_twist_on_s  = 1;
+                if (edit_twist_on_s  > 600) edit_twist_on_s  = 600;
+
+                apply_twist_settings(); // copies edit_* to twistSettings
+
+                if (twistSettings.twistActive) {
+                    ModelHandle_StartTwist((uint16_t)twistSettings.onDurationSeconds,
+                                           (uint16_t)twistSettings.offDurationSeconds);
+                }
+                ui = UI_TWIST;
+                screenNeedsRefresh = true;
+                return;
+
+            /* ---- Others: keep your existing flow ---- */
+            default:
+                menu_select();
+                return;
         }
-        screenNeedsRefresh = true; return;
     }
-    if (b == BTN_DOWN) {
-        switch (ui) {
-            case UI_MENU: if (menu_idx < (int)(MAIN_MENU_COUNT-1)) menu_idx++; break;
-            case UI_TIMER_EDIT_ON_H: if (edit_timer_on_h > 0) edit_timer_on_h--; break;
-            case UI_TIMER_EDIT_ON_M: if (edit_timer_on_m > 0) edit_timer_on_m--; break;
-            case UI_TIMER_EDIT_OFF_H: if (edit_timer_off_h > 0) edit_timer_off_h--; break;
-            case UI_TIMER_EDIT_OFF_M: if (edit_timer_off_m > 0) edit_timer_off_m--; break;
-            case UI_SEARCH_EDIT_GAP:  if (edit_search_gap_s > 5) edit_search_gap_s -= 5; break;
-            case UI_SEARCH_EDIT_DRY:  if (edit_search_dry_s > 0) edit_search_dry_s -= 1; break;
-            case UI_COUNTDOWN_EDIT_MIN: if (edit_countdown_min > 1) edit_countdown_min--; break;
-            case UI_COUNTDOWN_EDIT_REP: if (edit_countdown_rep > 1) edit_countdown_rep--; break; // NEW
-            case UI_TWIST_EDIT_ON:   if (edit_twist_on_s > 1) edit_twist_on_s--; break;
-            case UI_TWIST_EDIT_OFF:  if (edit_twist_off_s > 1) edit_twist_off_s--; break;
-            default: break;
-        }
-        screenNeedsRefresh = true; return;
-    }
-    if (b == BTN_SELECT) { menu_select(); return; }
 }
 
 /* ===== Switch polling with long-press detection ===== */
