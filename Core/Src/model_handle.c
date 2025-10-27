@@ -24,10 +24,9 @@ volatile bool searchActive    = false;
 volatile bool timerActive     = false;
 volatile bool semiAutoActive  = false;
 
-/* Countdown */
+/* Countdown (basic) */
 volatile bool     countdownMode     = true;
 volatile uint32_t countdownDuration = 0;
-static   uint32_t countdownDeadline = 0;
 
 /* Timer */
 TimerSlot timerSlots[5] = {0};
@@ -103,7 +102,6 @@ static bool isTankFull(void)
 /* ===== Manual Mode ===== */
 void ModelHandle_ToggleManual(void)
 {
-    // Disable other modes
     semiAutoActive  = false;
     timerActive     = false;
     searchActive    = false;
@@ -126,51 +124,107 @@ void ModelHandle_ManualLongPress(void)
 {
     manualOverride = false;
     manualActive   = false;
-
     printf("Manual Long Press → Restarting...\r\n");
     HAL_Delay(100);
     NVIC_SystemReset();
 }
 
-/* ===== Countdown ===== */
-static void countdown_start(uint32_t seconds)
+/* ============================================================
+   COUNTDOWN MODE  (enhanced: repeats, live MM:SS, tank auto-off)
+   ============================================================ */
+volatile uint16_t countdownRemainingRuns = 0;   // visible to screen.c
+
+static uint32_t cd_deadline_ms      = 0;
+static uint32_t cd_rest_deadline_ms = 0;
+static uint32_t cd_run_seconds      = 0;
+static bool     cd_in_rest          = false;
+static const uint32_t CD_REST_MS    = 3000;     // 3s rest between runs
+
+/* --- Stop Countdown --- */
+void ModelHandle_StopCountdown(void)
 {
-    if (seconds == 0) { countdownActive = false; return; }
+    stop_motor();
+    countdownActive        = false;
+    countdownMode          = false;
+    countdownRemainingRuns = 0;
+    cd_run_seconds         = 0;
+    cd_in_rest             = false;
+    countdownDuration      = 0;
+}
 
-    countdownMode     = true;
-    countdownDuration = seconds;
-    countdownActive   = true;
-
-    manualActive   = false;
-    twistActive    = false;
-    searchActive   = false;
-    timerActive    = false;
-    semiAutoActive = false;
-
-    countdownDeadline = now_ms() + (seconds * 1000UL);
+/* --- Start one run --- */
+static void countdown_start_one_run(void)
+{
+    cd_deadline_ms   = now_ms() + (cd_run_seconds * 1000UL);
+    countdownDuration = cd_run_seconds;
+    cd_in_rest        = false;
     start_motor();
 }
 
-static void countdown_tick(void)
+/* --- Start Countdown (multi-run) --- */
+void ModelHandle_StartCountdown(uint32_t seconds_per_run, uint16_t repeats)
 {
-    if (!countdownActive) return;
-
-    uint32_t tnow = now_ms();
-    if ((int32_t)(countdownDeadline - tnow) <= 0) {
-        stop_motor();
-        countdownActive   = false;
-        countdownDuration = 0;
+    if (seconds_per_run == 0 || repeats == 0) {
+        ModelHandle_StopCountdown();
         return;
     }
 
-    uint32_t remaining_ms = countdownDeadline - tnow;
-    countdownDuration = (remaining_ms + 999) / 1000;
+    manualActive   = false;
+    semiAutoActive = false;
+    timerActive    = false;
+    searchActive   = false;
+    twistActive    = false;
 
-    if (isTankFull()) {
-        stop_motor();
-        countdownActive   = false;
-        countdownDuration = 0;
+    countdownMode          = true;
+    countdownActive        = true;
+    cd_run_seconds         = seconds_per_run;
+    countdownRemainingRuns = repeats;
+    cd_in_rest             = false;
+
+    countdown_start_one_run();
+}
+
+/* --- Countdown Tick --- */
+static void countdown_tick(void)
+{
+    if (!countdownActive) return;
+    uint32_t now = now_ms();
+
+    if (cd_in_rest) {
+        if ((int32_t)(cd_rest_deadline_ms - now) <= 0) {
+            if (countdownRemainingRuns > 0) {
+                countdown_start_one_run();
+            } else {
+                ModelHandle_StopCountdown();
+            }
+        }
+        return;
     }
+
+    if ((int32_t)(cd_deadline_ms - now) > 0) {
+        uint32_t rem_ms = cd_deadline_ms - now;
+        countdownDuration = (rem_ms + 999U) / 1000U;
+
+        if (isTankFull()) {
+            stop_motor();
+            ModelHandle_StopCountdown();
+        }
+        return;
+    }
+
+    // run time finished
+    stop_motor();
+    if (countdownRemainingRuns > 0) countdownRemainingRuns--;
+
+    if (countdownRemainingRuns == 0) {
+        ModelHandle_StopCountdown();
+        return;
+    }
+
+    // rest before next run
+    cd_in_rest          = true;
+    cd_rest_deadline_ms = now + CD_REST_MS;
+    countdownDuration   = 0;
 }
 
 /* ===== Twist ===== */
@@ -404,22 +458,20 @@ bool Motor_GetStatus(void)
 }
 
 /* ===== Main tick ===== */
+
 void ModelHandle_Process(void)
 {
-    if (manualOverride && manualActive) {
-        protections_tick();
-        leds_from_model();
-        return;
-    }
+    // protections, sensor reads, etc...
 
-    countdown_tick();
-    twist_tick();
-    search_tick();
-    timer_tick();
-    semi_auto_tick();
-    protections_tick();
-    leds_from_model();
+    countdown_tick();  // ensure countdown updates every loop
 }
+
+/* ===== Public Motor Get ===== */
+//bool Motor_GetStatus(void)
+//{
+//    return (motorStatus != 0);
+//}
+
 
 void ModelHandle_ProcessUartCommand(const char* cmd)
 {

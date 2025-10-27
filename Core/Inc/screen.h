@@ -23,5 +23,11 @@ typedef enum {
 void Screen_Init(void);
 void Screen_Update(void);
 void Screen_SetState(LcdState state);
+// Countdown (repeatable) mode API
+void ModelHandle_StartCountdown(uint32_t seconds_per_run, uint16_t repeats);
+void ModelHandle_StopCountdown(void);
+
+// Exposed so the LCD can show remaining runs
+extern volatile uint16_t countdownRemainingRuns;
 
 #endif // SCREEN_H

@@ -40,6 +40,8 @@ typedef enum {
     UI_SEARCH_EDIT_DRY,
     UI_COUNTDOWN,
     UI_COUNTDOWN_EDIT_MIN,
+    UI_COUNTDOWN_EDIT_REP,
+    UI_COUNTDOWN_TOGGLE,   // NEW: enable/disable screen
     UI_TWIST,
     UI_TWIST_EDIT_ON,
     UI_TWIST_EDIT_OFF,
@@ -95,11 +97,12 @@ static int menu_idx = 0;
 static int menu_view_top = 0;
 
 /* ===== Temp edit variables ===== */
-static uint8_t edit_timer_on_h = 6, edit_timer_on_m = 30;
-static uint8_t edit_timer_off_h = 18, edit_timer_off_m = 30;
+static uint8_t  edit_timer_on_h  = 6,  edit_timer_on_m  = 30;
+static uint8_t  edit_timer_off_h = 18, edit_timer_off_m = 30;
 static uint16_t edit_search_gap_s = 60, edit_search_dry_s = 10;
 static uint16_t edit_twist_on_s = 5, edit_twist_off_s = 5;
 static uint16_t edit_countdown_min = 5;
+static uint16_t edit_countdown_rep = 1;   // NEW
 
 /* ===== LCD Helpers ===== */
 static inline void lcd_line(uint8_t row, const char* s) {
@@ -117,7 +120,7 @@ static void goto_menu_top(void){ menu_idx = 0; menu_view_top = 0; }
 
 /* ===== Helper: format menu line ===== */
 static void format_menu_line(char* buf, size_t bufsize, int idx, bool selected){
-    if (idx < MAIN_MENU_COUNT && idx >= 0) {
+    if (idx < (int)MAIN_MENU_COUNT && idx >= 0) {
         char prefix = selected ? '>' : ' ';
         char item[16];
         snprintf(item, sizeof(item), "%-15.15s", main_menu[idx]);
@@ -214,18 +217,22 @@ static void show_search(void){
 
 static void show_countdown(void){
     char l0[17], l1[17];
+    extern volatile uint16_t countdownRemainingRuns;
     if (countdownActive) {
         uint32_t sec = countdownDuration;
         uint32_t min = sec/60;
-        uint32_t s = sec%60;
-        snprintf(l0,sizeof(l0),"Count %02d:%02d",(int)min,(int)s);
+        uint32_t s   = sec%60;
+        snprintf(l0,sizeof(l0),"Run %02u %02d:%02d",
+                 (unsigned)countdownRemainingRuns,(int)min,(int)s);
+        snprintf(l1,sizeof(l1),">Stop     Back");
     } else {
         snprintf(l0,sizeof(l0),"Countdown Inact");
+        snprintf(l1,sizeof(l1),">Set Start Back");
     }
-    snprintf(l1,sizeof(l1),">Set Start Back");
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 
 static void show_twist(void){
     char l0[17], l1[17];
@@ -247,6 +254,7 @@ static void apply_twist_settings(void){
 }
 
 static void apply_countdown_settings(void){
+    // kept for compatibility if other code depends on countdownDuration mirror
     countdownDuration = (uint32_t)edit_countdown_min * 60u;
 }
 
@@ -280,6 +288,7 @@ void Screen_Update(void){
         case UI_SEARCH_EDIT_GAP:
         case UI_SEARCH_EDIT_DRY:
         case UI_COUNTDOWN_EDIT_MIN:
+        case UI_COUNTDOWN_EDIT_REP:   // NEW: blink on repeats editor
         case UI_TWIST_EDIT_ON:
         case UI_TWIST_EDIT_OFF:
             cursorBlinkActive = true;
@@ -368,10 +377,25 @@ void Screen_Update(void){
             }
             case UI_COUNTDOWN_EDIT_MIN: {
                 char l0[17], l1[17];
-                snprintf(l0,sizeof(l0),"Set Min: %3d", edit_countdown_min);
-                snprintf(l1,sizeof(l1),">Up+Dn- SelStart");
+                snprintf(l0,sizeof(l0),"Set Min: %3u", edit_countdown_min);
+                snprintf(l1,sizeof(l1),">Up+Dn- SelNext");
                 lcd_line0(l0); lcd_line1(l1); break;
             }
+            case UI_COUNTDOWN_EDIT_REP: {
+                char l0[17], l1[17];
+                snprintf(l0,sizeof(l0),"Set Reps: %3u", edit_countdown_rep);
+                snprintf(l1,sizeof(l1),">Up+Dn- Start");
+                lcd_line0(l0); lcd_line1(l1); break;
+            }
+
+            case UI_COUNTDOWN_TOGGLE: {
+                char l0[17], l1[17];
+                snprintf(l0,sizeof(l0),"Countdown Setup");
+                snprintf(l1,sizeof(l1),">Enable   Edit");
+                lcd_line0(l0); lcd_line1(l1);
+                break;
+            }
+
             case UI_TWIST_EDIT_ON: {
                 char l0[17], l1[17];
                 snprintf(l0,sizeof(l0),"Edit T ON: %3ds", edit_twist_on_s);
@@ -403,9 +427,11 @@ void Screen_Init(void){
 
     edit_search_gap_s = searchSettings.testingGapSeconds;
     edit_search_dry_s = searchSettings.dryRunTimeSeconds;
-    edit_twist_on_s = twistSettings.onDurationSeconds;
-    edit_twist_off_s = twistSettings.offDurationSeconds;
+    edit_twist_on_s   = twistSettings.onDurationSeconds;
+    edit_twist_off_s  = twistSettings.offDurationSeconds;
     edit_countdown_min = (uint16_t)(countdownDuration / 60u);
+    if (edit_countdown_min == 0) edit_countdown_min = 5; // sane default
+    if (edit_countdown_rep == 0) edit_countdown_rep = 1;
 }
 
 void Screen_ResetToHome(void){
@@ -463,13 +489,38 @@ static void menu_select(void){
             apply_search_settings();
             ui = UI_SEARCH; break;
 
-        case UI_COUNTDOWN: ui = UI_COUNTDOWN_EDIT_MIN; break;
-        case UI_COUNTDOWN_EDIT_MIN:
-            apply_countdown_settings();
-            countdownMode = true;
-            countdownActive = true;
-            ui = UI_COUNTDOWN;
+        case UI_COUNTDOWN:
+            if (countdownActive) {
+                ModelHandle_StopCountdown();
+                screenNeedsRefresh = true;
+            } else {
+                ui = UI_COUNTDOWN_EDIT_MIN;
+            }
             break;
+
+
+        case UI_COUNTDOWN_EDIT_MIN:
+            ui = UI_COUNTDOWN_EDIT_REP;
+            break;
+
+        case UI_COUNTDOWN_EDIT_REP:
+            // after repeats, go to enable/edit screen
+            ui = UI_COUNTDOWN_TOGGLE;
+            break;
+
+        case UI_COUNTDOWN_TOGGLE:
+            // Enable or Edit based on menu index
+            // For simplicity, SELECT always means "Enable"
+            {
+                uint32_t seconds = (uint32_t)edit_countdown_min * 60u;
+                if (seconds == 0) seconds = 60;
+                if (edit_countdown_rep == 0) edit_countdown_rep = 1;
+                apply_countdown_settings();
+                ModelHandle_StartCountdown(seconds, (uint16_t)edit_countdown_rep);
+                ui = UI_COUNTDOWN;
+            }
+            break;
+
 
         case UI_TWIST: ui = UI_TWIST_EDIT_ON; break;
         case UI_TWIST_EDIT_ON: ui = UI_TWIST_EDIT_OFF; break;
@@ -500,7 +551,8 @@ static void menu_reset(void){
         case UI_TIMER_EDIT_OFF_M: ui = UI_TIMER; break;
         case UI_SEARCH_EDIT_GAP:
         case UI_SEARCH_EDIT_DRY: ui = UI_SEARCH; break;
-        case UI_COUNTDOWN_EDIT_MIN: ui = UI_COUNTDOWN; break;
+        case UI_COUNTDOWN_EDIT_MIN:
+        case UI_COUNTDOWN_EDIT_REP: ui = UI_COUNTDOWN; break;  // NEW: back from repeats editor
         case UI_TWIST_EDIT_ON:
         case UI_TWIST_EDIT_OFF: ui = UI_TWIST; break;
         default: ui = UI_MENU; break;
@@ -524,6 +576,15 @@ void Screen_HandleButton(UiButton b){
             case UI_SEARCH_EDIT_GAP:  edit_search_gap_s += 5; break;
             case UI_SEARCH_EDIT_DRY:  edit_search_dry_s += 1; break;
             case UI_COUNTDOWN_EDIT_MIN: edit_countdown_min++; break;
+            case UI_COUNTDOWN_EDIT_REP: edit_countdown_rep++; break; // NEW
+            case UI_COUNTDOWN_TOGGLE:
+                // toggle between Enable/Edit
+                // We'll simulate a small cursor toggle
+                // For now, just re-use DOWN to go back to edit
+                ui = UI_COUNTDOWN_EDIT_MIN;
+                screenNeedsRefresh = true;
+                return;
+
             case UI_TWIST_EDIT_ON:   edit_twist_on_s += 1; break;
             case UI_TWIST_EDIT_OFF:  edit_twist_off_s += 1; break;
             default: break;
@@ -532,7 +593,7 @@ void Screen_HandleButton(UiButton b){
     }
     if (b == BTN_DOWN) {
         switch (ui) {
-            case UI_MENU: if (menu_idx < (MAIN_MENU_COUNT-1)) menu_idx++; break;
+            case UI_MENU: if (menu_idx < (int)(MAIN_MENU_COUNT-1)) menu_idx++; break;
             case UI_TIMER_EDIT_ON_H: if (edit_timer_on_h > 0) edit_timer_on_h--; break;
             case UI_TIMER_EDIT_ON_M: if (edit_timer_on_m > 0) edit_timer_on_m--; break;
             case UI_TIMER_EDIT_OFF_H: if (edit_timer_off_h > 0) edit_timer_off_h--; break;
@@ -540,6 +601,7 @@ void Screen_HandleButton(UiButton b){
             case UI_SEARCH_EDIT_GAP:  if (edit_search_gap_s > 5) edit_search_gap_s -= 5; break;
             case UI_SEARCH_EDIT_DRY:  if (edit_search_dry_s > 0) edit_search_dry_s -= 1; break;
             case UI_COUNTDOWN_EDIT_MIN: if (edit_countdown_min > 1) edit_countdown_min--; break;
+            case UI_COUNTDOWN_EDIT_REP: if (edit_countdown_rep > 1) edit_countdown_rep--; break; // NEW
             case UI_TWIST_EDIT_ON:   if (edit_twist_on_s > 1) edit_twist_on_s--; break;
             case UI_TWIST_EDIT_OFF:  if (edit_twist_off_s > 1) edit_twist_off_s--; break;
             default: break;
