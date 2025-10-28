@@ -746,14 +746,14 @@ void Screen_HandleButton(UiButton b)
         }
     }
 }
-
+/* ===== Switch polling with long-press detection ===== */
 /* ===== Switch polling with long-press detection ===== */
 void Screen_HandleSwitches(void){
     static const struct { GPIO_TypeDef* port; uint16_t pin; UiButton btn; uint16_t ledPin; } switchMap[] = {
-        {SWITCH1_GPIO_Port, SWITCH1_Pin, BTN_RESET, LED1_Pin},   // Manual
+        {SWITCH1_GPIO_Port, SWITCH1_Pin, BTN_RESET,  LED1_Pin}, // Manual
         {SWITCH2_GPIO_Port, SWITCH2_Pin, BTN_SELECT, LED2_Pin}, // Select
-        {SWITCH3_GPIO_Port, SWITCH3_Pin, BTN_UP, LED3_Pin},     // Up
-        {SWITCH4_GPIO_Port, SWITCH4_Pin, BTN_DOWN, LED4_Pin}    // Down / Back
+        {SWITCH3_GPIO_Port, SWITCH3_Pin, BTN_UP,     LED3_Pin}, // Up  (→ Summer Save 5s long-press)
+        {SWITCH4_GPIO_Port, SWITCH4_Pin, BTN_DOWN,   LED4_Pin}  // Down / Back
     };
     static bool prev[4] = {true,true,true,true};
     static uint32_t pressStart[4] = {0,0,0,0};
@@ -761,19 +761,40 @@ void Screen_HandleSwitches(void){
     for (int i=0; i<4; i++){
         bool pressed = (HAL_GPIO_ReadPin(switchMap[i].port, switchMap[i].pin) == GPIO_PIN_RESET);
 
+        // edge: press started
         if (pressed && prev[i]) {
             prev[i] = false;
             pressStart[i] = HAL_GetTick();
         }
+        // edge: released
         else if (!pressed && !prev[i]) {
             uint32_t pressDuration = HAL_GetTick() - pressStart[i];
             prev[i] = true;
 
-            if (i == 0 && pressDuration > 2000) {
+            /* ---- SW3 special: >=5s => "Summer Save" burst (R2+R3 ON for 30s) ---- */
+            if (i == 2 && pressDuration >= 3000UL) {
+                ModelHandle_TriggerAuxBurst(30);
+
+                // Quick LCD notice
+                lcd_clear();
+                lcd_put_cur(0, 0);
+                lcd_send_string("Summer Save 30s");
+                lcd_put_cur(1, 0);
+                lcd_send_string("Relays 2&3 ON");
+
+                // optional LED feedback
+                HAL_GPIO_TogglePin(switchMap[i].port, switchMap[i].ledPin);
+            }
+            /* ---- SW1 ≥2s = manual long-press/restart (kept as-is) ---- */
+            else if (i == 0 && pressDuration > 2000UL) {
                 ModelHandle_ManualLongPress();
-            } else if (i == 3 && pressDuration > 2000) {
-                menu_reset(); // SW4 long press = Back
-            } else {
+            }
+            /* ---- SW4 ≥2s = Back/menu reset (kept as-is) ---- */
+            else if (i == 3 && pressDuration > 2000UL) {
+                menu_reset();
+            }
+            /* ---- Short press → normal handling ---- */
+            else {
                 HAL_GPIO_TogglePin(switchMap[i].port, switchMap[i].ledPin);
                 Screen_HandleButton(switchMap[i].btn);
             }

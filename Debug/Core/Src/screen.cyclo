@@ -25,4 +25,4 @@
 ../Core/Src/screen.c:459:13:menu_select	34
 ../Core/Src/screen.c:565:13:menu_reset	8
 ../Core/Src/screen.c:593:6:Screen_HandleButton	70
-../Core/Src/screen.c:751:6:Screen_HandleSwitches	10
+../Core/Src/screen.c:751:6:Screen_HandleSwitches	12

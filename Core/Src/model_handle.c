@@ -78,6 +78,10 @@ void ModelHandle_SecondsToTime(uint32_t sec, uint8_t* hh, uint8_t* mm) {
 volatile bool     countdownMode     = true;
 volatile uint32_t countdownDuration = 0;
 
+/* ===== Aux burst (Relays 2 & 3 for a fixed time) ===== */
+static bool     auxBurstActive     = false;
+static uint32_t auxBurstDeadlineMs = 0;
+
 /* Timer slots (RTC based) */
 TimerSlot timerSlots[5] = {0};
 
@@ -118,7 +122,6 @@ static inline void start_motor(void)
     motorStatus = 1U;
     printf("Relay1 -> %s\r\n", Relay_Get(1) ? "ON" : "OFF");
 }
-
 static inline void stop_motor(void)  { motor_apply(false); }
 
 /* =========================
@@ -131,6 +134,22 @@ static bool isTankFull(void)
         if (adcData.voltages[i] < 0.1f) submergedCount++;
     }
     return (submergedCount >= 4);
+}
+
+/* ===== Aux burst public API ===== */
+void ModelHandle_TriggerAuxBurst(uint16_t seconds)
+{
+    if (seconds == 0) seconds = 1;
+
+    Relay_Set(2, true);
+    Relay_Set(3, true);
+
+    auxBurstActive     = true;
+    auxBurstDeadlineMs = HAL_GetTick() + ((uint32_t)seconds * 1000UL);
+}
+bool ModelHandle_AuxBurstActive(void)
+{
+    return auxBurstActive;
 }
 
 /* =========================
@@ -668,11 +687,22 @@ bool Motor_GetStatus(void) { return (motorStatus == 1U); }
    ======================= */
 void ModelHandle_Process(void)
 {
+    /* keep your original order of tickers */
     countdown_tick();
     twist_tick();
     search_tick();
     timer_tick();
     semi_auto_tick();
+
+    /* --- Aux Burst auto-OFF (Relays 2 & 3) --- */
+    if (auxBurstActive) {
+        uint32_t now = HAL_GetTick();
+        if ((int32_t)(auxBurstDeadlineMs - now) <= 0) {
+            Relay_Set(2, false);
+            Relay_Set(3, false);
+            auxBurstActive = false;
+        }
+    }
 
     protections_tick();
     leds_from_model();
@@ -688,4 +718,11 @@ void ModelHandle_ProcessUartCommand(const char* cmd)
     if      (strcmp(cmd, "MOTOR_ON") == 0)  { manualOverride = true; manualActive = true;  start_motor(); printf("Manual ON (UART)\r\n"); }
     else if (strcmp(cmd, "MOTOR_OFF")== 0)  { manualOverride = true; manualActive = false; stop_motor();  printf("Manual OFF (UART)\r\n"); }
     else if (strcmp(cmd, "SEMI_AUTO_START")==0) { ModelHandle_StartSemiAuto(); }
+    /* optional:
+       else if (strncmp(cmd, "BURST_", 6) == 0) {
+           int sec = atoi(cmd + 6);
+           if (sec <= 0) sec = 30;
+           ModelHandle_TriggerAuxBurst((uint16_t)sec);
+       }
+    */
 }

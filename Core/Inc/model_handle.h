@@ -73,6 +73,12 @@ void ModelHandle_SetMotor(bool on);
 void ModelHandle_ClearManualOverride(void);
 
 
+
+// === Burst control for extra relays (R2, R3) ===
+void ModelHandle_TriggerAuxBurst(uint16_t seconds);
+bool ModelHandle_AuxBurstActive(void);
+
+
 /* === Semi-Auto Mode === */
 void ModelHandle_StartSemiAuto(void);
 
