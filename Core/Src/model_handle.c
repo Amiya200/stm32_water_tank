@@ -1,4 +1,3 @@
-
 #include "model_handle.h"
 #include "relay.h"
 #include "led.h"
@@ -9,6 +8,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include "stm32f1xx_hal.h"
 
 /* =========================
    CONFIG
@@ -324,12 +325,20 @@ static void countdown_tick(void)
    ======================= */
 static bool     twist_on_phase       = false;
 static uint32_t twist_phase_deadline = 0;
+/* DRY counter must not accumulate while motor is OFF */
 static uint8_t  twist_dry_cnt        = 0;
 static bool     twist_priming        = false;
 static uint32_t twist_prime_deadline = 0;
 
+/* Count DRY only while motor is ON to avoid latch-off after first OFF */
 static inline bool isDryLowSupply_debounced(void)
 {
+    if (!Motor_GetStatus()) {
+        // If motor is OFF, do not count; keep counter at 0
+        twist_dry_cnt = 0;
+        return false;
+    }
+
     bool raw = dry_raw_is_dry();
     if (raw) {
         if (twist_dry_cnt < 255) twist_dry_cnt++;
@@ -352,20 +361,21 @@ static inline void twist_arm_priming(void)
 void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s)
 {
     clear_all_modes();
-
     if (on_s == 0)  on_s  = 1;
     if (off_s == 0) off_s = 1;
 
     twistSettings.onDurationSeconds  = on_s;
     twistSettings.offDurationSeconds = off_s;
-
     twistSettings.twistActive  = true;
     twistActive                = true;
-    twist_on_phase             = false;
-    twist_phase_deadline       = now_ms();
-    twist_dry_cnt              = 0;
+    twist_on_phase       = false;
+    twist_phase_deadline = now_ms() + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
+    twist_dry_cnt        = 0;
+    // Do NOT arm priming here; it's armed when ON actually starts.
+
     twist_arm_priming();
 }
+
 void ModelHandle_StopTwist(void)
 {
     twistSettings.twistActive = false;
@@ -374,50 +384,67 @@ void ModelHandle_StopTwist(void)
     twist_dry_cnt  = 0;
     stop_motor_keep_modes();
 }
-static void twist_tick(void)
+// Call this from your main scheduler at ~10–100ms rate
+void twist_tick(void)
 {
-    if (!twistSettings.twistActive) { twistActive = false; return; }
-    twistActive = true;
-
-    if (isTankFull()) {
-        ModelHandle_StopAllModesAndMotor();
-        return;
-    }
-    if (maxRunTimerArmed && (now_ms() - maxRunStartTick) >= MAX_CONT_RUN_MS) {
-        ModelHandle_StopAllModesAndMotor();
-        senseMaxRunReached = true;
-        return;
-    }
-
     uint32_t tnow = now_ms();
 
+    // ===== 1) Priming window =====
+    // Keep motor ON during priming, but DO NOT slide the phase deadline.
     if (twist_priming) {
-        if (tnow < twist_prime_deadline) {
-            if (!Motor_GetStatus()) start_motor();
-            twist_on_phase       = true;
-            twist_phase_deadline = tnow + (uint32_t)twistSettings.onDurationSeconds * 1000UL;
+        if ((int32_t)(twist_prime_deadline - tnow) > 0) {
+            if (!Motor_GetStatus()) {
+                start_motor();
+            }
+            // Stay ON during prime; do not touch twist_phase_deadline here.
             return;
         } else {
-            twist_priming = false;
+            twist_priming = false; // priming finished
         }
     }
 
-    if ((int32_t)(twist_phase_deadline - tnow) > 0) return;
-
-    if (isDryLowSupply_debounced()) {
-        stop_motor_keep_modes();
-        twist_on_phase       = false;
-        twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
-        return;
+    // ===== 2) Early cut to OFF if supply is dry while ON =====
+    if (twist_on_phase) {
+        if (isDryLowSupply_debounced()) {
+            // Cut short the ON phase and go to OFF interval immediately
+            stop_motor_keep_modes();
+            twist_on_phase       = false;
+            twist_dry_cnt        = 0;
+            twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
+            return;
+        }
     }
 
-    twist_on_phase = !twist_on_phase;
+    // ===== 3) Phase deadline reached? Toggle phase =====
+    if ((int32_t)(twist_phase_deadline - tnow) <= 0) {
+        twist_on_phase = !twist_on_phase;
+
+        if (twist_on_phase) {
+            // Entering ON phase
+            twist_dry_cnt        = 0;
+            start_motor();
+            twist_phase_deadline = tnow + (uint32_t)twistSettings.onDurationSeconds * 1000UL;
+
+            // Arm priming exactly when we enter ON (once per ON phase)
+            #ifdef TWIST_PRIME_SECONDS
+            if (TWIST_PRIME_SECONDS > 0) {
+                twist_priming        = true;
+                twist_prime_deadline = tnow + (uint32_t)TWIST_PRIME_SECONDS * 1000UL;
+            }
+            #endif
+        } else {
+            // Entering OFF phase
+            stop_motor_keep_modes();
+            twist_dry_cnt        = 0;
+            twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
+        }
+    }
+
+    // ===== 4) Enforce motor state to match phase (defensive) =====
     if (twist_on_phase) {
-        start_motor();
-        twist_phase_deadline = tnow + (uint32_t)twistSettings.onDurationSeconds * 1000UL;
+        if (!Motor_GetStatus()) start_motor();
     } else {
-        stop_motor_keep_modes();
-        twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
+        if (Motor_GetStatus())  stop_motor_keep_modes();
     }
 }
 
@@ -530,8 +557,10 @@ static uint32_t seconds_since_midnight(void)
 }
 static void timer_tick(void)
 {
-    // Timer must not fight Manual
-    if (manualOverride && manualActive) {
+    /* NEW: Timer yields to all other active modes */
+    if (manualOverride && manualActive) { timerActive = false; return; }
+    if (countdownActive || twistSettings.twistActive ||
+        searchSettings.searchActive || semiAutoActive) {
         timerActive = false;
         return;
     }
@@ -724,7 +753,7 @@ void ModelHandle_Process(void)
 {
     /* keep your original order of tickers */
     countdown_tick();
-    twist_tick();
+    twist_tick();     // critical for Twist mode
     search_tick();
     timer_tick();
     semi_auto_tick();
@@ -754,5 +783,9 @@ void ModelHandle_ProcessUartCommand(const char* cmd)
     else if (strcmp(cmd, "MOTOR_OFF")== 0)  { ModelHandle_SetMotor(false); printf("Manual OFF (UART)\r\n"); }
     else if (strcmp(cmd, "SEMI_AUTO_START")==0) { ModelHandle_StartSemiAuto(); }
     else if (strcmp(cmd, "SEMI_AUTO_STOP")==0)  { ModelHandle_StopSemiAuto(); }
+    else if (strcmp(cmd, "TWIST_START")==0)     { ModelHandle_StartTwist(twistSettings.onDurationSeconds, twistSettings.offDurationSeconds); }
+    else if (strcmp(cmd, "TWIST_STOP")==0)      { ModelHandle_StopTwist(); }
+    else if (strcmp(cmd, "SEARCH_START")==0)    { ModelHandle_StartSearch(searchSettings.testingGapSeconds, searchSettings.dryRunTimeSeconds); }
+    else if (strcmp(cmd, "SEARCH_STOP")==0)     { ModelHandle_StopSearch(); }
     else if (strcmp(cmd, "RESET_ALL")==0)       { ModelHandle_ResetAll(); }
 }
