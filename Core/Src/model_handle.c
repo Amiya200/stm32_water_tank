@@ -385,28 +385,50 @@ void ModelHandle_StopTwist(void)
     stop_motor_keep_modes();
 }
 // Call this from your main scheduler at ~10–100ms rate
+// Call ~every 10–100 ms from your main loop/scheduler
 void twist_tick(void)
 {
+    // 0) Inert unless explicitly enabled by the user
+    if (!twistSettings.twistActive) {
+        // Defensive: never force motor here—other modes own it.
+        return;
+    }
+
     uint32_t tnow = now_ms();
 
-    // ===== 1) Priming window =====
-    // Keep motor ON during priming, but DO NOT slide the phase deadline.
+    // 1) Global safety gates (if your project uses these flags)
+    //    If any protection is latched, keep Twist "enabled" but stop driving the motor.
+    if (senseOverLoad || senseOverUnderVolt || senseMaxRunReached) {
+        stop_motor_keep_modes();   // do not clear modes; just stop motor output
+        return;
+    }
+
+    // 2) Priming window logic:
+    //    When we first enter an ON phase we allow a short "prime" even if the sensor reads dry,
+    //    to build initial pressure. This DOES NOT move the phase deadline.
     if (twist_priming) {
         if ((int32_t)(twist_prime_deadline - tnow) > 0) {
-            if (!Motor_GetStatus()) {
-                start_motor();
-            }
-            // Stay ON during prime; do not touch twist_phase_deadline here.
-            return;
+            if (!Motor_GetStatus()) start_motor();   // stay ON during priming
+            return;                                  // do not touch phase deadline
         } else {
-            twist_priming = false; // priming finished
+            twist_priming = false;                   // priming finished
         }
     }
 
-    // ===== 2) Early cut to OFF if supply is dry while ON =====
+    // 3) While in ON phase, you may optionally gate on "dry" (if your design wants this).
+    //    We DON’T toggle the motor from ADC elsewhere; we only *observe* a dry flag here.
+    //    If you don’t want dry handling in Twist, you can remove this block.
+#if defined(DRY_STOP_DELAY_SECONDS) && (DRY_STOP_DELAY_SECONDS > 0)
     if (twist_on_phase) {
-        if (isDryLowSupply_debounced()) {
-            // Cut short the ON phase and go to OFF interval immediately
+        // If a dry condition is being signaled by the sensing layer, count it.
+        if (senseDryRun) {
+            if (twist_dry_cnt < 0xFF) twist_dry_cnt++;
+        } else {
+            twist_dry_cnt = 0;
+        }
+
+        // If dry persisted long enough, end the ON phase early and jump to OFF.
+        if (twist_dry_cnt >= (uint8_t)DRY_STOP_DELAY_SECONDS) {
             stop_motor_keep_modes();
             twist_on_phase       = false;
             twist_dry_cnt        = 0;
@@ -414,8 +436,9 @@ void twist_tick(void)
             return;
         }
     }
+#endif
 
-    // ===== 3) Phase deadline reached? Toggle phase =====
+    // 4) Phase timing: flip when deadline elapses (signed compare prevents wrap issues).
     if ((int32_t)(twist_phase_deadline - tnow) <= 0) {
         twist_on_phase = !twist_on_phase;
 
@@ -425,26 +448,24 @@ void twist_tick(void)
             start_motor();
             twist_phase_deadline = tnow + (uint32_t)twistSettings.onDurationSeconds * 1000UL;
 
-            // Arm priming exactly when we enter ON (once per ON phase)
-            #ifdef TWIST_PRIME_SECONDS
-            if (TWIST_PRIME_SECONDS > 0) {
-                twist_priming        = true;
-                twist_prime_deadline = tnow + (uint32_t)TWIST_PRIME_SECONDS * 1000UL;
-            }
-            #endif
+            // Arm priming exactly when ON begins (once per ON phase).
+#if defined(TWIST_PRIME_SECONDS) && (TWIST_PRIME_SECONDS > 0)
+            twist_priming        = true;
+            twist_prime_deadline = tnow + (uint32_t)TWIST_PRIME_SECONDS * 1000UL;
+#endif
         } else {
             // Entering OFF phase
             stop_motor_keep_modes();
             twist_dry_cnt        = 0;
             twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
         }
-    }
-
-    // ===== 4) Enforce motor state to match phase (defensive) =====
-    if (twist_on_phase) {
-        if (!Motor_GetStatus()) start_motor();
     } else {
-        if (Motor_GetStatus())  stop_motor_keep_modes();
+        // 5) Maintain current phase outputs until the deadline arrives
+        if (twist_on_phase) {
+            if (!Motor_GetStatus()) start_motor();
+        } else {
+            if (Motor_GetStatus())  stop_motor_keep_modes();
+        }
     }
 }
 
