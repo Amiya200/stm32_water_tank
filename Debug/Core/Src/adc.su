@@ -1,5 +1,5 @@
 ../Core/Src/adc.c:70:14:readChannelVoltage	40	static
 ../Core/Src/adc.c:92:14:readChannelAveraged	32	static
 ../Core/Src/adc.c:102:6:ADC_Init	16	static
-../Core/Src/adc.c:110:6:ADC_ReadAllChannels	64	static
-../Core/Src/adc.c:181:9:ADC_CheckMaxVoltage	24	static
+../Core/Src/adc.c:109:6:ADC_ReadAllChannels	64	static
+../Core/Src/adc.c:185:9:ADC_CheckMaxVoltage	24	static

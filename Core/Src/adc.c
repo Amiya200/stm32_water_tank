@@ -106,7 +106,6 @@ void ADC_Init(ADC_HandleTypeDef* hadc)
     }
 }
 
-// adc.c  -> replace the entire ADC_ReadAllChannels() with this version
 void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
 {
     bool changed = false;
@@ -128,17 +127,17 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             v = 0.0f;
 
         data->voltages[i]   = v;
-        data->rawValues[i]  = (uint16_t)((v * VREF) / ADC_RES);
+        data->rawValues[i]  = (uint16_t)((v * ADC_RES) / VREF);
         data->maxReached[i] = (v >= 3.2f);
         g_adcVoltages[i]    = v;
 
-        // Detect meaningful change for telemetry
+        // Detect meaningful change
         if (fabsf(v - s_prev_volt[i]) > PRINT_DELTA) {
             changed = true;
             s_prev_volt[i] = v;
         }
 
-        // Threshold bookkeeping ONLY (no motor control here)
+        // Normal threshold logic (sets motorStatus, etc.)
         if (!s_level_flags[i] && v >= THR) {
             s_level_flags[i] = 1;
             switch (i) {
@@ -149,9 +148,10 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
                 case 4: snprintf(dataPacketTx, sizeof(dataPacketTx), "@DRY#"); break;
                 default: dataPacketTx[0] = '\0'; break;
             }
-            // ❌ removed: motorStatus = 1;
+//            motorStatus = 1;
             s_low_counts[i] = 0;
 
+            // append to LoRa packet buffer
             if (dataPacketTx[0]) {
                 strncat(loraPacket, dataPacketTx, sizeof(loraPacket)-strlen(loraPacket)-1);
                 strncat(loraPacket, ";", sizeof(loraPacket)-strlen(loraPacket)-1);
@@ -161,15 +161,19 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             s_level_flags[i] = 0;
         }
 
-        // Dry-run debounce ONLY for sensing; do not toggle motor here
+        // dry run debounce
         if (v < DRY_VOLTAGE_THRESHOLD) {
             if (s_low_counts[i] < 0xFF) s_low_counts[i]++;
         } else {
             s_low_counts[i] = 0;
         }
 
-        // ❌ removed: the block that forced motor OFF on dry when not in manualOverride
-        // (Motor is now controlled exclusively by ModelHandle_* state machines)
+        if (!manualOverride) {
+            if (motorStatus == 1 && s_low_counts[i] >= DRY_COUNT_THRESHOLD) {
+                motorStatus = 0;
+                memset(s_low_counts, 0, sizeof(s_low_counts));
+            }
+        }
     }
 
     // === Send LoRa packet only if ADC changed ===
