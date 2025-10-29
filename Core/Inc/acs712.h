@@ -22,9 +22,11 @@ extern float g_voltageV;   // Volts
  * ------------------------------- */
 #define ACS712_ADC_CHANNEL        ADC_CHANNEL_7
 #define ACS712_NUM_SAMPLES        10
-#define ACS712_SENSITIVITY_RAW    0.066f            // 66 mV per Amp
-#define ACS712_VREF_ADC           3.3f
-#define ACS712_ADC_RESOLUTION     4095.0f
+// Example for ACS712-20A: 100 mV/A. For 30A use 66 mV/A.
+#define ACS712_SENSITIVITY_RAW   0.100f   // V/A  (adjust to your module)
+#define ACS712_VREF_ADC          3.3f
+#define ACS712_ADC_RESOLUTION    4095.0f
+
 
 // response & filter tuning
 #define ACS712_FILTER_ALPHA       0.3f              // 0.1 = very smooth, 0.6 = fast

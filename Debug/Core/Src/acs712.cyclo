@@ -1,6 +1,9 @@
-../Core/Src/acs712.c:21:14:ReadAverageVoltage	2
-../Core/Src/acs712.c:44:6:ACS712_Init	1
-../Core/Src/acs712.c:54:6:ACS712_CalibrateZero	2
-../Core/Src/acs712.c:83:7:ACS712_ReadCurrent	2
-../Core/Src/acs712.c:103:7:Voltage_ReadInput	1
-../Core/Src/acs712.c:119:6:ACS712_Update	1
+../Core/Src/acs712.c:39:14:median5	4
+../Core/Src/acs712.c:52:14:ReadAverageVoltage	2
+../Core/Src/acs712.c:73:6:ACS712_Init	1
+../Core/Src/acs712.c:81:6:ACS712_CalibrateZero	2
+../Core/Src/acs712.c:96:14:sample_current_instant_A	2
+../Core/Src/acs712.c:118:14:rms_window_update	3
+../Core/Src/acs712.c:136:7:ACS712_ReadCurrent	2
+../Core/Src/acs712.c:156:7:Voltage_ReadInput	1
+../Core/Src/acs712.c:167:6:ACS712_Update	1
