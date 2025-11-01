@@ -1,100 +1,114 @@
 #include "uart.h"
-//#include <stdbool.h> // Add this line
-// RX buffers
-static uint8_t rxByte;                             // single-byte buffer for HAL_UART_Receive_IT
-static char rxBuffer[UART_RX_BUFFER_SIZE];         // internal storage buffer
-static uint16_t rxIndex = 0;                       // current index in rxBuffer
-static bool packetReady = false;                   // Flag to indicate if a complete packet is ready
+#include <string.h>
+#include <stdbool.h>
 
-/**
-  * @brief Initialize UART reception (interrupt mode, one byte at a time).
-  */
+extern UART_HandleTypeDef huart1;
+
+/* ---------------- Configuration ---------------- */
+#define UART_START_MARKER '@'
+#define UART_END_MARKER   '#'
+
+static uint8_t rxByte;
+static char rxBuffer[UART_RX_BUFFER_SIZE];
+static char rxReadyBuffer[UART_RX_BUFFER_SIZE];
+
+static volatile uint16_t rxIndex = 0;
+static volatile bool packetReady = false;
+static volatile bool inPacket = false;
+
+/* -------------------------------------------------
+ * UART Initialization
+ * ------------------------------------------------- */
 void UART_Init(void)
 {
-    // Clear the buffer and reset index
     memset(rxBuffer, 0, sizeof(rxBuffer));
+    memset(rxReadyBuffer, 0, sizeof(rxReadyBuffer));
     rxIndex = 0;
     packetReady = false;
+    inPacket = false;
 
-    // Start UART reception (non-blocking)
-    HAL_UART_Receive_IT(&huart1, &rxByte, 1);
+    HAL_UART_Receive_IT(&huart1, &rxByte, 1);  // start 1-byte receive interrupt
 }
 
-/**
-  * @brief Transmit a null-terminated string.
-  */
+/* -------------------------------------------------
+ * Transmit helpers
+ * ------------------------------------------------- */
 void UART_TransmitString(UART_HandleTypeDef *huart, const char *str)
 {
     HAL_UART_Transmit(huart, (uint8_t *)str, strlen(str), HAL_MAX_DELAY);
 }
 
-/**
-  * @brief Transmit a single byte.
-  */
 void UART_TransmitByte(UART_HandleTypeDef *huart, uint8_t byte)
 {
     HAL_UART_Transmit(huart, &byte, 1, HAL_MAX_DELAY);
 }
 
-/**
-  * @brief Callback when one byte is received (interrupt-driven).
-  */
+/* -------------------------------------------------
+ * RX Interrupt Handler
+ * ------------------------------------------------- */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1)
     {
-        // Check for buffer overflow before storing the byte
-        if (rxIndex < (UART_RX_BUFFER_SIZE - 1))
+        // --- Packet parser ---
+        if (!packetReady)
         {
-            rxBuffer[rxIndex++] = rxByte;
-
-            // Check if the received byte is the delimiter
-            if (rxByte == UART_RX_DELIMITER)
+            if (rxByte == UART_START_MARKER)
             {
-                rxBuffer[rxIndex] = '\0'; // Null-terminate the received packet
-                packetReady = true;       // Set flag that a complete packet is ready
+                inPacket = true;
+                rxIndex = 0;
+                memset(rxBuffer, 0, sizeof(rxBuffer));
+            }
+            else if (inPacket && rxByte == UART_END_MARKER)
+            {
+                // End of packet
+                rxBuffer[rxIndex] = UART_END_MARKER;
+                rxBuffer[rxIndex + 1] = '\0';
+                memcpy(rxReadyBuffer, rxBuffer, rxIndex + 2);
+                packetReady = true;
+                inPacket = false;
+                rxIndex = 0;
+            }
+            else if (inPacket)
+            {
+                if (rxIndex < (UART_RX_BUFFER_SIZE - 2))
+                {
+                    rxBuffer[rxIndex++] = rxByte;
+                }
+                else
+                {
+                    // Overflow, reset safely
+                    inPacket = false;
+                    rxIndex = 0;
+                    memset(rxBuffer, 0, sizeof(rxBuffer));
+                }
             }
         }
-        else
-        {
-            // Buffer overflow: reset buffer and index, discard current partial packet
-            rxIndex = 0;
-            memset(rxBuffer, 0, sizeof(rxBuffer));
-            packetReady = false; // No complete packet available
-            // Optionally, add an error log or indicator here
-        }
 
-        // Restart UART reception for the next byte
+        // Restart single-byte receive interrupt
         HAL_UART_Receive_IT(&huart1, &rxByte, 1);
     }
 }
 
+/* -------------------------------------------------
+ * Retrieve one complete packet safely
+ * ------------------------------------------------- */
 bool UART_GetReceivedPacket(char *buffer, size_t buffer_size)
 {
-    if (packetReady)
-    {
-        // Ensure destination buffer is large enough
-        size_t len = strlen(rxBuffer);
-        if (len < buffer_size)
-        {
-            strncpy(buffer, rxBuffer, buffer_size - 1);
-            buffer[buffer_size - 1] = '\0'; // Ensure null-termination
+    if (!packetReady)
+        return false;
 
-            // Reset internal buffer for next packet
-            memset(rxBuffer, 0, sizeof(rxBuffer));
-            rxIndex = 0;
-            packetReady = false;
-            return true;
-        }
-        else
-        {
-            // Destination buffer too small, discard internal packet
-            memset(rxBuffer, 0, sizeof(rxBuffer));
-            rxIndex = 0;
-            packetReady = false;
-            // Optionally, log an error
-        }
-    }
-    return false; // Ensure to return false if no packet is ready
+    __disable_irq();
+    size_t len = strlen(rxReadyBuffer);
+    if (len >= buffer_size)
+        len = buffer_size - 1;
+
+    strncpy(buffer, rxReadyBuffer, len);
+    buffer[len] = '\0';
+
+    packetReady = false;
+    memset(rxReadyBuffer, 0, sizeof(rxReadyBuffer));
+    __enable_irq();
+
+    return true;
 }
-

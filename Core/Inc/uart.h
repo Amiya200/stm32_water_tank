@@ -7,16 +7,13 @@
 #include <stdio.h>
 #include <stdbool.h> // Add this line
 
-
-#define UART_RX_BUFFER_SIZE   64   // Increased buffer size for more flexibility
-#define UART_RX_DELIMITER     '#'  // Assuming '#' is the end-of-packet delimiter
-
-extern UART_HandleTypeDef huart1;   // defined in main.c or CubeMX
-
-// Function prototypes
+#define UART_RX_BUFFER_SIZE 128
+extern UART_HandleTypeDef huart1;
 void UART_Init(void);
+bool UART_GetReceivedPacket(char *buffer, size_t buffer_size);
 void UART_TransmitString(UART_HandleTypeDef *huart, const char *str);
 void UART_TransmitByte(UART_HandleTypeDef *huart, uint8_t byte);
+
 
 // New function to check and retrieve a complete received packet
 // Returns true if a complete packet is available, false otherwise.

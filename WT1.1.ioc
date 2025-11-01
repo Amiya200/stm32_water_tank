@@ -106,6 +106,7 @@ NVIC.PriorityGroup=NVIC_PRIORITYGROUP_4
 NVIC.RTC_Alarm_IRQn=true\:0\:0\:false\:false\:true\:true\:true\:true
 NVIC.SVCall_IRQn=true\:0\:0\:false\:false\:true\:false\:false\:false
 NVIC.SysTick_IRQn=true\:0\:0\:true\:false\:true\:false\:true\:false
+NVIC.USART1_IRQn=true\:0\:0\:false\:false\:true\:true\:true\:true
 NVIC.UsageFault_IRQn=true\:0\:0\:false\:false\:true\:false\:false\:false
 PA0-WKUP.Locked=true
 PA0-WKUP.Signal=ADCx_IN0

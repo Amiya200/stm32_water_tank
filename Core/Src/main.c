@@ -1,5 +1,3 @@
-//error in the sir function decleration
-
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
@@ -176,12 +174,11 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_ADC1_Init();
-//  MX_RTC_Init();
+  MX_RTC_Init();
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_I2C2_Init();
   MX_TIM3_Init();
-  UART_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_Base_Start(&htim3);
@@ -237,11 +234,9 @@ int main(void)
 
       /* UART command handling */
       if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-          char *p = receivedUartPacket;
-          size_t n = strlen(receivedUartPacket);
-          if (n >= 2 && p[0] == '@' && p[n-1] == '#') { p[n-1] = '\0'; p++; }
-          ModelHandle_ProcessUartCommand(p);
+          printf("Got: %s\r\n", receivedUartPacket);
       }
+
 
       /* Other tasks */
       ModelHandle_Process();
@@ -256,7 +251,6 @@ int main(void)
   }
   /* USER CODE END 3 */
 }
-
 
 /**
   * @brief System Clock Configuration
@@ -326,7 +320,7 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;//ENABLE;//problem
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
