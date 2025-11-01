@@ -233,8 +233,11 @@ int main(void)
       }
 
       /* UART command handling */
+//      if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
+//          printf("Got: %s\r\n", receivedUartPacket);
+//      }
       if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-          printf("Got: %s\r\n", receivedUartPacket);
+          UART_HandleCommand(receivedUartPacket);
       }
 
 
