@@ -32,7 +32,7 @@ Core/Src/uart_commands.o: ../Core/Src/uart_commands.c \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h \
  ../Core/Inc/uart.h ../Core/Inc/model_handle.h ../Core/Inc/adc.h \
- ../Core/Inc/adc.h ../Core/Inc/relay.h ../Core/Inc/rtc_i2c.h
+ ../Core/Inc/relay.h ../Core/Inc/rtc_i2c.h
 ../Core/Inc/uart_commands.h:
 ../Core/Inc/main.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h:
@@ -68,7 +68,6 @@ Core/Src/uart_commands.o: ../Core/Src/uart_commands.c \
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h:
 ../Core/Inc/uart.h:
 ../Core/Inc/model_handle.h:
-../Core/Inc/adc.h:
 ../Core/Inc/adc.h:
 ../Core/Inc/relay.h:
 ../Core/Inc/rtc_i2c.h:

@@ -1,32 +1,24 @@
 #include "uart_commands.h"
 #include "uart.h"
 #include "model_handle.h"
-#include "adc.h"
 #include "relay.h"
 #include "rtc_i2c.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <stdbool.h>
 
-/* ============================================================
-   Helper transmit functions
-   ============================================================ */
-static inline void send_ack(const char *msg) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "@ACK:%s#\r\n", msg);
-    UART_TransmitString(&huart1, buf);
+static inline void ack(const char *msg)
+{
+    char small[40];
+    snprintf(small, sizeof(small), "ACK:%s", msg);
+    UART_TransmitPacket(small);
 }
-
-static inline void send_error(const char *msg) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "@ERR:%s#\r\n", msg);
-    UART_TransmitString(&huart1, buf);
+static inline void err(const char *msg)
+{
+    char small[40];
+    snprintf(small, sizeof(small), "ERR:%s", msg);
+    UART_TransmitPacket(small);
 }
-
-/* ============================================================
-   Status helpers
-   ============================================================ */
 void UART_SendStatusPacket(void)
 {
     extern ADC_Data adcData;
@@ -35,137 +27,70 @@ void UART_SendStatusPacket(void)
         if (adcData.voltages[i] < 0.1f) submerged++;
     }
 
-    const char *motorState = motorStatus ? "ON" : "OFF";
-    char buf[64];
-    snprintf(buf, sizeof(buf),
-             "@STATUS:MOTOR:%s:LEVEL:%d#\r\n",
-             motorState, submerged);
-    UART_TransmitString(&huart1, buf);
+    const char *motor = motorStatus ? "ON" : "OFF";
+    char buf[48];
+    snprintf(buf, sizeof(buf), "STATUS:MOTOR:%s:LEVEL:%d", motor, submerged);
+    UART_TransmitPacket(buf);
 }
 
-void UART_SendDryAlert(void) {
-    UART_TransmitString(&huart1, "@ALERT:DRYRUN#\r\n");
-}
-
-/* ============================================================
-   Command execution
-   ============================================================ */
-void UART_HandleCommand(const char *packet)
+void UART_HandleCommand(const char *pkt)
 {
-    if (!packet || packet[0] != '@')
-        return;
+    if (!pkt || pkt[0] == '\0') return;
 
-    /* Copy safely to local buffer */
     char cmd[UART_RX_BUFFER_SIZE];
-    strncpy(cmd, packet, sizeof(cmd) - 1);
+    strncpy(cmd, pkt, sizeof(cmd) - 1);
     cmd[sizeof(cmd) - 1] = '\0';
 
-    /* Trim start/end markers */
-    size_t len = strlen(cmd);
-    if (cmd[len - 1] == '#') cmd[len - 1] = '\0';
-    if (cmd[0] == '@') memmove(cmd, cmd + 1, len);
+    if (cmd[0] == '@') memmove(cmd, cmd + 1, strlen(cmd));
+    char *end = strchr(cmd, '#');
+    if (end) *end = '\0';
 
-    /* Tokenize */
-    char *saveptr;
-    char *mainTok = strtok_r(cmd, ":", &saveptr);
-    if (!mainTok) return;
+    char *t = strtok(cmd, ":");
+    if (!t) return;
 
-    /* -------- MANUAL -------- */
-    if (strcmp(mainTok, "MANUAL") == 0) {
-        char *state = strtok_r(NULL, ":", &saveptr);
-        if (!state) { send_error("MANUAL_PARAM"); return; }
+    if (!strcmp(t, "PING")) { ack("PONG"); return; }
 
-        if (strcmp(state, "ON") == 0) {
-            ModelHandle_StopAllModesAndMotor();
-            ModelHandle_ToggleManual();
-            send_ack("MANUAL_ON");
-        } else if (strcmp(state, "OFF") == 0) {
-            ModelHandle_StopAllModesAndMotor();
-            send_ack("MANUAL_OFF");
-        } else send_error("MANUAL_FORMAT");
+    if (!strcmp(t, "MANUAL")) {
+        char *s = strtok(NULL, ":");
+        if (!s) { err("PARAM"); return; }
+        if (!strcmp(s, "ON"))  { ModelHandle_ToggleManual(); ack("MANUAL_ON"); }
+        else if (!strcmp(s, "OFF")) { ModelHandle_StopAllModesAndMotor(); ack("MANUAL_OFF"); }
+        else err("FORMAT");
+        return;
     }
 
-    /* -------- SEMI AUTO -------- */
-    else if (strcmp(mainTok, "SEMI") == 0) {
-        char *state = strtok_r(NULL, ":", &saveptr);
-        if (!state) { send_error("SEMI_PARAM"); return; }
-
-        if (strcmp(state, "ON") == 0) {
-            ModelHandle_ResetAll();
-            semiAutoActive = true;
-            Relay_Set(1, true);
-            send_ack("SEMI_ON");
-        } else if (strcmp(state, "OFF") == 0) {
-            ModelHandle_StopAllModesAndMotor();
-            send_ack("SEMI_OFF");
+    if (!strcmp(t, "TWIST")) {
+        char *sub = strtok(NULL, ":");
+        if (sub && !strcmp(sub, "SET")) {
+            uint16_t on = atoi(strtok(NULL, ":"));
+            uint16_t off = atoi(strtok(NULL, ":"));
+            ModelHandle_StartTwist(on, off);
+            ack("TWIST_SET");
+        } else if (sub && !strcmp(sub, "STOP")) {
+            ModelHandle_StopTwist();
+            ack("TWIST_STOP");
         }
+        return;
     }
 
-    /* -------- COUNTDOWN -------- */
-    else if (strcmp(mainTok, "COUNTDOWN") == 0) {
-        char *state = strtok_r(NULL, ":", &saveptr);
-        if (!state) { send_error("COUNT_PARAM"); return; }
-
-        if (strcmp(state, "ON") == 0) {
-            char *minStr = strtok_r(NULL, ":", &saveptr);
-            uint16_t mins = (minStr) ? atoi(minStr) : 1;
-            ModelHandle_StartCountdown(mins * 60, 1);
-            send_ack("COUNTDOWN_ON");
-        } else if (strcmp(state, "OFF") == 0 || strcmp(state, "DONE") == 0) {
+    if (!strcmp(t, "COUNTDOWN")) {
+        char *s = strtok(NULL, ":");
+        if (s && !strcmp(s, "ON")) {
+            uint16_t min = atoi(strtok(NULL, ":"));
+            if (min == 0) min = 1;
+            ModelHandle_StartCountdown(min * 60, 1);
+            ack("COUNTDOWN_ON");
+        } else if (s && !strcmp(s, "OFF")) {
             ModelHandle_StopCountdown();
-            send_ack("COUNTDOWN_OFF");
+            ack("COUNTDOWN_OFF");
         }
+        return;
     }
 
-    /* -------- TWIST -------- */
-    else if (strcmp(mainTok, "TWIST") == 0) {
-        char *sub = strtok_r(NULL, ":", &saveptr);
-        if (sub && strcmp(sub, "SET") == 0) {
-            char *onStr = strtok_r(NULL, ":", &saveptr);
-            char *offStr = strtok_r(NULL, ":", &saveptr);
-            if (onStr && offStr) {
-                uint16_t on = atoi(onStr);
-                uint16_t off = atoi(offStr);
-                ModelHandle_StartTwist(on, off);
-                send_ack("TWIST_SET");
-            } else send_error("TWIST_ARGS");
-        } else send_error("TWIST_FORMAT");
-    }
-
-    /* -------- SEARCH -------- */
-    else if (strcmp(mainTok, "SEARCH") == 0) {
-        char *sub = strtok_r(NULL, ":", &saveptr);
-        if (sub && strcmp(sub, "SET") == 0) {
-            char *gapStr = strtok_r(NULL, ":", &saveptr);
-            char *dryStr = strtok_r(NULL, ":", &saveptr);
-            if (gapStr && dryStr) {
-                uint16_t gap = atoi(gapStr);
-                uint16_t dry = atoi(dryStr);
-                searchSettings.testingGapSeconds = gap;
-                searchSettings.dryRunTimeSeconds = dry;
-                searchSettings.searchActive = true;
-                searchActive = true;
-                send_ack("SEARCH_SET");
-            } else send_error("SEARCH_ARGS");
-        }
-    }
-
-    /* -------- TIMER -------- */
-    else if (strcmp(mainTok, "TIMER") == 0) {
-        char *sub = strtok_r(NULL, ":", &saveptr);
-        if (sub && strcmp(sub, "CLEAR") == 0) {
-            for (int i = 0; i < 5; i++) timerSlots[i].active = false;
-            send_ack("TIMER_CLEAR");
-        } else send_error("TIMER_FORMAT");
-    }
-
-    /* -------- STATUS -------- */
-    else if (strcmp(mainTok, "STATUS") == 0) {
+    if (!strcmp(t, "STATUS")) {
         UART_SendStatusPacket();
+        return;
     }
 
-    /* -------- UNKNOWN -------- */
-    else {
-        send_error("UNKNOWN_CMD");
-    }
+    err("UNKNOWN");
 }

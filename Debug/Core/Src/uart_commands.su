@@ -1,5 +1,4 @@
-../Core/Src/uart_commands.c:15:20:send_ack	80	static
-../Core/Src/uart_commands.c:21:20:send_error	80	static
-../Core/Src/uart_commands.c:30:6:UART_SendStatusPacket	96	static
-../Core/Src/uart_commands.c:46:6:UART_SendDryAlert	8	static
-../Core/Src/uart_commands.c:53:6:UART_HandleCommand	216	static
+../Core/Src/uart_commands.c:10:20:ack	56	static
+../Core/Src/uart_commands.c:16:20:err	56	static
+../Core/Src/uart_commands.c:22:6:UART_SendStatusPacket	80	static
+../Core/Src/uart_commands.c:36:6:UART_HandleCommand	120	static
