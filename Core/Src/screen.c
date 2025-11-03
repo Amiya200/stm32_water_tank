@@ -429,6 +429,41 @@ void Screen_Update(void){
     }
 }
 
+void Screen_ShowCurrentMode(void)
+{
+//    extern volatile bool manualActive;
+//    extern volatile bool semiAutoActive;
+//    extern volatile bool timerActive;
+//    extern volatile bool searchActive;
+//    extern volatile bool countdownActive;
+//    extern volatile bool twistActive;
+//
+//    /* This function must NEVER allocate heap.
+//       Only change logical UI state — let Screen_Update() do rendering. */
+//
+//    static UiState lastUi = UI_MAX_;
+//    UiState newUi;
+//
+//    // Determine which logical mode is active
+//    if (manualActive)        newUi = UI_MANUAL;
+//    else if (semiAutoActive) newUi = UI_SEMI_AUTO;
+//    else if (timerActive)    newUi = UI_TIMER;
+//    else if (searchActive)   newUi = UI_SEARCH;
+//    else if (countdownActive)newUi = UI_COUNTDOWN;
+//    else if (twistActive)    newUi = UI_TWIST;
+//    else                     newUi = UI_DASH;
+//
+//    // Only switch UI state if mode actually changed
+//    if (newUi != lastUi) {
+//        ui = newUi;
+//        lastUi = newUi;
+//        screenNeedsRefresh = true;
+//        // no lcd_clear(), no snprintf(), no lcd_send_string()
+//    }
+}
+
+
+
 /* ===== Initialization / Reset ===== */
 void Screen_Init(void){
     lcd_init();

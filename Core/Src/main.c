@@ -92,6 +92,9 @@ static void MX_TIM3_Init(void);
 void Debug_Print(char *msg) {
     UART_TransmitString(&huart1, msg);
 }
+
+bool g_screenUpdatePending = false;
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -181,6 +184,8 @@ int main(void)
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
+  /* USER CODE BEGIN 2 */
+
   HAL_TIM_Base_Start(&htim3);
   RF_Init();
   lcd_init();
@@ -191,19 +196,19 @@ int main(void)
   Switches_Init();
   Relay_Init();
   LED_Init();
-
-
   ACS712_Init(&hadc1);
+
   /* === RTC Initialization === */
-  RTC_Init();                   /* probe + clear CH */
-  RTC_GetTimeDate();            /* read once */
-//    RTC_SetTimeDate_AutoDOW(0, 14, 13, 29, 9, 2025);
+  RTC_Init();
+  RTC_GetTimeDate();
 
   Debug_Print("System Initialized\r\n");
   ModelHandle_ResetAll();
-  uint8_t lastSecond = 255;
 
-  /* inside while(1) loop in main.c */
+  uint8_t lastSecond = 255;
+  bool g_screenUpdatePending = false;
+  uint32_t g_lastScreenUpdate = 0;
+  const uint32_t SCREEN_UPDATE_INTERVAL_MS = 1000;   // 1Hz LCD refresh limit
 
   /* USER CODE END 2 */
 
@@ -211,47 +216,47 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
-	  ACS712_Update();
-	  RF_SendCode(1766904, 24);
-      /* App tasks */
-      Screen_HandleSwitches();
-      Screen_Update();
+      /* ---------- Periodic sensors / I/O ---------- */
+      ACS712_Update();
+      RF_SendCode(1766904, 24);
       ADC_ReadAllChannels(&hadc1, &adcData);
 
-      /* === Update time once per second === */
+      /* ---------- UI Handling ---------- */
+      Screen_HandleSwitches();
+      Screen_Update();
+
+      /* ---------- RTC Display Update ---------- */
       RTC_GetTimeDate();
       if (time.seconds != lastSecond) {
           lastSecond = time.seconds;
 
-          snprintf(dbg, sizeof(dbg),
+          // Throttle snprintf to once per second
+          int len = snprintf(dbg, sizeof(dbg),
                    "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d (DOW=%d)\r\n",
                    time.hour, time.minutes, time.seconds,
                    time.dayofmonth, time.month, time.year,
                    time.dayofweek);
-          Debug_Print(dbg);
+          if (len > 0) Debug_Print(dbg);
       }
 
-      /* UART command handling */
-//      if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-//          printf("Got: %s\r\n", receivedUartPacket);
-//      }
+      /* ---------- UART Commands ---------- */
       if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-          UART_HandleCommand(receivedUartPacket);
+          UART_HandleCommand(receivedUartPacket);   // decode & execute
+          g_screenUpdatePending = true;             // trigger UI refresh flag
       }
 
 
-      /* Other tasks */
+      /* ---------- Deferred LCD refresh ---------- */
+
+
+      /* ---------- Background Tasks ---------- */
       ModelHandle_Process();
-      // ❌ Relay_All(false);  <-- removed, was overriding relay control
       LED_Task();
 
-      HAL_Delay(20);  // faster responsiveness (was 50)
-
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
+      HAL_Delay(20);   // ~50Hz main tick, non-blocking
   }
+  /* USER CODE END WHILE */
+
   /* USER CODE END 3 */
 }
 
