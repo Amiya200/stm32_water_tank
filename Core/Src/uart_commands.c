@@ -3,193 +3,153 @@
 #include "model_handle.h"
 #include "relay.h"
 #include "rtc_i2c.h"
-#include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
-/* ============================================================
-   Acknowledgment / Error helpers
-   ============================================================ */
-static inline void ack(const char *msg)
-{
-    char small[40];
-    snprintf(small, sizeof(small), "ACK:%s", msg);
-    UART_TransmitPacket(small);
-}
-static inline void err(const char *msg)
-{
-    char small[40];
-    snprintf(small, sizeof(small), "ERR:%s", msg);
-    UART_TransmitPacket(small);
-}
-
-/* Flag defined in main.c to trigger screen refresh safely */
 extern bool g_screenUpdatePending;
+extern TimerSlot timerSlots[5];
 
-/* ============================================================
-   Status Packet
-   ============================================================ */
+static inline void ack(const char *msg) { UART_TransmitPacket(msg); }
+static inline void err(const char *msg) { UART_TransmitPacket(msg); }
+
+// simple string splitter (faster than strtok)
+static char* next_token(char** ctx) {
+    char* s = *ctx;
+    if (!s) return NULL;
+    char* colon = strchr(s, ':');
+    if (colon) { *colon = '\0'; *ctx = colon + 1; }
+    else { *ctx = NULL; }
+    return s;
+}
+
 void UART_SendStatusPacket(void)
 {
     extern ADC_Data adcData;
+    extern volatile uint8_t motorStatus;
+    extern volatile bool manualActive;
+    extern volatile bool semiAutoActive;
+    extern volatile bool timerActive;
+    extern volatile bool searchActive;
+    extern volatile bool countdownActive;
+    extern volatile bool twistActive;
+
     int submerged = 0;
     for (int i = 0; i < 5; i++) {
         if (adcData.voltages[i] < 0.1f) submerged++;
     }
 
     const char *motor = motorStatus ? "ON" : "OFF";
-    char buf[64];
-    snprintf(buf, sizeof(buf), "STATUS:MOTOR:%s:LEVEL:%d", motor, submerged);
+
+    const char *mode = "IDLE";
+    if (manualActive)         mode = "MANUAL";
+    else if (semiAutoActive)  mode = "SEMIAUTO";
+    else if (timerActive)     mode = "TIMER";
+    else if (searchActive)    mode = "SEARCH";
+    else if (countdownActive) mode = "COUNTDOWN";
+    else if (twistActive)     mode = "TWIST";
+
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+             "STATUS:MOTOR:%s:LEVEL:%d:MODE:%s",
+             motor, submerged, mode);
+
     UART_TransmitPacket(buf);
 }
 
-/* ============================================================
-   Main UART Command Handler
-   ============================================================ */
 void UART_HandleCommand(const char *pkt)
 {
-    if (!pkt || pkt[0] == '\0') return;
+    if (!pkt || !*pkt) return;
 
-    char cmd[UART_RX_BUFFER_SIZE];
-    strncpy(cmd, pkt, sizeof(cmd) - 1);
-    cmd[sizeof(cmd) - 1] = '\0';
+    char buf[UART_RX_BUFFER_SIZE];
+    strncpy(buf, pkt, sizeof(buf)-1);
+    buf[sizeof(buf)-1] = '\0';
 
-    if (cmd[0] == '@') memmove(cmd, cmd + 1, strlen(cmd));
-    char *end = strchr(cmd, '#');
+    // remove wrapper chars
+    if (buf[0] == '@') memmove(buf, buf+1, strlen(buf));
+    char *end = strchr(buf, '#');
     if (end) *end = '\0';
 
-    char *t = strtok(cmd, ":");
-    if (!t) return;
+    char *ctx = buf;
+    char *cmd = next_token(&ctx);
+    if (!cmd) return;
 
-    /* ---------------- PING ---------------- */
-    if (!strcmp(t, "PING")) {
-        ack("PONG");
-        return;
+    /* --- Commands --- */
+    if (!strcmp(cmd, "PING")) { ack("PONG"); return; }
+
+    else if (!strcmp(cmd, "MANUAL")) {
+        char *state = next_token(&ctx);
+        if (!state) { err("PARAM"); return; }
+        if (!strcmp(state,"ON"))  ModelHandle_ToggleManual();
+        else if (!strcmp(state,"OFF")) ModelHandle_StopAllModesAndMotor();
+        else { err("FORMAT"); return; }
+        ack("MANUAL_OK");
     }
 
-    /* ---------------- MANUAL ---------------- */
-    if (!strcmp(t, "MANUAL")) {
-        char *s = strtok(NULL, ":");
-        if (!s) { err("PARAM"); return; }
-
-        if (!strcmp(s, "ON")) {
-            ModelHandle_ToggleManual();
-            ack("MANUAL_ON");
-        } else if (!strcmp(s, "OFF")) {
-            ModelHandle_StopAllModesAndMotor();
-            ack("MANUAL_OFF");
-        } else {
-            err("FORMAT");
-            return;
-        }
-        g_screenUpdatePending = true;
-        return;
-    }
-
-    /* ---------------- TWIST ---------------- */
-    if (!strcmp(t, "TWIST")) {
-        char *sub = strtok(NULL, ":");
-        if (sub && !strcmp(sub, "SET")) {
-            uint16_t on = atoi(strtok(NULL, ":"));
-            uint16_t off = atoi(strtok(NULL, ":"));
-            ModelHandle_StartTwist(on, off);
-            ack("TWIST_SET");
-        } else if (sub && !strcmp(sub, "STOP")) {
+    else if (!strcmp(cmd, "TWIST")) {
+        char *sub = next_token(&ctx);
+        if (sub && !strcmp(sub,"SET")) {
+            uint16_t on = atoi(next_token(&ctx));
+            uint16_t off = atoi(next_token(&ctx));
+            ModelHandle_StartTwist(on,off);
+            ack("TWIST_OK");
+        } else if (sub && !strcmp(sub,"STOP")) {
             ModelHandle_StopTwist();
             ack("TWIST_STOP");
-        } else {
-            err("FORMAT");
-            return;
-        }
-        g_screenUpdatePending = true;
-        return;
+        } else err("FORMAT");
     }
 
-    /* ---------------- SEARCH ---------------- */
-    if (!strcmp(t, "SEARCH")) {
-        char *sub = strtok(NULL, ":");
-        if (sub && !strcmp(sub, "SET")) {
-            uint16_t gap = atoi(strtok(NULL, ":"));
-            uint16_t probe = atoi(strtok(NULL, ":"));
-            ModelHandle_StartSearch(gap, probe);
-            ack("SEARCH_SET");
-        } else if (sub && !strcmp(sub, "STOP")) {
+    else if (!strcmp(cmd, "SEARCH")) {
+        char *sub = next_token(&ctx);
+        if (sub && !strcmp(sub,"SET")) {
+            uint16_t gap = atoi(next_token(&ctx));
+            uint16_t probe = atoi(next_token(&ctx));
+            ModelHandle_StartSearch(gap,probe);
+            ack("SEARCH_OK");
+        } else if (sub && !strcmp(sub,"STOP")) {
             ModelHandle_StopSearch();
             ack("SEARCH_STOP");
-        } else {
-            err("FORMAT");
-            return;
-        }
-        g_screenUpdatePending = true;
-        return;
+        } else err("FORMAT");
     }
 
-    /* ---------------- TIMER ---------------- */
-    if (!strcmp(t, "TIMER")) {
-        char *sub = strtok(NULL, ":");
-        if (sub && !strcmp(sub, "SET")) {
-            uint8_t onH = atoi(strtok(NULL, ":"));
-            uint8_t onM = atoi(strtok(NULL, ":"));
-            uint8_t offH = atoi(strtok(NULL, ":"));
-            uint8_t offM = atoi(strtok(NULL, ":"));
+    else if (!strcmp(cmd, "TIMER")) {
+        char *sub = next_token(&ctx);
+        if (sub && !strcmp(sub,"SET")) {
+            uint8_t h1 = atoi(next_token(&ctx));
+            uint8_t m1 = atoi(next_token(&ctx));
+            uint8_t h2 = atoi(next_token(&ctx));
+            uint8_t m2 = atoi(next_token(&ctx));
             timerSlots[0].active = true;
-            timerSlots[0].onTimeSeconds  = ModelHandle_TimeToSeconds(onH, onM);
-            timerSlots[0].offTimeSeconds = ModelHandle_TimeToSeconds(offH, offM);
-            ack("TIMER_SET");
-        } else if (sub && !strcmp(sub, "STOP")) {
+            timerSlots[0].onTimeSeconds  = ModelHandle_TimeToSeconds(h1,m1);
+            timerSlots[0].offTimeSeconds = ModelHandle_TimeToSeconds(h2,m2);
+            ack("TIMER_OK");
+        } else if (sub && !strcmp(sub,"STOP")) {
             timerSlots[0].active = false;
             ModelHandle_StopAllModesAndMotor();
             ack("TIMER_STOP");
-        } else {
-            err("FORMAT");
-            return;
-        }
-        g_screenUpdatePending = true;
-        return;
+        } else err("FORMAT");
     }
 
-    /* ---------------- SEMI-AUTO ---------------- */
-    if (!strcmp(t, "SEMIAUTO")) {
-        char *sub = strtok(NULL, ":");
-        if (sub && !strcmp(sub, "ON")) {
-            ModelHandle_StartSemiAuto();
-            ack("SEMIAUTO_ON");
-        } else if (sub && !strcmp(sub, "OFF")) {
-            ModelHandle_StopAllModesAndMotor();
-            ack("SEMIAUTO_OFF");
-        } else {
-            err("FORMAT");
-            return;
-        }
-        g_screenUpdatePending = true;
-        return;
-    }
-
-    /* ---------------- COUNTDOWN ---------------- */
-    if (!strcmp(t, "COUNTDOWN")) {
-        char *s = strtok(NULL, ":");
-        if (s && !strcmp(s, "ON")) {
-            uint16_t min = atoi(strtok(NULL, ":"));
-            if (min == 0) min = 1;
-            ModelHandle_StartCountdown(min * 60, 1);
+    else if (!strcmp(cmd, "COUNTDOWN")) {
+        char *sub = next_token(&ctx);
+        if (sub && !strcmp(sub,"ON")) {
+            uint16_t min = atoi(next_token(&ctx));
+            if (!min) min = 1;
+            ModelHandle_StartCountdown(min*60,1);
             ack("COUNTDOWN_ON");
-        } else if (s && !strcmp(s, "OFF")) {
+        } else if (sub && !strcmp(sub,"OFF")) {
             ModelHandle_StopCountdown();
             ack("COUNTDOWN_OFF");
-        } else {
-            err("FORMAT");
-            return;
-        }
-        g_screenUpdatePending = true;
-        return;
+        } else err("FORMAT");
     }
 
-    /* ---------------- STATUS ---------------- */
-    if (!strcmp(t, "STATUS")) {
+    else if (!strcmp(cmd, "STATUS")) {
         UART_SendStatusPacket();
+    }
+
+    else {
+//        err("UNKNOWN");
         return;
     }
 
-    /* ---------------- UNKNOWN ---------------- */
-//    err("UNKNOWN");
+    g_screenUpdatePending = true;
 }

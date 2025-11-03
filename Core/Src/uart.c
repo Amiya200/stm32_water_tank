@@ -26,15 +26,16 @@ void UART_Init(void)
 
 void UART_TransmitString(UART_HandleTypeDef *huart, const char *s)
 {
-    if (s) HAL_UART_Transmit(huart, (uint8_t*)s, strlen(s), 100);
+    if (s && *s)
+        HAL_UART_Transmit(huart, (uint8_t*)s, strlen(s), 100);
 }
 
 void UART_TransmitPacket(const char *payload)
 {
-    // uses a small static buffer instead of stack
-    static char out[64];
-    if (!payload) return;
-    size_t len = snprintf(out, sizeof(out), "@%s#\r\n", payload);
+    static char out[48];  // small, static TX buffer
+    if (!payload || !*payload) return;
+
+    size_t len = snprintf(out, sizeof(out), "@%s#", payload);
     HAL_UART_Transmit(&huart1, (uint8_t*)out, len, 100);
 }
 

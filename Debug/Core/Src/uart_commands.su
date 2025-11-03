@@ -1,4 +1,5 @@
-../Core/Src/uart_commands.c:13:20:ack	56	static
-../Core/Src/uart_commands.c:19:20:err	56	static
-../Core/Src/uart_commands.c:32:6:UART_SendStatusPacket	96	static
-../Core/Src/uart_commands.c:49:6:UART_HandleCommand	136	static
+../Core/Src/uart_commands.c:12:20:ack	16	static
+../Core/Src/uart_commands.c:13:20:err	16	static
+../Core/Src/uart_commands.c:16:14:next_token	24	static
+../Core/Src/uart_commands.c:25:6:UART_SendStatusPacket	112	static
+../Core/Src/uart_commands.c:59:6:UART_HandleCommand	136	static

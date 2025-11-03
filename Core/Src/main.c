@@ -231,12 +231,12 @@ int main(void)
           lastSecond = time.seconds;
 
           // Throttle snprintf to once per second
-          int len = snprintf(dbg, sizeof(dbg),
-                   "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d (DOW=%d)\r\n",
-                   time.hour, time.minutes, time.seconds,
-                   time.dayofmonth, time.month, time.year,
-                   time.dayofweek);
-          if (len > 0) Debug_Print(dbg);
+//          int len = snprintf(dbg, sizeof(dbg),
+//                   "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d (DOW=%d)\r\n",
+//                   time.hour, time.minutes, time.seconds,
+//                   time.dayofmonth, time.month, time.year,
+//                   time.dayofweek);
+//          if (len > 0) Debug_Print(dbg);
       }
 
       /* ---------- UART Commands ---------- */
