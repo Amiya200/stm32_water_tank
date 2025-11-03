@@ -11,6 +11,13 @@ extern TimerSlot timerSlots[5];
 
 static inline void ack(const char *msg) { UART_TransmitPacket(msg); }
 static inline void err(const char *msg) { UART_TransmitPacket(msg); }
+typedef struct {
+    uint8_t level;
+    uint8_t motorStatus;
+    char mode[12];
+} StatusSnapshot;
+
+static StatusSnapshot lastSent = {255, 255, "INIT"};
 
 // simple string splitter (faster than strtok)
 static char* next_token(char** ctx) {
@@ -38,8 +45,6 @@ void UART_SendStatusPacket(void)
         if (adcData.voltages[i] < 0.1f) submerged++;
     }
 
-    const char *motor = motorStatus ? "ON" : "OFF";
-
     const char *mode = "IDLE";
     if (manualActive)         mode = "MANUAL";
     else if (semiAutoActive)  mode = "SEMIAUTO";
@@ -48,10 +53,23 @@ void UART_SendStatusPacket(void)
     else if (countdownActive) mode = "COUNTDOWN";
     else if (twistActive)     mode = "TWIST";
 
+    bool stateChanged =
+        (lastSent.level != submerged) ||
+        (lastSent.motorStatus != motorStatus) ||
+        (strcmp(lastSent.mode, mode) != 0);
+
+    if (!stateChanged)
+        return;   // nothing changed → don’t resend
+
+    lastSent.level = submerged;
+    lastSent.motorStatus = motorStatus;
+    strncpy(lastSent.mode, mode, sizeof(lastSent.mode)-1);
+
     char buf[80];
     snprintf(buf, sizeof(buf),
              "STATUS:MOTOR:%s:LEVEL:%d:MODE:%s",
-             motor, submerged, mode);
+             motorStatus ? "ON" : "OFF",
+             submerged, mode);
 
     UART_TransmitPacket(buf);
 }
@@ -143,9 +161,15 @@ void UART_HandleCommand(const char *pkt)
     }
 
     else if (!strcmp(cmd, "STATUS")) {
-        UART_SendStatusPacket();
-    }
+        // Force resend regardless of cache
+        memset(&lastSent, 0xFF, sizeof(lastSent));
+        static uint32_t lastStatusCheck = 0;
+        if (HAL_GetTick() - lastStatusCheck > 5000) {
+            UART_SendStatusPacket();
+            lastStatusCheck = HAL_GetTick();
+        }
 
+    }
     else {
 //        err("UNKNOWN");
         return;

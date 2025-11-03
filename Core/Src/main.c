@@ -201,6 +201,8 @@ int main(void)
   /* === RTC Initialization === */
   RTC_Init();
   RTC_GetTimeDate();
+  /* read once */
+//    RTC_SetTimeDate_AutoDOW(0, 14, 13, 29, 9, 2025);
 
   Debug_Print("System Initialized\r\n");
   ModelHandle_ResetAll();
