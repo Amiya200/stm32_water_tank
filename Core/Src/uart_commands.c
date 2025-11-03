@@ -146,6 +146,25 @@ void UART_HandleCommand(const char *pkt)
             ack("TIMER_STOP");
         } else err("FORMAT");
     }
+    else if (!strcmp(cmd, "SEMIAUTO")) {
+        char *sub = next_token(&ctx);
+        if (sub && !strcmp(sub, "ON")) {
+            ModelHandle_StartSemiAuto();
+            ack("SEMIAUTO_ON");
+        }
+        else if (sub && !strcmp(sub, "OFF")) {
+            ModelHandle_StopAllModesAndMotor();
+            ack("SEMIAUTO_OFF");
+        }
+        else {
+            err("FORMAT");
+            return;
+        }
+
+        g_screenUpdatePending = true;
+        return;
+    }
+
 
     else if (!strcmp(cmd, "COUNTDOWN")) {
         char *sub = next_token(&ctx);
