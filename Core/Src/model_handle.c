@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "stm32f1xx_hal.h"
-
+#include "uart_commands.h"
 /* =========================
    CONFIG
    ========================= */
@@ -103,7 +103,7 @@ void ModelHandle_ResetAll(void)
 
     LED_ClearAllIntents();
     LED_ApplyIntents();
-    printf("Model Reset: All modes OFF, motor OFF\r\n");
+    //printf("Model Reset: All modes OFF, motor OFF\r\n");
 }
 
 uint32_t ModelHandle_TimeToSeconds(uint8_t hh, uint8_t mm) {
@@ -154,19 +154,21 @@ static inline void motor_apply(bool on)
         if (!maxRunTimerArmed) {
             maxRunTimerArmed = true;
             maxRunStartTick  = now_ms();
+            UART_SendStatusPacket();
         }
     } else {
         maxRunTimerArmed = false;
         // When motor turns OFF, cancel pending dry timer
         dryTimerArmed = false;
         dryStopDeadline = 0;
+        UART_SendStatusPacket();
     }
 }
 
 static inline void start_motor(void)
 {
     motor_apply(true);
-    printf("Relay1 -> %s\r\n", Relay_Get(1) ? "ON" : "OFF");
+    //printf("Relay1 -> %s\r\n", Relay_Get(1) ? "ON" : "OFF");
 }
 static inline void stop_motor_keep_modes(void)  { motor_apply(false); }
 
@@ -175,7 +177,7 @@ void ModelHandle_StopAllModesAndMotor(void)
 {
     clear_all_modes();
     stop_motor_keep_modes();
-    printf("ALL MODES OFF + MOTOR OFF\r\n");
+    ////printf("ALL MODES OFF + MOTOR OFF\r\n");
 }
 
 /* =========================
@@ -224,16 +226,16 @@ void ModelHandle_ToggleManual(void)
         manualOverride = true;
         manualActive   = true;
         start_motor();
-        printf("Manual ON\r\n");
+        //printf("Manual ON\r\n");
     } else {
         ModelHandle_StopAllModesAndMotor(); // OFF should clear everything
-        printf("Manual OFF\r\n");
+        //printf("Manual OFF\r\n");
     }
 }
 
 void ModelHandle_ManualLongPress(void)
 {
-    printf("Manual Long Press → System Reset\r\n");
+    //printf("Manual Long Press → System Reset\r\n");
     HAL_Delay(100);
     NVIC_SystemReset();
 }
@@ -642,17 +644,17 @@ void ModelHandle_StartSemiAuto(void)
 
     if (!isTankFull()) {
         start_motor();
-        printf("Semi-Auto Started\r\n");
+        //printf("Semi-Auto Started\r\n");
     } else {
         ModelHandle_StopAllModesAndMotor();
-        printf("Semi-Auto Not Started: Already Full\r\n");
+        //printf("Semi-Auto Not Started: Already Full\r\n");
     }
 }
 void ModelHandle_StopSemiAuto(void)
 {
     semiAutoActive   = false;
     ModelHandle_StopAllModesAndMotor();
-    printf("Semi-Auto Stopped\r\n");
+    //printf("Semi-Auto Stopped\r\n");
 }
 static void semi_auto_tick(void)
 {
@@ -662,7 +664,7 @@ static void semi_auto_tick(void)
     if (isTankFull()) {
         semiAutoActive = false;
         ModelHandle_StopAllModesAndMotor();
-        printf("Semi-Auto Complete: Tank Full\r\n");
+        //printf("Semi-Auto Complete: Tank Full\r\n");
         return;
     }
 
@@ -800,8 +802,8 @@ void ModelHandle_ProcessUartCommand(const char* cmd)
 {
     if (!cmd || !*cmd) return;
 
-    if      (strcmp(cmd, "MOTOR_ON") == 0)  { ModelHandle_SetMotor(true);  printf("Manual ON (UART)\r\n"); }
-    else if (strcmp(cmd, "MOTOR_OFF")== 0)  { ModelHandle_SetMotor(false); printf("Manual OFF (UART)\r\n"); }
+    if      (strcmp(cmd, "MOTOR_ON") == 0)  { ModelHandle_SetMotor(true); } //printf("Manual ON (UART)\r\n"); }
+    else if (strcmp(cmd, "MOTOR_OFF")== 0)  { ModelHandle_SetMotor(false);} //printf("Manual OFF (UART)\r\n"); }
     else if (strcmp(cmd, "SEMI_AUTO_START")==0) { ModelHandle_StartSemiAuto(); }
     else if (strcmp(cmd, "SEMI_AUTO_STOP")==0)  { ModelHandle_StopSemiAuto(); }
     else if (strcmp(cmd, "TWIST_START")==0)     { ModelHandle_StartTwist(twistSettings.onDurationSeconds, twistSettings.offDurationSeconds); }
