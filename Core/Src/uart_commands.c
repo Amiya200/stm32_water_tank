@@ -191,5 +191,5 @@ void UART_HandleCommand(const char *pkt)
     }
 
     /* ---------------- UNKNOWN ---------------- */
-    err("UNKNOWN");
+//    err("UNKNOWN");
 }
