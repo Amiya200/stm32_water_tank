@@ -204,7 +204,7 @@ int main(void)
   /* read once */
 //    RTC_SetTimeDate_AutoDOW(0, 14, 13, 29, 9, 2025);
 
-  Debug_Print("System Initialized\r\n");
+//  Debug_Print("System Initialized\r\n");
   ModelHandle_ResetAll();
 
   uint8_t lastSecond = 255;
