@@ -71,6 +71,23 @@ static uint32_t dryStopDeadline  = 0;
 /* =========================
    Utilities
    ========================= */
+
+// =====================================================
+// RATE-LIMITED STATUS UPDATER to avoid UART spam
+// =====================================================
+static void Safe_SendStatusPacket(void)
+{
+    static uint32_t lastSentTick = 0;
+    uint32_t now = HAL_GetTick();
+
+    // only allow one send every 3000 ms
+    if (now - lastSentTick < 3000) return;
+
+    lastSentTick = now;
+    UART_SendStatusPacket();
+}
+
+
 static inline uint32_t now_ms(void) { return HAL_GetTick(); }
 
 static inline void clear_all_modes(void)
@@ -106,6 +123,7 @@ void ModelHandle_ResetAll(void)
     //printf("Model Reset: All modes OFF, motor OFF\r\n");
 }
 
+//TimerSlot timerSlots[5];  // define global array
 uint32_t ModelHandle_TimeToSeconds(uint8_t hh, uint8_t mm) {
     return ((uint32_t)hh * 3600UL) + ((uint32_t)mm * 60UL);
 }
@@ -154,14 +172,14 @@ static inline void motor_apply(bool on)
         if (!maxRunTimerArmed) {
             maxRunTimerArmed = true;
             maxRunStartTick  = now_ms();
-            UART_SendStatusPacket();
+            Safe_SendStatusPacket();
         }
     } else {
         maxRunTimerArmed = false;
         // When motor turns OFF, cancel pending dry timer
         dryTimerArmed = false;
         dryStopDeadline = 0;
-        UART_SendStatusPacket();
+        Safe_SendStatusPacket();
     }
 }
 
@@ -571,6 +589,53 @@ static void search_tick(void)
 /* =======================
    TIMER (RTC based)
    ======================= */
+
+
+void ModelHandle_SetTimerSlot(uint8_t i,
+                              uint8_t onH, uint8_t onM,
+                              uint8_t offH, uint8_t offM,
+                              bool en)
+{
+    if (i < 5)
+    {
+        timerSlots[i].enabled = en;
+        timerSlots[i].onHour = onH;
+        timerSlots[i].onMinute = onM;
+        timerSlots[i].offHour = offH;
+        timerSlots[i].offMinute = offM;
+    }
+}
+
+void ModelHandle_ProcessTimerSlots(void)
+{
+    RTC_GetTimeDate();  // update 'time' from RTC
+
+    uint16_t nowM = time.hour * 60 + time.minutes;
+    bool motorShouldRun = false;
+
+    for (uint8_t i = 0; i < 5; i++)
+    {
+        if (!timerSlots[i].enabled)
+            continue;
+
+        uint16_t onM  = timerSlots[i].onHour * 60 + timerSlots[i].onMinute;
+        uint16_t offM = timerSlots[i].offHour * 60 + timerSlots[i].offMinute;
+
+        if (onM < offM)
+        {
+            if (nowM >= onM && nowM < offM)
+                motorShouldRun = true;
+        }
+        else  // handle midnight wrap-around (e.g., 23:00 → 02:00)
+        {
+            if (nowM >= onM || nowM < offM)
+                motorShouldRun = true;
+        }
+    }
+
+    ModelHandle_SetMotor(motorShouldRun);
+}
+
 static uint32_t seconds_since_midnight(void)
 {
     RTC_GetTimeDate();
@@ -578,61 +643,46 @@ static uint32_t seconds_since_midnight(void)
            ((uint32_t)time.minutes * 60UL) +
            (uint32_t)time.seconds;
 }
-static void timer_tick(void)
+/* =========================
+   TIMER MODE
+   ========================= */
+void timer_tick(void)
 {
-    /* NEW: Timer yields to all other active modes */
-    if (manualOverride && manualActive) { timerActive = false; return; }
-    if (countdownActive || twistSettings.twistActive ||
-        searchSettings.searchActive || semiAutoActive) {
-        timerActive = false;
-        return;
-    }
+    if (!timerActive) return;
 
-    timerActive = false;
-    uint32_t nowS = seconds_since_midnight();
+    RTC_GetTimeDate();
+    uint32_t nowSec = ModelHandle_TimeToSeconds(time.hour, time.minutes);
 
-    static uint32_t timerRetryDeadline = 0;
-    bool anySlotActive = false;
+    bool shouldRun = false;
+    for (int i = 0; i < 5; i++) {
+        if (!timerSlots[i].enabled) continue;
 
-    for (int i = 0; i < 3; i++) {
-        TimerSlot* s = &timerSlots[i];
-        if (!s->active) continue;
-        anySlotActive = true;
+        uint32_t onSec  = ModelHandle_TimeToSeconds(timerSlots[i].onHour,  timerSlots[i].onMinute);
+        uint32_t offSec = ModelHandle_TimeToSeconds(timerSlots[i].offHour, timerSlots[i].offMinute);
 
-        bool inWindow;
-        if (s->onTimeSeconds <= s->offTimeSeconds) {
-            inWindow = (nowS >= s->onTimeSeconds) && (nowS < s->offTimeSeconds);
-        } else {
-            inWindow = (nowS >= s->onTimeSeconds) || (nowS < s->offTimeSeconds);
-        }
-
-        if (inWindow) {
-            timerActive = true;
-
-            if (now_ms() < timerRetryDeadline) return;
-
-            if (dry_raw_is_dry()) {
-                stop_motor_keep_modes();
-                timerRetryDeadline = now_ms() + (uint32_t)searchSettings.testingGapSeconds * 1000UL;
-                return;
-            }
-
-            if (isTankFull()) {
-                ModelHandle_StopAllModesAndMotor(); // terminal -> clear
-                return;
-            }
-
-            start_motor();
-            return;
+        if (onSec < offSec) {
+            if (nowSec >= onSec && nowSec < offSec) shouldRun = true;
+        } else { // overnight slot (e.g. 23:00–05:00)
+            if (nowSec >= onSec || nowSec < offSec) shouldRun = true;
         }
     }
 
-    if (!anySlotActive) return; // do not touch motor if no timers configured
-
-    // Outside any window -> ensure OFF (but keep timers configured)
-    stop_motor_keep_modes();
-    timerRetryDeadline = 0;
+    if (shouldRun && !Motor_GetStatus()) {
+        start_motor();
+    } else if (!shouldRun && Motor_GetStatus()) {
+        stop_motor_keep_modes();
+    }
 }
+void ModelHandle_StartTimer(void) {
+    clear_all_modes();
+    timerActive = true;
+}
+
+void ModelHandle_StopTimer(void) {
+    timerActive = false;
+    stop_motor_keep_modes();
+}
+
 
 /* =======================
    SEMI-AUTO
@@ -775,10 +825,10 @@ bool Motor_GetStatus(void) { return (motorStatus == 1U); }
 void ModelHandle_Process(void)
 {
     /* keep your original order of tickers */
-    countdown_tick();
-    twist_tick();     // critical for Twist mode
-    search_tick();
-    timer_tick();
+	if (twistActive)    twist_tick();
+	if (countdownActive) countdown_tick();
+	if (searchActive)   search_tick();
+	if (timerActive)    timer_tick();   // ✅ add this
     semi_auto_tick();
 
     /* --- Aux Burst auto-OFF (Relays 2 & 3) --- */

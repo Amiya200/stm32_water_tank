@@ -255,7 +255,7 @@ int main(void)
       ModelHandle_Process();
       LED_Task();
 
-      HAL_Delay(20);   // ~50Hz main tick, non-blocking
+      HAL_Delay(10);   // ~50Hz main tick, non-blocking
   }
   /* USER CODE END WHILE */
 

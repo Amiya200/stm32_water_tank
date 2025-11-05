@@ -11,6 +11,10 @@ extern TimerSlot timerSlots[5];
 
 static inline void ack(const char *msg) { UART_TransmitPacket(msg); }
 static inline void err(const char *msg) { UART_TransmitPacket(msg); }
+
+/* =========================
+   Cached status report
+   ========================= */
 typedef struct {
     uint8_t level;
     uint8_t motorStatus;
@@ -19,7 +23,7 @@ typedef struct {
 
 static StatusSnapshot lastSent = {255, 255, "INIT"};
 
-// simple string splitter (faster than strtok)
+/* Simple ':'-based tokenizer (no strtok) */
 static char* next_token(char** ctx) {
     char* s = *ctx;
     if (!s) return NULL;
@@ -29,6 +33,9 @@ static char* next_token(char** ctx) {
     return s;
 }
 
+/* =========================
+   STATUS PACKET
+   ========================= */
 void UART_SendStatusPacket(void)
 {
     extern ADC_Data adcData;
@@ -53,17 +60,16 @@ void UART_SendStatusPacket(void)
     else if (countdownActive) mode = "COUNTDOWN";
     else if (twistActive)     mode = "TWIST";
 
-    bool stateChanged =
+    bool changed =
         (lastSent.level != submerged) ||
         (lastSent.motorStatus != motorStatus) ||
         (strcmp(lastSent.mode, mode) != 0);
 
-    if (!stateChanged)
-        return;   // nothing changed → don’t resend
+    if (!changed) return;
 
     lastSent.level = submerged;
     lastSent.motorStatus = motorStatus;
-    strncpy(lastSent.mode, mode, sizeof(lastSent.mode)-1);
+    strncpy(lastSent.mode, mode, sizeof(lastSent.mode) - 1);
 
     char buf[80];
     snprintf(buf, sizeof(buf),
@@ -74,16 +80,19 @@ void UART_SendStatusPacket(void)
     UART_TransmitPacket(buf);
 }
 
+/* =========================
+   COMMAND HANDLER
+   ========================= */
 void UART_HandleCommand(const char *pkt)
 {
     if (!pkt || !*pkt) return;
 
     char buf[UART_RX_BUFFER_SIZE];
-    strncpy(buf, pkt, sizeof(buf)-1);
-    buf[sizeof(buf)-1] = '\0';
+    strncpy(buf, pkt, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
 
-    // remove wrapper chars
-    if (buf[0] == '@') memmove(buf, buf+1, strlen(buf));
+    /* remove wrappers like '@' and '#' */
+    if (buf[0] == '@') memmove(buf, buf + 1, strlen(buf));
     char *end = strchr(buf, '#');
     if (end) *end = '\0';
 
@@ -91,61 +100,111 @@ void UART_HandleCommand(const char *pkt)
     char *cmd = next_token(&ctx);
     if (!cmd) return;
 
-    /* --- Commands --- */
+    /* ---- BASIC ---- */
     if (!strcmp(cmd, "PING")) { ack("PONG"); return; }
 
+    /* ---- MANUAL ---- */
     else if (!strcmp(cmd, "MANUAL")) {
         char *state = next_token(&ctx);
         if (!state) { err("PARAM"); return; }
-        if (!strcmp(state,"ON"))  ModelHandle_ToggleManual();
-        else if (!strcmp(state,"OFF")) ModelHandle_StopAllModesAndMotor();
+        if (!strcmp(state, "ON"))  ModelHandle_ToggleManual();
+        else if (!strcmp(state, "OFF")) ModelHandle_StopAllModesAndMotor();
         else { err("FORMAT"); return; }
         ack("MANUAL_OK");
     }
 
+    /* ---- TWIST ---- */
     else if (!strcmp(cmd, "TWIST")) {
         char *sub = next_token(&ctx);
-        if (sub && !strcmp(sub,"SET")) {
+        if (sub && !strcmp(sub, "SET")) {
             uint16_t on = atoi(next_token(&ctx));
             uint16_t off = atoi(next_token(&ctx));
-            ModelHandle_StartTwist(on,off);
+            ModelHandle_StartTwist(on, off);
             ack("TWIST_OK");
-        } else if (sub && !strcmp(sub,"STOP")) {
+        } else if (sub && !strcmp(sub, "STOP")) {
             ModelHandle_StopTwist();
             ack("TWIST_STOP");
         } else err("FORMAT");
     }
 
+    /* ---- SEARCH ---- */
     else if (!strcmp(cmd, "SEARCH")) {
         char *sub = next_token(&ctx);
-        if (sub && !strcmp(sub,"SET")) {
+        if (sub && !strcmp(sub, "SET")) {
             uint16_t gap = atoi(next_token(&ctx));
             uint16_t probe = atoi(next_token(&ctx));
-            ModelHandle_StartSearch(gap,probe);
+            ModelHandle_StartSearch(gap, probe);
             ack("SEARCH_OK");
-        } else if (sub && !strcmp(sub,"STOP")) {
+        } else if (sub && !strcmp(sub, "STOP")) {
             ModelHandle_StopSearch();
             ack("SEARCH_STOP");
         } else err("FORMAT");
     }
 
+    /* ---- TIMER (multi-slot support) ---- */
     else if (!strcmp(cmd, "TIMER")) {
         char *sub = next_token(&ctx);
-        if (sub && !strcmp(sub,"SET")) {
-            uint8_t h1 = atoi(next_token(&ctx));
-            uint8_t m1 = atoi(next_token(&ctx));
-            uint8_t h2 = atoi(next_token(&ctx));
-            uint8_t m2 = atoi(next_token(&ctx));
-            timerSlots[0].active = true;
-            timerSlots[0].onTimeSeconds  = ModelHandle_TimeToSeconds(h1,m1);
-            timerSlots[0].offTimeSeconds = ModelHandle_TimeToSeconds(h2,m2);
-            ack("TIMER_OK");
-        } else if (sub && !strcmp(sub,"STOP")) {
-            timerSlots[0].active = false;
+        if (sub && !strcmp(sub, "SET")) {
+            uint8_t slotIndex = 0;
+            bool ok = true;
+
+            // Loop through multiple timer packets in the input buffer
+            while (slotIndex < 5) {
+                char *h1s = next_token(&ctx);
+                char *m1s = next_token(&ctx);
+                char *h2s = next_token(&ctx);
+                char *m2s = next_token(&ctx);
+
+                if (!h1s || !m1s || !h2s || !m2s)
+                    break; // no more slots
+
+                int h1 = atoi(h1s);
+                int m1 = atoi(m1s);
+                int h2 = atoi(h2s);
+                int m2 = atoi(m2s);
+
+                if (h1 < 0 || h1 > 23 || h2 < 0 || h2 > 23 ||
+                    m1 < 0 || m1 > 59 || m2 < 0 || m2 > 59)
+                {
+                    ok = false;
+                    break;
+                }
+
+                timerSlots[slotIndex].enabled = true;
+                timerSlots[slotIndex].onHour  = h1;
+                timerSlots[slotIndex].onMinute = m1;
+                timerSlots[slotIndex].offHour  = h2;
+                timerSlots[slotIndex].offMinute = m2;
+                slotIndex++;
+            }
+
+            // Disable remaining slots
+            for (; slotIndex < 5; slotIndex++) {
+                timerSlots[slotIndex].enabled = false;
+            }
+
+            if (ok){
+            	ack("TIMER_OK");
+            	ModelHandle_StartTimer();
+            }
+
+
+            else
+                err("TIMER_FORMAT");
+        }
+
+        else if (sub && !strcmp(sub, "STOP")) {
+            for (int i=0; i<5; i++)
+                timerSlots[i].enabled = false;
             ModelHandle_StopAllModesAndMotor();
             ack("TIMER_STOP");
-        } else err("FORMAT");
+        }
+
+        else err("FORMAT");
     }
+
+
+    /* ---- SEMIAUTO ---- */
     else if (!strcmp(cmd, "SEMIAUTO")) {
         char *sub = next_token(&ctx);
         if (sub && !strcmp(sub, "ON")) {
@@ -156,39 +215,36 @@ void UART_HandleCommand(const char *pkt)
             ModelHandle_StopAllModesAndMotor();
             ack("SEMIAUTO_OFF");
         }
-        else {
-            err("FORMAT");
-            return;
-        }
-
+        else err("FORMAT");
         g_screenUpdatePending = true;
         return;
     }
 
-
+    /* ---- COUNTDOWN ---- */
     else if (!strcmp(cmd, "COUNTDOWN")) {
         char *sub = next_token(&ctx);
-        if (sub && !strcmp(sub,"ON")) {
+        if (sub && !strcmp(sub, "ON")) {
             uint16_t min = atoi(next_token(&ctx));
             if (!min) min = 1;
-            ModelHandle_StartCountdown(min*60,1);
+            ModelHandle_StartCountdown(min * 60, 1);
             ack("COUNTDOWN_ON");
-        } else if (sub && !strcmp(sub,"OFF")) {
+        } else if (sub && !strcmp(sub, "OFF")) {
             ModelHandle_StopCountdown();
             ack("COUNTDOWN_OFF");
         } else err("FORMAT");
     }
 
+    /* ---- STATUS ---- */
     else if (!strcmp(cmd, "STATUS")) {
-        // Force resend regardless of cache
-        memset(&lastSent, 0xFF, sizeof(lastSent));
-        static uint32_t lastStatusCheck = 0;
-        if (HAL_GetTick() - lastStatusCheck > 5000) {
+        static uint32_t lastReply = 0;
+        uint32_t now = HAL_GetTick();
+        if (now - lastReply >= 5000) {   // reply only once every 5 s
             UART_SendStatusPacket();
-            lastStatusCheck = HAL_GetTick();
+            lastReply = now;
         }
-
+        return;
     }
+
     else {
 //        err("UNKNOWN");
         return;

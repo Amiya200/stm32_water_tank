@@ -7,10 +7,13 @@
 
 /* ===== Timer slot ===== */
 typedef struct {
-    bool     active;
-    uint32_t onTimeSeconds;
-    uint32_t offTimeSeconds;
+    bool enabled;          // slot enable/disable
+    uint8_t onHour;        // ON time hour
+    uint8_t onMinute;      // ON time minute
+    uint8_t offHour;       // OFF time hour
+    uint8_t offMinute;     // OFF time minute
 } TimerSlot;
+
 
 /* ===== Search mode settings ===== */
 typedef struct {
@@ -90,5 +93,12 @@ void ModelHandle_SetDryRun(bool on);
 void ModelHandle_SetOverLoad(bool on);
 void ModelHandle_SetOverUnderVolt(bool on);
 void ModelHandle_ClearMaxRunFlag(void);
+
+
+void ModelHandle_SetTimerSlot(uint8_t index,
+                              uint8_t onHour, uint8_t onMinute,
+                              uint8_t offHour, uint8_t offMinute,
+                              bool enable);
+void ModelHandle_ProcessTimerSlots(void);
 
 #endif /* MODEL_HANDLE_H */
