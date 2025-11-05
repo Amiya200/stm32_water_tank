@@ -105,14 +105,12 @@ void ModelHandle_ResetAll(void)
 {
     clear_all_modes();
 
-    // Clear protections & timers
     senseDryRun = senseOverLoad = senseOverUnderVolt = senseMaxRunReached = false;
     maxRunTimerArmed = false;
     maxRunStartTick  = 0;
     dryTimerArmed    = false;
     dryStopDeadline  = 0;
 
-    // Ensure ALL relays OFF (safety first at boot/reset)
     Relay_Set(1, false);
     Relay_Set(2, false);
     Relay_Set(3, false);
@@ -120,7 +118,15 @@ void ModelHandle_ResetAll(void)
 
     LED_ClearAllIntents();
     LED_ApplyIntents();
-    //printf("Model Reset: All modes OFF, motor OFF\r\n");
+
+    // ✅ Initialize defaults moved from compile-time
+    memset(timerSlots, 0, sizeof(timerSlots));
+    searchSettings.searchActive = false;
+    searchSettings.testingGapSeconds = 60;
+    searchSettings.dryRunTimeSeconds = 20;
+    twistSettings.twistActive = false;
+    twistSettings.onDurationSeconds = 20;
+    twistSettings.offDurationSeconds = 40;
 }
 
 //TimerSlot timerSlots[5];  // define global array
@@ -144,21 +150,10 @@ static bool     auxBurstActive     = false;
 static uint32_t auxBurstDeadlineMs = 0;
 
 /* Timer slots (RTC based) */
-TimerSlot timerSlots[5] = {0};
+TimerSlot timerSlots[5];
+SearchSettings searchSettings;
+TwistSettings twistSettings;
 
-/* Search settings */
-SearchSettings searchSettings = {
-    .searchActive        = false,
-    .testingGapSeconds   = 60,   // gap between probes
-    .dryRunTimeSeconds   = 20,   // probe window (ON time for test)
-};
-
-/* Twist settings */
-TwistSettings twistSettings = {
-    .twistActive         = false,
-    .onDurationSeconds   = 20,
-    .offDurationSeconds  = 40,
-};
 
 /* =========================
    Motor Control
@@ -196,6 +191,7 @@ void ModelHandle_StopAllModesAndMotor(void)
     clear_all_modes();
     stop_motor_keep_modes();
     ////printf("ALL MODES OFF + MOTOR OFF\r\n");
+    ModelHandle_SaveCurrentStateToEEPROM();
 }
 
 /* =========================
@@ -249,6 +245,7 @@ void ModelHandle_ToggleManual(void)
         ModelHandle_StopAllModesAndMotor(); // OFF should clear everything
         //printf("Manual OFF\r\n");
     }
+    ModelHandle_SaveCurrentStateToEEPROM();
 }
 
 void ModelHandle_ManualLongPress(void)
@@ -301,6 +298,7 @@ void ModelHandle_StartCountdown(uint32_t seconds_per_run, uint16_t repeats)
     cd_in_rest             = false;
 
     countdown_start_one_run();
+    ModelHandle_SaveCurrentStateToEEPROM();
 }
 static void countdown_tick(void)
 {
@@ -394,6 +392,7 @@ void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s)
     // Do NOT arm priming here; it's armed when ON actually starts.
 
     twist_arm_priming();
+    ModelHandle_SaveCurrentStateToEEPROM();
 }
 
 void ModelHandle_StopTwist(void)
@@ -519,6 +518,7 @@ void ModelHandle_StartSearch(uint16_t gap_s, uint16_t probe_s)
     search_state       = SEARCH_GAP_WAIT;
     search_deadline_ms = now_ms() + (uint32_t)searchSettings.testingGapSeconds * 1000UL;
     search_dry_cnt     = 0;
+    ModelHandle_SaveCurrentStateToEEPROM();
 }
 void ModelHandle_StopSearch(void)
 {
@@ -676,6 +676,7 @@ void timer_tick(void)
 void ModelHandle_StartTimer(void) {
     clear_all_modes();
     timerActive = true;
+    ModelHandle_SaveCurrentStateToEEPROM();
 }
 
 void ModelHandle_StopTimer(void) {
@@ -699,6 +700,7 @@ void ModelHandle_StartSemiAuto(void)
         ModelHandle_StopAllModesAndMotor();
         //printf("Semi-Auto Not Started: Already Full\r\n");
     }
+    ModelHandle_SaveCurrentStateToEEPROM();
 }
 void ModelHandle_StopSemiAuto(void)
 {
@@ -861,4 +863,61 @@ void ModelHandle_ProcessUartCommand(const char* cmd)
     else if (strcmp(cmd, "SEARCH_START")==0)    { ModelHandle_StartSearch(searchSettings.testingGapSeconds, searchSettings.dryRunTimeSeconds); }
     else if (strcmp(cmd, "SEARCH_STOP")==0)     { ModelHandle_StopSearch(); }
     else if (strcmp(cmd, "RESET_ALL")==0)       { ModelHandle_ResetAll(); }
+}
+// --- Lightweight persistent save ---
+// ⚙️ Requires: RTC_SavePersistentState() from rtc_i2c.c
+// ⚙️ Safe for 24C32 / 24C02 EEPROM (4-Kbit+)
+
+void ModelHandle_SaveCurrentStateToEEPROM(void)
+{
+    static uint32_t lastWriteTick = 0;
+    static uint8_t  lastCRC = 0;        // 1-byte change fingerprint
+    uint32_t now = HAL_GetTick();
+
+    // 🧭 Limit writes: once every 15 s
+    if (now - lastWriteTick < 15000U)
+        return;
+
+    // 🧱 Allocate statically once (no stack each call)
+    static RTC_PersistState s;
+
+    // Manual zeroing (tiny, no memset())
+    for (uint16_t i = 0; i < sizeof(s); i++)
+        ((uint8_t*)&s)[i] = 0;
+
+    // === Minimal state capture ===
+    if (manualActive)        s.mode = 1;
+    else if (semiAutoActive) s.mode = 2;
+    else if (timerActive)    s.mode = 3;
+    else if (searchActive)   s.mode = 4;
+    else if (countdownActive)s.mode = 5;
+    else if (twistActive)    s.mode = 6;
+    else                     s.mode = 0;
+
+    s.motor        = Motor_GetStatus();
+    s.searchGap    = searchSettings.testingGapSeconds;
+    s.searchProbe  = searchSettings.dryRunTimeSeconds;
+    s.twistOn      = twistSettings.onDurationSeconds;
+    s.twistOff     = twistSettings.offDurationSeconds;
+    s.countdownMin = (uint16_t)(countdownDuration / 60U);
+    s.countdownRep = 1U;
+
+    // ⚙️ Copy only first timer slot (8–10 B)
+    extern TimerSlot timerSlots[5];
+    for (uint8_t i = 0; i < sizeof(TimerSlot); i++)
+        ((uint8_t*)&s.timerSlots[0])[i] = ((uint8_t*)&timerSlots[0])[i];
+
+    // === Compact 8-bit CRC-like fingerprint for quick diff ===
+    uint8_t crc = 0;
+    const uint8_t *p = (const uint8_t*)&s;
+    for (uint16_t i = 0; i < sizeof(s) - 2; i++)
+        crc ^= p[i];
+
+    // Write only if changed since last save
+    if (crc != lastCRC)
+    {
+        RTC_SavePersistentState(&s);  // actual I2C write
+        lastCRC = crc;
+        lastWriteTick = now;
+    }
 }

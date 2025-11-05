@@ -3,6 +3,32 @@
 
 #include "stm32f1xx_hal.h"
 #include <stdint.h>
+/* ===============================
+   EEPROM + Persistent State APIs
+   =============================== */
+#include <stdbool.h>
+#include <stdint.h>
+
+bool RTC_EEPROM_Write(uint16_t memAddr, const uint8_t *data, uint16_t len);
+bool RTC_EEPROM_Read(uint16_t memAddr, uint8_t *data, uint16_t len);
+
+/* Persistent structure for controller state */
+typedef struct {
+    uint8_t  mode;
+    uint8_t  motor;
+    uint16_t searchGap;
+    uint16_t searchProbe;
+    uint16_t twistOn;
+    uint16_t twistOff;
+    uint16_t countdownMin;
+    uint16_t countdownRep;
+    uint8_t  timerSlots[5][5];
+    uint16_t crc;
+} RTC_PersistState;
+
+
+bool RTC_SavePersistentState(const RTC_PersistState *s);
+bool RTC_LoadPersistentState(RTC_PersistState *s);
 
 /* External I2C handle from your project */
 extern I2C_HandleTypeDef hi2c2;

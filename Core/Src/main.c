@@ -75,7 +75,7 @@ UART_HandleTypeDef huart1;
 ADC_Data adcData;
 char receivedUartPacket[UART_RX_BUFFER_SIZE];
 char dbg[100];
-
+int ak =0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -150,118 +150,135 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 /**
   * @brief  The application entry point.
   * @retval int
-  */
-int main(void)
-{
-
-  /* USER CODE BEGIN 1 */
-
-  /* USER CODE END 1 */
-
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
-
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
-  /* Configure the system clock */
-  SystemClock_Config();
-
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_ADC1_Init();
-  MX_RTC_Init();
-  MX_SPI1_Init();
-  MX_USART1_UART_Init();
-  MX_I2C2_Init();
-  MX_TIM3_Init();
-  /* USER CODE BEGIN 2 */
-
-  /* USER CODE BEGIN 2 */
-
-  HAL_TIM_Base_Start(&htim3);
-  RF_Init();
-  lcd_init();
-  ADC_Init(&hadc1);
-  LoRa_Init();
-  Screen_Init();
-  UART_Init();
-  Switches_Init();
-  Relay_Init();
-  LED_Init();
-  ACS712_Init(&hadc1);
-
-  /* === RTC Initialization === */
-  RTC_Init();
-  RTC_GetTimeDate();
-  /* read once */
-//    RTC_SetTimeDate_AutoDOW(0, 14, 13, 29, 9, 2025);
-
-//  Debug_Print("System Initialized\r\n");
-  ModelHandle_ResetAll();
-
-  uint8_t lastSecond = 255;
-  bool g_screenUpdatePending = false;
-  uint32_t g_lastScreenUpdate = 0;
-  const uint32_t SCREEN_UPDATE_INTERVAL_MS = 1000;   // 1Hz LCD refresh limit
-
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
+  */int main(void)
   {
-      /* ---------- Periodic sensors / I/O ---------- */
-      ACS712_Update();
-      RF_SendCode(1766904, 24);
-      ADC_ReadAllChannels(&hadc1, &adcData);
+    /* USER CODE BEGIN 1 */
+    /* USER CODE END 1 */
 
-      /* ---------- UI Handling ---------- */
-      Screen_HandleSwitches();
-      Screen_Update();
+    /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+    HAL_Init();
 
-      /* ---------- RTC Display Update ---------- */
-      RTC_GetTimeDate();
-      if (time.seconds != lastSecond) {
-          lastSecond = time.seconds;
+    /* Configure the system clock */
+    SystemClock_Config();
 
-          // Throttle snprintf to once per second
-//          int len = snprintf(dbg, sizeof(dbg),
-//                   "⏰ %02d:%02d:%02d 📅 %02d-%02d-%04d (DOW=%d)\r\n",
-//                   time.hour, time.minutes, time.seconds,
-//                   time.dayofmonth, time.month, time.year,
-//                   time.dayofweek);
-//          if (len > 0) Debug_Print(dbg);
-      }
+    /* Initialize all configured peripherals */
+    MX_GPIO_Init();
+    MX_ADC1_Init();
+    MX_RTC_Init();
+    MX_SPI1_Init();
+    MX_USART1_UART_Init();
+    MX_I2C2_Init();
+    MX_TIM3_Init();
 
-      /* ---------- UART Commands ---------- */
-      if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
-          UART_HandleCommand(receivedUartPacket);   // decode & execute
-          g_screenUpdatePending = true;             // trigger UI refresh flag
-      }
+    /* USER CODE BEGIN 2 */
 
+    /* === Initialize application modules === */
+    HAL_TIM_Base_Start(&htim3);
+    RF_Init();
+    lcd_init();
+    ADC_Init(&hadc1);
+    LoRa_Init();
+    Screen_Init();
+    UART_Init();
+    Switches_Init();
+    Relay_Init();
+    LED_Init();
+    ACS712_Init(&hadc1);
 
-      /* ---------- Deferred LCD refresh ---------- */
+    /* === RTC + EEPROM Initialization === */
+    RTC_Init();
+    RTC_GetTimeDate();
 
+    if (HAL_I2C_IsDeviceReady(&hi2c2, 0x57 << 1, 2, 100) == HAL_OK){
+        Debug_Print("✅ EEPROM ready at 0x57\r\n");
+        ak=1;
+    }
+    else{
+        Debug_Print("❌ EEPROM not found at 0x57\r\n");
+        ak=2;
+    }
 
-      /* ---------- Background Tasks ---------- */
-      ModelHandle_Process();
-      LED_Task();
+    /* Try loading last mode from RTC EEPROM */
+    RTC_PersistState st;
+    if (RTC_LoadPersistentState(&st)) {
+//        printf("✅ Loaded saved mode from RTC EEPROM (mode=%u)\r\n", st.mode);
 
-      HAL_Delay(10);   // ~50Hz main tick, non-blocking
+        switch (st.mode) {
+            case 1:   // Manual Mode
+                ModelHandle_ToggleManual();
+                break;
+            case 2:   // Semi-Auto
+                ModelHandle_StartSemiAuto();
+                break;
+            case 3:   // Timer Mode
+                ModelHandle_StartTimer();
+                break;
+            case 4:   // Search Mode
+                ModelHandle_StartSearch(st.searchGap, st.searchProbe);
+                break;
+            case 5:   // Countdown Mode
+                ModelHandle_StartCountdown(st.countdownMin * 60, st.countdownRep);
+                break;
+            case 6:   // Twist Mode
+                ModelHandle_StartTwist(st.twistOn, st.twistOff);
+                break;
+            default:
+                // Idle state
+                break;
+        }
+    } else {
+//        printf("⚠️ No valid saved state found — starting in IDLE.\r\n");
+    }
+
+    /* Ensure safe reset of any transient states */
+    ModelHandle_ResetAll();
+
+    uint8_t lastSecond = 255;
+    bool g_screenUpdatePending = false;
+    uint32_t g_lastScreenUpdate = 0;
+    const uint32_t SCREEN_UPDATE_INTERVAL_MS = 1000;   // 1Hz LCD refresh
+
+    /* USER CODE END 2 */
+
+    /* Infinite loop */
+    /* USER CODE BEGIN WHILE */
+    while (1)
+    {
+        /* ---------- Periodic sensor updates ---------- */
+        ACS712_Update();                          // Current sensor
+//        RF_SendCode(1766904, 24);                 // Optional: RF control
+        ADC_ReadAllChannels(&hadc1, &adcData);    // Read water-level sensors
+
+        /* ---------- User Interface ---------- */
+        Screen_HandleSwitches();
+        Screen_Update();
+
+        /* ---------- RTC periodic update ---------- */
+        RTC_GetTimeDate();
+        if (time.seconds != lastSecond) {
+            lastSecond = time.seconds;
+            // Debug: print current time if needed
+            // printf("⏰ %02d:%02d:%02d %02d-%02d-%04d DOW=%d\r\n",
+            //        time.hour, time.minutes, time.seconds,
+            //        time.dayofmonth, time.month, time.year, time.dayofweek);
+        }
+
+        /* ---------- UART Commands ---------- */
+        if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {
+            UART_HandleCommand(receivedUartPacket);
+            g_screenUpdatePending = true;
+        }
+
+        /* ---------- Core Processing ---------- */
+        ModelHandle_Process();
+        LED_Task();
+
+        HAL_Delay(10);   // ~50Hz main loop tick
+    }
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
   }
-  /* USER CODE END WHILE */
-
-  /* USER CODE END 3 */
-}
-
 /**
   * @brief System Clock Configuration
   * @retval None

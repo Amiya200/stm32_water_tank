@@ -85,7 +85,7 @@ static bool semiAutoEnabled = false;
 extern bool Motor_GetStatus(void);
 
 /* ===== Menu definitions ===== */
-static const char* main_menu[] = {
+static const char * const main_menu[] = {
     "Manual Mode",
     "Semi-Auto Mode",
     "Timer Mode",
@@ -94,6 +94,7 @@ static const char* main_menu[] = {
     "Twist Mode",
     "Back to Dash"
 };
+
 #define MAIN_MENU_COUNT (sizeof(main_menu)/sizeof(main_menu[0]))
 
 /* ===== Cursor/menu bookkeeping ===== */
