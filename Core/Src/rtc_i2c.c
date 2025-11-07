@@ -22,22 +22,28 @@ bool RTC_EEPROM_Write(uint16_t memAddr, const uint8_t *data, uint16_t len)
 
     while (len > 0)
     {
+        // Write only within page boundaries
         uint16_t chunk = RTC_EEPROM_PAGE_SIZE - (memAddr % RTC_EEPROM_PAGE_SIZE);
         if (chunk > len) chunk = len;
 
+        // ---- Perform I2C Write ----
         if (HAL_I2C_Mem_Write(&hi2c2, RTC_EEPROM_ADDR,
-                              memAddr, I2C_MEMADD_SIZE_16BIT,
+                              memAddr, I2C_MEMADD_SIZE_8BIT,
                               (uint8_t *)data, chunk, HAL_MAX_DELAY) != HAL_OK)
         {
+            printf("❌ EEPROM write failed @0x%04X\r\n", memAddr);
             return false;
         }
 
-        HAL_Delay(RTC_EEPROM_WRITE_DELAY_MS);
+        // Wait until internal write completes
+        while (HAL_I2C_IsDeviceReady(&hi2c2, RTC_EEPROM_ADDR, 2, 10) != HAL_OK);
+
         memAddr += chunk;
         data += chunk;
         len -= chunk;
     }
 
+    printf("💾 EEPROM write complete\r\n");
     return true;
 }
 
@@ -46,9 +52,10 @@ bool RTC_EEPROM_Read(uint16_t memAddr, uint8_t *data, uint16_t len)
     if (memAddr + len > RTC_EEPROM_TOTAL_SIZE) return false;
 
     if (HAL_I2C_Mem_Read(&hi2c2, RTC_EEPROM_ADDR,
-                         memAddr, I2C_MEMADD_SIZE_16BIT,
+                         memAddr, I2C_MEMADD_SIZE_8BIT,
                          data, len, HAL_MAX_DELAY) != HAL_OK)
     {
+        printf("❌ EEPROM read failed @0x%04X\r\n", memAddr);
         return false;
     }
 
@@ -77,16 +84,32 @@ bool RTC_SavePersistentState(const RTC_PersistState *s)
     RTC_PersistState tmp;
     memcpy(&tmp, s, sizeof(tmp));
     tmp.crc = rtc_crc16((uint8_t *)&tmp, sizeof(tmp) - 2);
-    return RTC_EEPROM_Write(0x0100, (uint8_t *)&tmp, sizeof(tmp));
+
+    if (!RTC_EEPROM_Write(0x0100, (uint8_t *)&tmp, sizeof(tmp))) {
+        printf("❌ Failed to save persistent state\r\n");
+        return false;
+    }
+
+    printf("💾 Saved persistent state (mode=%u)\r\n", tmp.mode);
+    return true;
 }
 
 /* Read structure back from EEPROM */
 bool RTC_LoadPersistentState(RTC_PersistState *s)
 {
-    if (!RTC_EEPROM_Read(0x0100, (uint8_t *)s, sizeof(*s)))
+    if (!RTC_EEPROM_Read(0x0100, (uint8_t *)s, sizeof(*s))) {
+        printf("❌ Failed to read persistent state\r\n");
         return false;
+    }
+
     uint16_t c = rtc_crc16((uint8_t *)s, sizeof(*s) - 2);
-    return (c == s->crc);
+    if (c != s->crc) {
+        printf("⚠️ CRC mismatch in saved state (stored=%04X calc=%04X)\r\n", s->crc, c);
+        return false;
+    }
+
+    printf("📥 Loaded persistent state (mode=%u)\r\n", s->mode);
+    return true;
 }
 
 /* =====================================================
@@ -123,10 +146,13 @@ void RTC_Init(void)
     /* Probe 0x68 first, then 0x57 */
     if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDR_68, 2, 50) == HAL_OK) {
         s_rtc_addr = DS3231_ADDR_68;
+        printf("✅ DS3231 RTC detected at 0x68\r\n");
     } else if (HAL_I2C_IsDeviceReady(&hi2c2, DS3231_ADDR_57, 2, 50) == HAL_OK) {
         s_rtc_addr = DS3231_ADDR_57;
+        printf("✅ RTC EEPROM (0x57) detected\r\n");
     } else {
-        s_rtc_addr = 0; /* not found */
+        s_rtc_addr = 0;
+        printf("❌ No RTC or EEPROM found on I2C2\r\n");
         return;
     }
 
@@ -155,15 +181,6 @@ void RTC_SetTimeDate(uint8_t sec, uint8_t min, uint8_t hour,
     if (month < 1 || month > 12) month = 1;
     if (year  < 2000) year = 2000; else if (year > 2099) year = 2099;
 
-    /* Write 7 bytes starting at 0x00:
-       00: seconds (bit7 = CH, must be 0 to run)
-       01: minutes
-       02: hours (24h: bit6=0)
-       03: day-of-week (1..7)
-       04: day-of-month
-       05: month (bit7=century; keep 0)
-       06: year (00..99)
-    */
     uint8_t buf[7];
     buf[0] = dec2bcd(sec)  & 0x7Fu;
     buf[1] = dec2bcd(min)  & 0x7Fu;
@@ -192,11 +209,9 @@ void RTC_GetTimeDate(void)
     if (HAL_I2C_Mem_Read(&hi2c2, s_rtc_addr, 0x00, 1, r, 7, HAL_MAX_DELAY) != HAL_OK)
         return;
 
-    /* Seconds / Minutes */
     time.seconds = bcd2dec(r[0] & 0x7Fu);
     time.minutes = bcd2dec(r[1] & 0x7Fu);
 
-    /* Hours: handle 12h or 24h formats robustly */
     if (r[2] & 0x40u) {
         uint8_t hr12 = bcd2dec(r[2] & 0x1Fu);
         uint8_t pm   = (r[2] & 0x20u) ? 1u : 0u;
@@ -208,14 +223,13 @@ void RTC_GetTimeDate(void)
         time.hour = bcd2dec(r[2] & 0x3Fu);
     }
 
-    /* DOW / Date / Month / Year */
     time.dayofweek  = bcd2dec(r[3] & 0x07u);
     time.dayofmonth = bcd2dec(r[4] & 0x3Fu);
     time.month      = bcd2dec(r[5] & 0x1Fu);
     time.year       = 2000u + bcd2dec(r[6]);
 }
 
-/* ---------- debug dump (first 7 registers) ---------- */
+/* ---------- debug dump ---------- */
 void RTC_DumpRegisters(void)
 {
     if (!s_rtc_addr) return;
@@ -223,7 +237,7 @@ void RTC_DumpRegisters(void)
     if (HAL_I2C_Mem_Read(&hi2c2, s_rtc_addr, 0x00, 1, r, 7, HAL_MAX_DELAY) != HAL_OK)
         return;
 
-//    printf("RTC regs: ");
+    printf("RTC regs: ");
     for (int i = 0; i < 7; i++) printf("%02X ", r[i]);
-//    printf("\r\n");
+    printf("\r\n");
 }
