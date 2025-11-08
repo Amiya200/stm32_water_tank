@@ -193,10 +193,11 @@ void RTC_SetTimeDate(uint8_t sec, uint8_t min, uint8_t hour,
     (void)HAL_I2C_Mem_Write(&hi2c2, s_rtc_addr, 0x00, 1, buf, 7, HAL_MAX_DELAY);
 }
 
+
 void RTC_SetTimeDate_AutoDOW(uint8_t sec, uint8_t min, uint8_t hour,
                              uint8_t dom, uint8_t month, uint16_t year)
 {
-    uint8_t dow = dow_from_ymd(year, month, dom);
+    uint8_t dow = dow_from_ymd(year, month, dom); /* 1..7 */
     RTC_SetTimeDate(sec, min, hour, dow, dom, month, year);
 }
 

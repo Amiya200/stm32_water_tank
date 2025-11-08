@@ -8,6 +8,6 @@
 ../Core/Src/rtc_i2c.c:133:16:dow_from_ymd	3
 ../Core/Src/rtc_i2c.c:144:6:RTC_Init	5
 ../Core/Src/rtc_i2c.c:170:6:RTC_SetTimeDate	13
-../Core/Src/rtc_i2c.c:196:6:RTC_SetTimeDate_AutoDOW	1
-../Core/Src/rtc_i2c.c:204:6:RTC_GetTimeDate	7
-../Core/Src/rtc_i2c.c:233:6:RTC_DumpRegisters	4
+../Core/Src/rtc_i2c.c:197:6:RTC_SetTimeDate_AutoDOW	1
+../Core/Src/rtc_i2c.c:205:6:RTC_GetTimeDate	7
+../Core/Src/rtc_i2c.c:234:6:RTC_DumpRegisters	4

@@ -53,7 +53,7 @@ volatile bool timerActive     = false;
 volatile bool semiAutoActive  = false;
 
 /* Protections */
-volatile bool senseDryRun         = false;
+volatile bool senseDryRun         = true;
 volatile bool senseOverLoad       = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
@@ -105,7 +105,7 @@ void ModelHandle_ResetAll(void)
 {
     clear_all_modes();
 
-    senseDryRun = senseOverLoad = senseOverUnderVolt = senseMaxRunReached = false;
+//    senseDryRun = senseOverLoad = senseOverUnderVolt = senseMaxRunReached = false;
     maxRunTimerArmed = false;
     maxRunStartTick  = 0;
     dryTimerArmed    = false;
@@ -220,11 +220,76 @@ bool ModelHandle_AuxBurstActive(void) { return auxBurstActive; }
 /* =========================
    DRY helpers (shared)
    ========================= */
+// Dry Run threshold logic based on ADC_CHANNEL_0 (Dry Run sensor)
+// Dry Run detection logic based on ADC_CHANNEL_0 (Dry Run sensor)
+// Dry Run detection logic based on ADC_CHANNEL_0 (Dry Run sensor)
+void ModelHandle_CheckDryRun(void) {
+    // Get the ADC value for dry run sensor (ADC_CHANNEL_0)
+    float adc_value = adcData.voltages[0];  // ADC_CHANNEL_0 corresponds to Dry Run sensor
+
+    // Check if motor is ON
+    if (motorStatus == 1U) {  // Motor is running
+        // If the ADC value is 0 (indicating a dry run condition), set senseDryRun to false
+        if (adc_value == 0) {
+            senseDryRun = false;  // No dry run, force stop if motor is on with ADC value 0
+        } else if (adc_value < DRY_THRESHOLD_V) {
+            senseDryRun = false;  // Dry run inactive (e.g., no water detected)
+        } else {
+            senseDryRun = true;   // Dry run active (water detected)
+        }
+    } else {
+        // If the motor is off, reset the dry run status to inactive
+        senseDryRun = false;
+    }
+}
+
+// Call this function periodically in the main loop or after ADC readings
+void ModelHandle_ProcessDryRun(void) {
+    ModelHandle_CheckDryRun();  // Check the dry run status
+
+    // Optionally, print or log the dry run status for debugging
+    if (senseDryRun) {
+        printf("Dry Run active\n");
+    } else {
+        printf("Dry Run inactive\n");
+    }
+}
+
+// Handle Dry Run logic within the motor control protections
+static void dry_run_protection(void) {
+    if (motorStatus == 1U) {  // If the motor is running
+        if (!senseDryRun) {
+            // Dry condition detected, start the timer if not already armed
+            if (!dryTimerArmed) {
+                dryTimerArmed = true;
+                dryStopDeadline = HAL_GetTick() + DRY_STOP_DELAY_SECONDS * 1000U;  // Delay in ms
+            } else if (HAL_GetTick() >= dryStopDeadline) {
+                // If the dry condition persists beyond the delay, stop the motor
+                ModelHandle_StopAllModesAndMotor();
+                printf("Motor stopped due to dry condition.\n");
+            }
+        } else {
+            // If water is detected, cancel the dry run timer
+            dryTimerArmed = false;
+            dryStopDeadline = 0;
+        }
+    } else {
+        // If the motor is off, reset the dry run timer
+        dryTimerArmed = false;
+        dryStopDeadline = 0;
+    }
+}
+
+// Function to call periodically to process dry run checks and pro
+
+
+
+
 static inline bool dry_raw_is_dry(void)
 {
-    float v = adcData.voltages[0];
-    if (DRY_ACTIVE_LOW) return (v < DRY_THRESHOLD_V);
-    else                return (v > DRY_THRESHOLD_V);
+//    float v = adcData.voltages[0];
+//    if (DRY_ACTIVE_LOW) return (v < DRY_THRESHOLD_V);
+//    else                return (v > DRY_THRESHOLD_V);
 }
 
 /* =========================
@@ -351,19 +416,19 @@ static uint32_t twist_prime_deadline = 0;
 /* Count DRY only while motor is ON to avoid latch-off after first OFF */
 static inline bool isDryLowSupply_debounced(void)
 {
-    if (!Motor_GetStatus()) {
-        // If motor is OFF, do not count; keep counter at 0
-        twist_dry_cnt = 0;
-        return false;
-    }
-
-    bool raw = dry_raw_is_dry();
-    if (raw) {
-        if (twist_dry_cnt < 255) twist_dry_cnt++;
-    } else {
-        twist_dry_cnt = 0;
-    }
-    return (twist_dry_cnt >= 3);
+//    if (!Motor_GetStatus()) {
+//        // If motor is OFF, do not count; keep counter at 0
+//        twist_dry_cnt = 0;
+//        return false;
+//    }
+//
+//    bool raw = dry_raw_is_dry();
+//    if (raw) {
+//        if (twist_dry_cnt < 255) twist_dry_cnt++;
+//    } else {
+//        twist_dry_cnt = 0;
+//    }
+//    return (twist_dry_cnt >= 3);
 }
 static inline void twist_arm_priming(void)
 {
@@ -437,26 +502,26 @@ void twist_tick(void)
     // 3) While in ON phase, you may optionally gate on "dry" (if your design wants this).
     //    We DON’T toggle the motor from ADC elsewhere; we only *observe* a dry flag here.
     //    If you don’t want dry handling in Twist, you can remove this block.
-#if defined(DRY_STOP_DELAY_SECONDS) && (DRY_STOP_DELAY_SECONDS > 0)
-    if (twist_on_phase) {
-        // If a dry condition is being signaled by the sensing layer, count it.
-        if (senseDryRun) {
-            if (twist_dry_cnt < 0xFF) twist_dry_cnt++;
-        } else {
-            twist_dry_cnt = 0;
-        }
-
-        // If dry persisted long enough, end the ON phase early and jump to OFF.
-        if (twist_dry_cnt >= (uint8_t)DRY_STOP_DELAY_SECONDS) {
-            stop_motor_keep_modes();
-            twist_on_phase       = false;
-            twist_dry_cnt        = 0;
-            twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
-            return;
-        }
-    }
-#endif
-
+//#if defined(DRY_STOP_DELAY_SECONDS) && (DRY_STOP_DELAY_SECONDS > 0)
+//    if (twist_on_phase) {
+//        // If a dry condition is being signaled by the sensing layer, count it.
+//        if (senseDryRun) {
+//            if (twist_dry_cnt < 0xFF) twist_dry_cnt++;
+//        } else {
+//            twist_dry_cnt = 0;
+//        }
+//
+//        // If dry persisted long enough, end the ON phase early and jump to OFF.
+//        if (twist_dry_cnt >= (uint8_t)DRY_STOP_DELAY_SECONDS) {
+//            stop_motor_keep_modes();
+//            twist_on_phase       = false;
+//            twist_dry_cnt        = 0;
+//            twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
+//            return;
+//        }
+//    }
+//#endif
+//
     // 4) Phase timing: flip when deadline elapses (signed compare prevents wrap issues).
     if ((int32_t)(twist_phase_deadline - tnow) <= 0) {
         twist_on_phase = !twist_on_phase;
@@ -741,30 +806,30 @@ static void protections_tick(void)
     }
 
     /* DRY-RUN: delayed stop */
-    if (motorStatus == 1U) {
-        if (dry_raw_is_dry()) {
-            senseDryRun = true; // show on UI while counting
-            if (!dryTimerArmed) {
-                dryTimerArmed   = true;
-                dryStopDeadline = now_ms() + (uint32_t)DRY_STOP_DELAY_SECONDS * 1000UL;
-            } else {
-                if ((int32_t)(dryStopDeadline - now_ms()) <= 0) {
-                    ModelHandle_StopAllModesAndMotor();
-                    // Keep flag true until user action clears (or water returns and motor restarts)
-                }
-            }
-        } else {
-            // water found => cancel dry timer & flag
-            dryTimerArmed   = false;
-            dryStopDeadline = 0;
-            senseDryRun     = false;
-        }
-    } else {
-        // motor is off; reset dry timing
-        dryTimerArmed   = false;
-        dryStopDeadline = 0;
-        // keep senseDryRun as-is for UI; it will clear on next water detection
-    }
+//    if (motorStatus == 1U) {
+//        if (dry_raw_is_dry()) {
+//            senseDryRun = true; // show on UI while counting
+//            if (!dryTimerArmed) {
+//                dryTimerArmed   = true;
+//                dryStopDeadline = now_ms() + (uint32_t)DRY_STOP_DELAY_SECONDS * 1000UL;
+//            } else {
+//                if ((int32_t)(dryStopDeadline - now_ms()) <= 0) {
+//                    ModelHandle_StopAllModesAndMotor();
+//                    // Keep flag true until user action clears (or water returns and motor restarts)
+//                }
+//            }
+//        } else {
+//            // water found => cancel dry timer & flag
+//            dryTimerArmed   = false;
+//            dryStopDeadline = 0;
+//            senseDryRun     = false;
+//        }
+//    } else {
+//        // motor is off; reset dry timing
+//        dryTimerArmed   = false;
+//        dryStopDeadline = 0;
+//        // keep senseDryRun as-is for UI; it will clear on next water detection
+//    }
 
     /* Other protections -> hard clear */
     if (senseOverLoad && motorStatus == 1U) ModelHandle_StopAllModesAndMotor();
@@ -826,6 +891,7 @@ bool Motor_GetStatus(void) { return (motorStatus == 1U); }
    ======================= */
 void ModelHandle_Process(void)
 {
+	dry_run_protection();
     /* keep your original order of tickers */
 	if (twistActive)    twist_tick();
 	if (countdownActive) countdown_tick();

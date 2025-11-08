@@ -188,7 +188,7 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
     /* === RTC + EEPROM Initialization === */
     RTC_Init();
     RTC_GetTimeDate();
-
+//    RTC_SetTimeDate(sec, min, hour, dow, dom, month, year);
     if (HAL_I2C_IsDeviceReady(&hi2c2, 0x57 << 1, 2, 100) == HAL_OK){
         Debug_Print("✅ EEPROM ready at 0x57\r\n");
         ak=1;
@@ -272,7 +272,7 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
         /* ---------- Core Processing ---------- */
         ModelHandle_Process();
         LED_Task();
-
+        ModelHandle_ProcessDryRun();
         HAL_Delay(10);   // ~50Hz main loop tick
     }
     /* USER CODE END WHILE */
