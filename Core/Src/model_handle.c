@@ -26,6 +26,8 @@
 #ifndef DRY_STOP_DELAY_SECONDS
 #define DRY_STOP_DELAY_SECONDS 30
 #endif
+#define DRY_PROBE_TIME_MS  5000UL
+#define DRY_WAIT_TIME_MS  10000UL
 
 /* Twist: allow initial ON even if sensor shows dry (build pressure) */
 #ifndef TWIST_PRIME_SECONDS
@@ -53,7 +55,7 @@ volatile bool timerActive     = false;
 volatile bool semiAutoActive  = false;
 
 /* Protections */
-volatile bool senseDryRun         = true;
+volatile bool senseDryRun         = false;
 volatile bool senseOverLoad       = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
@@ -191,7 +193,7 @@ void ModelHandle_StopAllModesAndMotor(void)
     clear_all_modes();
     stop_motor_keep_modes();
     ////printf("ALL MODES OFF + MOTOR OFF\r\n");
-    ModelHandle_SaveCurrentStateToEEPROM();
+//    ModelHandle_SaveCurrentStateToEEPROM();
 }
 
 /* =========================
@@ -221,25 +223,15 @@ bool ModelHandle_AuxBurstActive(void) { return auxBurstActive; }
    DRY helpers (shared)
    ========================= */
 // Dry Run threshold logic based on ADC_CHANNEL_0 (Dry Run sensor)
-// Dry Run detection logic based on ADC_CHANNEL_0 (Dry Run sensor)
-// Dry Run detection logic based on ADC_CHANNEL_0 (Dry Run sensor)
-void ModelHandle_CheckDryRun(void) {
-    // Get the ADC value for dry run sensor (ADC_CHANNEL_0)
-    float adc_value = adcData.voltages[0];  // ADC_CHANNEL_0 corresponds to Dry Run sensor
+void ModelHandle_CheckDryRun(void)
+{
+    float adc_value = adcData.voltages[0];  // Dry sensor channel
 
-    // Check if motor is ON
-    if (motorStatus == 1U) {  // Motor is running
-        // If the ADC value is 0 (indicating a dry run condition), set senseDryRun to false
-        if (adc_value == 0) {
-            senseDryRun = false;  // No dry run, force stop if motor is on with ADC value 0
-        } else if (adc_value < DRY_THRESHOLD_V) {
-            senseDryRun = false;  // Dry run inactive (e.g., no water detected)
-        } else {
-            senseDryRun = true;   // Dry run active (water detected)
-        }
+    // ✅ Define dryRun = true ONLY when ADC is 0 (meaning sensor dry)
+    if (adc_value <= 0.01f) {
+        senseDryRun = true;   // Water absent → run motor
     } else {
-        // If the motor is off, reset the dry run status to inactive
-        senseDryRun = false;
+        senseDryRun = false;  // Water present → stop motor
     }
 }
 
@@ -249,34 +241,144 @@ void ModelHandle_ProcessDryRun(void) {
 
     // Optionally, print or log the dry run status for debugging
     if (senseDryRun) {
-        printf("Dry Run active\n");
+//        printf("Dry Run active\n");
     } else {
-        printf("Dry Run inactive\n");
+//        printf("Dry Run inactive\n");
     }
 }
 
 // Handle Dry Run logic within the motor control protections
-static void dry_run_protection(void) {
-    if (motorStatus == 1U) {  // If the motor is running
-        if (!senseDryRun) {
-            // Dry condition detected, start the timer if not already armed
+static void dry_run_protection(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if (motorStatus == 1U) {           // Motor is ON
+        if (!senseDryRun) {            // ❌ DryRun FALSE → turn OFF after delay
             if (!dryTimerArmed) {
                 dryTimerArmed = true;
-                dryStopDeadline = HAL_GetTick() + DRY_STOP_DELAY_SECONDS * 1000U;  // Delay in ms
-            } else if (HAL_GetTick() >= dryStopDeadline) {
-                // If the dry condition persists beyond the delay, stop the motor
+                dryStopDeadline = now + (uint32_t)DRY_STOP_DELAY_SECONDS * 1000UL;
+            } else if ((int32_t)(now - dryStopDeadline) >= 0) {
                 ModelHandle_StopAllModesAndMotor();
-                printf("Motor stopped due to dry condition.\n");
+//                printf("Motor stopped: dryRun FALSE condition.\n");
             }
-        } else {
-            // If water is detected, cancel the dry run timer
+        } else {                       // ✅ DryRun TRUE → keep motor ON
             dryTimerArmed = false;
             dryStopDeadline = 0;
         }
     } else {
-        // If the motor is off, reset the dry run timer
+        // Motor OFF → reset timer
         dryTimerArmed = false;
         dryStopDeadline = 0;
+    }
+}
+
+
+/* =========================
+   SMART DRY-RUN MOTOR HANDLER
+   ========================= */
+static bool     dryMotorDelayActive = false;
+static uint32_t dryMotorRestartTime = 0;
+#define DRY_RESTART_DELAY_MS   8000U   // delay before motor auto-restarts (8s)
+#define DRY_MOTOR_OFF_DELAY_MS 5000U   // delay before motor auto-stops (5s)
+
+// =====================================================
+// SMART DRY-RUN HANDLER (non-destructive to modes)
+// =====================================================
+// =====================================================
+// FINAL SMART DRY-RUN HANDLER (stable, non-flickering)
+// =====================================================
+//
+// Behavior summary:
+// 🟢 Motor stays OFF initially
+// 🟢 If dry condition persists, motor turns ON for a probe (5s)
+// 🔴 If still dry after probe → motor OFF for 10s pause
+// 🔁 Then repeats until water detected
+// 💧 If water present, motor keeps running normally
+// =====================================================
+void ModelHandle_SoftDryRunHandler(void)
+{
+    static enum {
+        DRY_STATE_IDLE = 0,      // waiting idle (motor off)
+        DRY_STATE_PROBING,       // motor on, checking for water
+        DRY_STATE_WAITING,       // motor off, waiting before retry
+        DRY_STATE_NORMAL         // normal water present mode
+    } dryState = DRY_STATE_IDLE;
+
+    static uint32_t stateDeadlineMs = 0;
+    static bool initialized = false;
+    uint32_t now = HAL_GetTick();
+
+    // Ensure motor is OFF initially
+    if (!initialized) {
+        stop_motor_keep_modes();
+        dryState = DRY_STATE_IDLE;
+        initialized = true;
+    }
+
+    // Update sensor reading
+    ModelHandle_CheckDryRun(); // senseDryRun == true => water present
+
+    switch (dryState)
+    {
+        // ---------------------------------------------
+        // 1️⃣ IDLE: waiting, motor off. If dry condition persists, start probe.
+        // ---------------------------------------------
+        case DRY_STATE_IDLE:
+            if (!Motor_GetStatus()) stop_motor_keep_modes();
+
+            if (senseDryRun == false) {
+                // no water detected → start probing
+                start_motor();
+                dryState = DRY_STATE_PROBING;
+                stateDeadlineMs = now + 5000UL; // probe ON for 5s
+            } else {
+                // water OK → go to normal
+                dryState = DRY_STATE_NORMAL;
+            }
+            break;
+
+        // ---------------------------------------------
+        // 2️⃣ PROBING: motor ON for a few seconds to test
+        // ---------------------------------------------
+        case DRY_STATE_PROBING:
+            if ((int32_t)(now - stateDeadlineMs) >= 0) {
+                ModelHandle_CheckDryRun(); // recheck after motor ON
+
+                if (senseDryRun == false) {
+                    // still dry → stop and wait before retry
+                    stop_motor_keep_modes();
+                    dryState = DRY_STATE_WAITING;
+                    stateDeadlineMs = now + 10000UL; // wait 10s before retry
+                } else {
+                    // water found → continue normal
+                    dryState = DRY_STATE_NORMAL;
+                }
+            }
+            break;
+
+        // ---------------------------------------------
+        // 3️⃣ WAITING: motor off, waiting before next probe
+        // ---------------------------------------------
+        case DRY_STATE_WAITING:
+            if ((int32_t)(now - stateDeadlineMs) >= 0) {
+                dryState = DRY_STATE_IDLE; // ready to retry
+            }
+            break;
+
+        // ---------------------------------------------
+        // 4️⃣ NORMAL: motor runs normally while water present
+        // ---------------------------------------------
+        case DRY_STATE_NORMAL:
+            if (!senseDryRun) {
+                // water lost suddenly → stop and start dry cycle
+                stop_motor_keep_modes();
+                dryState = DRY_STATE_WAITING;
+                stateDeadlineMs = now + 10000UL; // short cooldown
+            } else {
+                // ensure motor stays on while water present
+                if (!Motor_GetStatus()) start_motor();
+            }
+            break;
     }
 }
 
@@ -854,7 +956,7 @@ static void leds_from_model(void)
     if (countdownActive) {
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 500);
     }
-    if (senseDryRun) {
+    if (!senseDryRun && motorStatus == 1U) {
         LED_SetIntent(LED_COLOR_RED, LED_MODE_STEADY, 0);
     }
     if (senseMaxRunReached) {
@@ -891,7 +993,8 @@ bool Motor_GetStatus(void) { return (motorStatus == 1U); }
    ======================= */
 void ModelHandle_Process(void)
 {
-	dry_run_protection();
+//	dry_run_protection();
+	 ModelHandle_SoftDryRunHandler();  // ✅ add this line here
     /* keep your original order of tickers */
 	if (twistActive)    twist_tick();
 	if (countdownActive) countdown_tick();

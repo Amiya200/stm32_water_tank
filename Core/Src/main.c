@@ -149,7 +149,6 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 
 /**
   * @brief  The application entry point.
-  * @retval int
   */int main(void)
   {
     /* USER CODE BEGIN 1 */
