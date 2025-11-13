@@ -139,18 +139,20 @@ void ModelHandle_SetMotor(bool on)
    ============================================================ */
 void ModelHandle_CheckDryRun(void)
 {
+    /* Ignore dry-run completely during countdown */
+    if (countdownActive) {
+        senseDryRun = true;     // force WATER PRESENT
+        return;
+    }
+
     float v = adcData.voltages[0];
 
-    /* New logic:
-       TRUE  = water present only if ADC ch0 ≈ 0V
-       FALSE = dry for any non-zero voltage
-    */
-
-    if (v <= 0.01f)    // 0 – 10mV means WATER
+    if (v <= 0.01f)
         senseDryRun = true;
     else
         senseDryRun = false;
 }
+
 
 
 
@@ -362,13 +364,12 @@ void ModelHandle_SoftDryRunHandler(void)
 
 void ModelHandle_ProcessDryRun(void)
 {
-	/* 1) Update dry sensor only if NOT in timer mode */
-	if (!timerActive)
-	{
-	    ModelHandle_SoftDryRunHandler();
-	}
+    if (timerActive || countdownActive)
+        return;
 
+    ModelHandle_SoftDryRunHandler();
 }
+
 /* ============================================================
    COUNTDOWN MODE
    ------------------------------------------------------------
