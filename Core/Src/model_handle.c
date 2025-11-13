@@ -4,1100 +4,1077 @@
 #include "global.h"
 #include "adc.h"
 #include "rtc_i2c.h"
+#include "uart_commands.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include "stm32f1xx_hal.h"
-#include "uart_commands.h"
-/* =========================
-   CONFIG
-   ========================= */
-#ifndef DRY_ACTIVE_LOW
-#define DRY_ACTIVE_LOW 1
-#endif
+
+/* ============================================================
+   DRY-RUN POLARITY (YOU CONFIRMED)
+   TRUE  → WATER PRESENT
+   FALSE → DRY
+   ============================================================ */
 
 #ifndef DRY_THRESHOLD_V
 #define DRY_THRESHOLD_V 0.10f
 #endif
 
-/* Global dry-run stop delay (per spec: 30–60s). Adjust as needed. */
-#ifndef DRY_STOP_DELAY_SECONDS
-#define DRY_STOP_DELAY_SECONDS 30
-#endif
-#define DRY_PROBE_TIME_MS  5000UL
-#define DRY_WAIT_TIME_MS  10000UL
+/* DRY soft-FSM timings */
+#define DRY_PROBE_ON_MS   5000UL    // motor on for test (5s)
+#define DRY_PROBE_OFF_MS  10000UL   // motor off between tests (10s)
+#define DRY_CONFIRM_MS    1500UL    // confirm water loss before shutting down
 
-/* Twist: allow initial ON even if sensor shows dry (build pressure) */
-#ifndef TWIST_PRIME_SECONDS
-#define TWIST_PRIME_SECONDS 5
-#endif
+/* General max-run protection */
+static const uint32_t MAX_CONT_RUN_MS = 2UL * 60UL * 60UL * 1000UL; // 2 hours
 
-/* =========================
-   Externals
-   ========================= */
-extern UART_HandleTypeDef huart1;
+/* ============================================================
+   GLOBAL FLAGS
+   ============================================================ */
+
 extern ADC_Data adcData;
 extern RTC_Time_t time;
 
-/* =========================
-   Public model state
-   ========================= */
-volatile uint8_t  motorStatus = 0;
+volatile uint8_t motorStatus = 0;
 
-/* Mode trackers */
 volatile bool manualActive    = false;
+volatile bool semiAutoActive  = false;
 volatile bool countdownActive = false;
 volatile bool twistActive     = false;
 volatile bool searchActive    = false;
 volatile bool timerActive     = false;
-volatile bool semiAutoActive  = false;
 
-/* Protections */
-volatile bool senseDryRun         = false;
+volatile bool senseDryRun         = false;  // TRUE = water present
 volatile bool senseOverLoad       = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
-volatile bool manualOverride      = false;
 
-/* Max runtime protection (2h default) */
-static const uint32_t MAX_CONT_RUN_MS = 2UL * 60UL * 60UL * 1000UL;
-static bool           maxRunTimerArmed = false;
-static uint32_t       maxRunStartTick  = 0;
+/* manual override (MOTOR_ON/MOTOR_OFF manual push) */
+volatile bool manualOverride = false;
 
-/* DRY protection timer (delayed stop) */
-static bool     dryTimerArmed    = false;
-static uint32_t dryStopDeadline  = 0;
-
-/* =========================
-   Utilities
-   ========================= */
-
-// =====================================================
-// RATE-LIMITED STATUS UPDATER to avoid UART spam
-// =====================================================
-static void Safe_SendStatusPacket(void)
+/* ============================================================
+   UTILS
+   ============================================================ */
+static inline uint32_t now_ms(void)
 {
-    static uint32_t lastSentTick = 0;
-    uint32_t now = HAL_GetTick();
-
-    // only allow one send every 3000 ms
-    if (now - lastSentTick < 3000) return;
-
-    lastSentTick = now;
-    UART_SendStatusPacket();
+    return HAL_GetTick();
 }
-
-
-static inline uint32_t now_ms(void) { return HAL_GetTick(); }
 
 static inline void clear_all_modes(void)
 {
-    manualActive    = false;
+    manualActive = false;
+    semiAutoActive = false;
     countdownActive = false;
-    twistActive     = false;
-    searchActive    = false;
-    timerActive     = false;
-    semiAutoActive  = false;
-    manualOverride  = false;
+    twistActive = false;
+    searchActive = false;
+    timerActive = false;
+    manualOverride = false;
 }
 
-void ModelHandle_ResetAll(void)
-{
-    clear_all_modes();
+/* ============================================================
+   MOTOR CONTROL CORE
+   ============================================================ */
 
-//    senseDryRun = senseOverLoad = senseOverUnderVolt = senseMaxRunReached = false;
-    maxRunTimerArmed = false;
-    maxRunStartTick  = 0;
-    dryTimerArmed    = false;
-    dryStopDeadline  = 0;
-
-    Relay_Set(1, false);
-    Relay_Set(2, false);
-    Relay_Set(3, false);
-    motorStatus = 0;
-
-    LED_ClearAllIntents();
-    LED_ApplyIntents();
-
-    // ✅ Initialize defaults moved from compile-time
-    memset(timerSlots, 0, sizeof(timerSlots));
-    searchSettings.searchActive = false;
-    searchSettings.testingGapSeconds = 60;
-    searchSettings.dryRunTimeSeconds = 20;
-    twistSettings.twistActive = false;
-    twistSettings.onDurationSeconds = 20;
-    twistSettings.offDurationSeconds = 40;
-}
-
-//TimerSlot timerSlots[5];  // define global array
-uint32_t ModelHandle_TimeToSeconds(uint8_t hh, uint8_t mm) {
-    return ((uint32_t)hh * 3600UL) + ((uint32_t)mm * 60UL);
-}
-void ModelHandle_SecondsToTime(uint32_t sec, uint8_t* hh, uint8_t* mm) {
-    sec %= 24UL * 3600UL;
-    if (hh) *hh = (uint8_t)(sec / 3600UL);
-    if (mm) *mm = (uint8_t)((sec % 3600UL) / 60UL);
-}
-
-/* =========================
-   Countdown (basic)
-   ========================= */
-volatile bool     countdownMode     = true;
-volatile uint32_t countdownDuration = 0;
-
-/* ===== Aux burst (Relays 2 & 3 for a fixed time) ===== */
-static bool     auxBurstActive     = false;
-static uint32_t auxBurstDeadlineMs = 0;
-
-/* Timer slots (RTC based) */
-TimerSlot timerSlots[5];
-SearchSettings searchSettings;
-TwistSettings twistSettings;
-
-
-/* =========================
-   Motor Control
-   ========================= */
 static inline void motor_apply(bool on)
 {
     Relay_Set(1, on);
-    motorStatus = on ? 1U : 0U;
+    motorStatus = on ? 1 : 0;
 
-    if (on) {
-        if (!maxRunTimerArmed) {
-            maxRunTimerArmed = true;
-            maxRunStartTick  = now_ms();
-            Safe_SendStatusPacket();
+    static uint32_t maxRunStartTick = 0;
+    static bool maxRunArmed = false;
+
+    if (on)
+    {
+        if (!maxRunArmed)
+        {
+            maxRunArmed = true;
+            maxRunStartTick = now_ms();
         }
-    } else {
-        maxRunTimerArmed = false;
-        // When motor turns OFF, cancel pending dry timer
-        dryTimerArmed = false;
-        dryStopDeadline = 0;
-        Safe_SendStatusPacket();
     }
+    else
+    {
+        maxRunArmed = false;
+    }
+
+    UART_SendStatusPacket();
 }
 
 static inline void start_motor(void)
 {
     motor_apply(true);
-    //printf("Relay1 -> %s\r\n", Relay_Get(1) ? "ON" : "OFF");
 }
-static inline void stop_motor_keep_modes(void)  { motor_apply(false); }
 
-/* Hard OFF: stop and clear every mode flag (used for terminal OFF or external OFF) */
+static inline void stop_motor_keep_modes(void)
+{
+    motor_apply(false);
+}
+
+bool Motor_GetStatus(void)
+{
+    return (motorStatus == 1U);
+}
+
+void ModelHandle_SetMotor(bool on)
+{
+    if (on)
+    {
+        clear_all_modes();
+        manualOverride = true;
+        start_motor();
+    }
+    else
+    {
+        clear_all_modes();
+        stop_motor_keep_modes();
+    }
+}
+
+/* ============================================================
+   DRY SENSOR CHECK (YOU CONFIRMED LOGIC)
+   TRUE  => WATER
+   FALSE => DRY
+   ============================================================ */
+void ModelHandle_CheckDryRun(void)
+{
+    float v = adcData.voltages[0];
+
+    /* New logic:
+       TRUE  = water present only if ADC ch0 ≈ 0V
+       FALSE = dry for any non-zero voltage
+    */
+
+    if (v <= 0.01f)    // 0 – 10mV means WATER
+        senseDryRun = true;
+    else
+        senseDryRun = false;
+}
+
+
+
+/* Pure helper */
+static inline bool isTankFull(void)
+{
+    int submerged = 0;
+    for (int i = 0; i < 5; i++)
+    {
+        if (adcData.voltages[i] < 0.1f)
+            submerged++;
+    }
+    return (submerged >= 4);
+}
+
+/* ============================================================
+   A small safe UART status sender
+   ============================================================ */
+static void Safe_SendStatusPacket(void)
+{
+    static uint32_t last = 0;
+    uint32_t now = now_ms();
+
+    if (now - last >= 3000)
+    {
+        UART_SendStatusPacket();
+        last = now;
+    }
+}
+/* ============================================================
+   SOFT DRY-RUN STATE MACHINE (FULLY UPDATED)
+   ------------------------------------------------------------
+   ============================================================ */
+
+typedef enum {
+    DRY_IDLE = 0,    // motor OFF waiting for next probe
+    DRY_PROBE,       // motor ON short probe
+    DRY_NORMAL       // normal running (water continuously present)
+} DryFSMState;
+static bool auxBurstActive = false;
+static uint32_t auxBurstDeadline = 0;
+
+static DryFSMState dryState = DRY_IDLE;
+static uint32_t dryDeadline = 0;
+static uint32_t dryConfirmStart = 0;
+static bool dryConfirming = false;
+void ModelHandle_ToggleManual(void)
+{
+    if (!manualActive)
+    {
+        clear_all_modes();
+        manualActive = true;
+        manualOverride = true;
+        start_motor();
+    }
+    else
+    {
+        manualActive = false;
+        manualOverride = false;
+        stop_motor_keep_modes();
+    }
+}
 void ModelHandle_StopAllModesAndMotor(void)
 {
     clear_all_modes();
     stop_motor_keep_modes();
-    ////printf("ALL MODES OFF + MOTOR OFF\r\n");
-//    ModelHandle_SaveCurrentStateToEEPROM();
 }
-
-/* =========================
-   Tank Check (4/5 submerged)
-   ========================= */
-static bool isTankFull(void)
+void ModelHandle_ClearManualOverride(void)
 {
-    int submergedCount = 0;
-    for (int i = 0; i < 5; i++) {
-        if (adcData.voltages[i] < 0.1f) submergedCount++;
-    }
-    return (submergedCount >= 4);
+    manualOverride = false;
 }
-
-/* ===== Aux burst public API ===== */
 void ModelHandle_TriggerAuxBurst(uint16_t seconds)
 {
     if (seconds == 0) seconds = 1;
+
     Relay_Set(2, true);
     Relay_Set(3, true);
-    auxBurstActive     = true;
-    auxBurstDeadlineMs = HAL_GetTick() + ((uint32_t)seconds * 1000UL);
+
+    auxBurstActive = true;
+    auxBurstDeadline = now_ms() + seconds * 1000UL;
 }
-bool ModelHandle_AuxBurstActive(void) { return auxBurstActive; }
-
-/* =========================
-   DRY helpers (shared)
-   ========================= */
-// Dry Run threshold logic based on ADC_CHANNEL_0 (Dry Run sensor)
-void ModelHandle_CheckDryRun(void)
-{
-    float adc_value = adcData.voltages[0];  // sensor channel
-    // Example: 0 V → dry (no water), >0.1 V → wet (water present)
-    if (adc_value <= DRY_THRESHOLD_V) {
-        senseDryRun = true;  // dry condition
-    } else {
-        senseDryRun = false;   // water present
-    }
-}
-
-
-// Call this function periodically in the main loop or after ADC readings
-void ModelHandle_ProcessDryRun(void) {
-    ModelHandle_CheckDryRun();  // Check the dry run status
-}
-
-// Handle Dry Run logic within the motor control protections
-static void dry_run_protection(void)
-{
-    uint32_t now = HAL_GetTick();
-
-    if (motorStatus == 1U) {           // Motor is ON
-        if (!senseDryRun) {            // ❌ DryRun FALSE → turn OFF after delay
-            if (!dryTimerArmed) {
-                dryTimerArmed = true;
-                dryStopDeadline = now + (uint32_t)DRY_STOP_DELAY_SECONDS * 1000UL;
-            } else if ((int32_t)(now - dryStopDeadline) >= 0) {
-                ModelHandle_StopAllModesAndMotor();
-//                printf("Motor stopped: dryRun FALSE condition.\n");
-            }
-        } else {                       // ✅ DryRun TRUE → keep motor ON
-            dryTimerArmed = false;
-            dryStopDeadline = 0;
-        }
-    } else {
-        // Motor OFF → reset timer
-        dryTimerArmed = false;
-        dryStopDeadline = 0;
-    }
-}
-
-
-/* =========================
-   SMART DRY-RUN MOTOR HANDLER
-   ========================= */
-//static bool     dryMotorDelayActive = false;
-//static uint32_t dryMotorRestartTime = 0;
-//#define DRY_RESTART_DELAY_MS   8000U   // delay before motor auto-restarts (8s)
-//#define DRY_MOTOR_OFF_DELAY_MS 5000U   // delay before motor auto-stops (5s)
-// User-modifiable dry-run timing variables (ms)
-uint32_t dryProbeOnMs  = 30000UL;   // motor ON time (default 30 s)
-uint32_t dryProbeOffMs = 30000UL;   // motor OFF time (default 30 s)
-uint32_t dryConfirmMs  = 2000UL;
-// =====================================================
-// SMART DRY-RUN HANDLER (non-destructive to modes)
-// =====================================================
-// =====================================================
-// FINAL SMART DRY-RUN HANDLER (stable, non-flickering)
-// =====================================================
-//
-// Behavior summary:
-// 🟢 Motor stays OFF initially
-// 🟢 If dry condition persists, motor turns ON for a probe (5s)
-// 🔴 If still dry after probe → motor OFF for 10s pause
-// 🔁 Then repeats until water detected
-// 💧 If water present, motor keeps running normally
-// =====================================================
-
-void ModelHandle_SoftDryRunHandler(void)
-{
-    static enum {
-        DRY_STATE_IDLE = 0,      // motor off, waiting
-        DRY_STATE_PROBING,       // motor on, testing for water
-        DRY_STATE_NORMAL         // normal continuous run
-    } dryState = DRY_STATE_IDLE;
-
-    static uint32_t stateDeadlineMs = 0;
-    static bool initialized = false;
-    static bool confirming = false;
-    static uint32_t confirmStart = 0;
-
-    uint32_t now = HAL_GetTick();
-
-    // --- Initialization (only once)
-    if (!initialized) {
-        stop_motor_keep_modes();
-        dryState = DRY_STATE_IDLE;
-        initialized = true;
-    }
-
-    // --- Update sensor
-    ModelHandle_CheckDryRun();   // senseDryRun == true → water present
-
-    // --- Ensure mode is active
-    bool modeActive = (
-        manualActive ||
-        semiAutoActive ||
-        timerActive ||
-        searchActive ||
-        countdownActive ||
-        twistActive
-    );
-
-    if (!modeActive) {
-        if (Motor_GetStatus()) stop_motor_keep_modes();
-        dryState = DRY_STATE_IDLE;
-        confirming = false;
-        return;
-    }
-
-    // --- State Machine ---
-    switch (dryState)
-    {
-        /* --------------------------------------------------------
-           💤 IDLE — motor off, waiting before probe
-        -------------------------------------------------------- */
-        case DRY_STATE_IDLE:
-            stop_motor_keep_modes();
-            if ((int32_t)(now - stateDeadlineMs) >= 0) {
-                start_motor();
-                dryState = DRY_STATE_PROBING;
-                stateDeadlineMs = now + dryProbeOnMs;
-            }
-            break;
-
-        /* --------------------------------------------------------
-           🔍 PROBING — motor on for testing water presence
-        -------------------------------------------------------- */
-        case DRY_STATE_PROBING:
-            if ((int32_t)(now - stateDeadlineMs) >= 0) {
-                ModelHandle_CheckDryRun();
-                if (!senseDryRun) {
-                    // still dry → stop and go to IDLE
-                    stop_motor_keep_modes();
-                    dryState = DRY_STATE_IDLE;
-                    stateDeadlineMs = now + dryProbeOffMs;
-                } else {
-                    // water detected → go normal
-                    dryState = DRY_STATE_NORMAL;
-                }
-            }
-            break;
-
-        /* --------------------------------------------------------
-           💧 NORMAL — motor ON continuously while water present
-        -------------------------------------------------------- */
-        case DRY_STATE_NORMAL:
-            if (!senseDryRun) {
-                // lost water → confirm before stopping
-                if (!confirming) {
-                    confirming = true;
-                    confirmStart = now;
-                }
-
-                if ((int32_t)(now - confirmStart) >= (int32_t)dryConfirmMs) {
-                    stop_motor_keep_modes();
-                    dryState = DRY_STATE_IDLE;
-                    stateDeadlineMs = now + dryProbeOffMs;
-                    confirming = false;
-                }
-            } else {
-                confirming = false;
-                if (!Motor_GetStatus())
-                    start_motor();  // ensure ON while water present
-            }
-            break;
-    }
-}
-
-// Function to call periodically to process dry run checks and pro
-
-
-
-
-static inline bool dry_raw_is_dry(void)
-{
-//    float v = adcData.voltages[0];
-//    if (DRY_ACTIVE_LOW) return (v < DRY_THRESHOLD_V);
-//    else                return (v > DRY_THRESHOLD_V);
-}
-
-/* =========================
-   Manual Mode
-   ========================= */
-void ModelHandle_ToggleManual(void)
-{
-    // toggling manual should dominate and clear other modes
-    bool will_on = !manualActive;
-
-    if (will_on) {
-        clear_all_modes();
-        manualOverride = true;
-        manualActive   = true;
-        start_motor();
-        //printf("Manual ON\r\n");
-    } else {
-        ModelHandle_StopAllModesAndMotor(); // OFF should clear everything
-        //printf("Manual OFF\r\n");
-    }
-    ModelHandle_SaveCurrentStateToEEPROM();
-}
-
 void ModelHandle_ManualLongPress(void)
 {
-    //printf("Manual Long Press → System Reset\r\n");
-    HAL_Delay(100);
+    HAL_Delay(200);
     NVIC_SystemReset();
 }
 
+/* Return TRUE if ANY mode is active */
+static inline bool isAnyModeActive(void)
+{
+    return (manualActive ||
+            semiAutoActive ||
+            countdownActive ||
+            twistActive ||
+            searchActive ||
+            timerActive);
+}
+
+void ModelHandle_SoftDryRunHandler(void)
+{
+    uint32_t now = now_ms();
+
+    /* Update polarity-correct dry sensor */
+    ModelHandle_CheckDryRun();  // TRUE=water, FALSE=dry
+
+    /* Skip dry-run handling in TIMER mode */
+    if (timerActive)
+        return;
+
+    /* If no modes active → motor OFF and idle state */
+    if (!isAnyModeActive())
+    {
+        stop_motor_keep_modes();
+        dryState = DRY_IDLE;
+        dryConfirming = false;
+        return;
+    }
+
+    /* ============================================================
+       STATE MACHINE
+       ============================================================ */
+
+    switch (dryState)
+    {
+        /* --------------------------------------------------------
+           DRY_IDLE → motor OFF, waiting to probe for water
+           -------------------------------------------------------- */
+        case DRY_IDLE:
+
+            stop_motor_keep_modes();   // ensure motor is OFF
+
+            /* If water is present immediately → jump to NORMAL RUN */
+            if (senseDryRun == true)   // water detected
+            {
+                start_motor();
+                dryState = DRY_NORMAL;
+                dryConfirming = false;
+                break;
+            }
+
+            /* schedule next probe */
+            if ((int32_t)(dryDeadline - now) <= 0)
+            {
+                start_motor();
+                dryState = DRY_PROBE;
+                dryDeadline = now + DRY_PROBE_ON_MS;
+                dryConfirming = false;
+            }
+            break;
+
+        /* --------------------------------------------------------
+           DRY_PROBE → motor ON for DRY_PROBE_ON_MS
+           -------------------------------------------------------- */
+        case DRY_PROBE:
+
+            /* If water appears ANYTIME during probe → NORMAL */
+            if (senseDryRun == true)
+            {
+                dryState = DRY_NORMAL;
+                dryConfirming = false;
+                break;
+            }
+
+            /* Probe timed out, still dry → go back to idle */
+            if ((int32_t)(dryDeadline - now) <= 0)
+            {
+                stop_motor_keep_modes();
+                dryState = DRY_IDLE;
+                dryDeadline = now + DRY_PROBE_OFF_MS;
+                dryConfirming = false;
+            }
+            break;
+
+        /* --------------------------------------------------------
+           DRY_NORMAL → continuous running while water present
+           -------------------------------------------------------- */
+        case DRY_NORMAL:
+
+            /* Keep motor ON */
+            if (!Motor_GetStatus())
+                start_motor();
+
+            /* If we detect DRY → confirm before switching to IDLE */
+            if (senseDryRun == false)   // DRY condition
+            {
+                if (!dryConfirming)
+                {
+                    dryConfirming = true;
+                    dryConfirmStart = now;
+                }
+
+                /* Confirm dry state for DRY_CONFIRM_MS */
+                if ((int32_t)(now - dryConfirmStart) >= (int32_t)DRY_CONFIRM_MS)
+                {
+                    stop_motor_keep_modes();
+                    dryState = DRY_IDLE;
+                    dryDeadline = now + DRY_PROBE_OFF_MS;
+                    dryConfirming = false;
+                }
+            }
+            else
+            {
+                /* reset confirm if water restored */
+                dryConfirming = false;
+            }
+            break;
+    }
+}
+
+void ModelHandle_ProcessDryRun(void)
+{
+	/* 1) Update dry sensor only if NOT in timer mode */
+	if (!timerActive)
+	{
+	    ModelHandle_SoftDryRunHandler();
+	}
+
+}
 /* ============================================================
    COUNTDOWN MODE
+   ------------------------------------------------------------
+   Packet expected:
+       @COUNTDOWN:ON:seconds#
+
+   Fixes:
+   ✔ Screen shows ON correctly
+   ✔ Single run (no repeats unless you add)
+   ✔ Fixed ON → REST cycle
+   ✔ Stops if tank full
    ============================================================ */
+
+volatile uint32_t countdownDuration = 0;
+volatile bool countdownMode = false;
 volatile uint16_t countdownRemainingRuns = 0;
 
 static uint32_t cd_deadline_ms      = 0;
 static uint32_t cd_rest_deadline_ms = 0;
 static uint32_t cd_run_seconds      = 0;
 static bool     cd_in_rest          = false;
-static const uint32_t CD_REST_MS    = 3000;
+static const uint32_t CD_REST_MS = 3000;   // 3 second rest
 
 void ModelHandle_StopCountdown(void)
 {
-    stop_motor_keep_modes();
-    countdownActive        = false;
-    countdownMode          = false;
+    countdownActive = false;
+    countdownMode   = false;
+    cd_in_rest      = false;
     countdownRemainingRuns = 0;
-    cd_run_seconds         = 0;
-    cd_in_rest             = false;
-    countdownDuration      = 0;
+    countdownDuration = 0;
+
+    stop_motor_keep_modes();
 }
+
 static void countdown_start_one_run(void)
 {
-    cd_deadline_ms    = now_ms() + (cd_run_seconds * 1000UL);
+    cd_deadline_ms = now_ms() + cd_run_seconds * 1000UL;
+    cd_in_rest = false;
     countdownDuration = cd_run_seconds;
-    cd_in_rest        = false;
-    start_motor();
+
+    start_motor();           // FIX — ensure ON status shows correctly
 }
-void ModelHandle_StartCountdown(uint32_t seconds_per_run, uint16_t repeats)
+
+void ModelHandle_StartCountdown(uint32_t seconds)
 {
-    if (seconds_per_run == 0 || repeats == 0) {
+    clear_all_modes();
+
+    if (seconds == 0) {
         ModelHandle_StopCountdown();
         return;
     }
 
-    clear_all_modes();
-    countdownMode          = true;
-    countdownActive        = true;
-    cd_run_seconds         = seconds_per_run;
-    countdownRemainingRuns = repeats;
-    cd_in_rest             = false;
+    cd_run_seconds = seconds;
+    countdownRemainingRuns = 1;     // FORCE 1 RUN ONLY
 
-    countdown_start_one_run();
-    ModelHandle_SaveCurrentStateToEEPROM();
+    countdownActive = true;
+    countdownMode   = true;
+
+    cd_in_rest = false;
+    cd_deadline_ms = now_ms() + (cd_run_seconds * 1000UL);
+
+    countdownDuration = cd_run_seconds;
+    start_motor();
 }
+
+
+/* tick */
 static void countdown_tick(void)
 {
     if (!countdownActive) return;
+
     uint32_t now = now_ms();
 
-    if (cd_in_rest) {
-        if ((int32_t)(cd_rest_deadline_ms - now) <= 0) {
-            if (countdownRemainingRuns > 0) {
-                countdown_start_one_run();
-            } else {
-                ModelHandle_StopCountdown();
-            }
-        }
-        return;
-    }
-
-    if ((int32_t)(cd_deadline_ms - now) > 0) {
-        uint32_t rem_ms = cd_deadline_ms - now;
-        countdownDuration = (rem_ms + 999U) / 1000U;
-
-        if (isTankFull()) {
-            ModelHandle_StopAllModesAndMotor(); // terminal condition -> clear all modes
-        }
-        return;
-    }
-
-    stop_motor_keep_modes();
-    if (countdownRemainingRuns > 0) countdownRemainingRuns--;
-    if (countdownRemainingRuns == 0) {
+    /* Tank full safety */
+    if (isTankFull()) {
         ModelHandle_StopCountdown();
         return;
     }
 
-    cd_in_rest          = true;
-    cd_rest_deadline_ms = now + CD_REST_MS;
-    countdownDuration   = 0;
-}
-
-/* =======================
-   TWIST MODE
-   ======================= */
-static bool     twist_on_phase       = false;
-static uint32_t twist_phase_deadline = 0;
-/* DRY counter must not accumulate while motor is OFF */
-static uint8_t  twist_dry_cnt        = 0;
-static bool     twist_priming        = false;
-static uint32_t twist_prime_deadline = 0;
-
-/* Count DRY only while motor is ON to avoid latch-off after first OFF */
-static inline bool isDryLowSupply_debounced(void)
-{
-//    if (!Motor_GetStatus()) {
-//        // If motor is OFF, do not count; keep counter at 0
-//        twist_dry_cnt = 0;
-//        return false;
-//    }
-//
-//    bool raw = dry_raw_is_dry();
-//    if (raw) {
-//        if (twist_dry_cnt < 255) twist_dry_cnt++;
-//    } else {
-//        twist_dry_cnt = 0;
-//    }
-//    return (twist_dry_cnt >= 3);
-}
-static inline void twist_arm_priming(void)
-{
-    if (TWIST_PRIME_SECONDS > 0) {
-        twist_priming        = true;
-        twist_prime_deadline = now_ms() + (uint32_t)TWIST_PRIME_SECONDS * 1000UL;
-    } else {
-        twist_priming        = false;
-        twist_prime_deadline = 0;
+    /* Still running */
+    if ((int32_t)(cd_deadline_ms - now) > 0) {
+        uint32_t rem = cd_deadline_ms - now;
+        countdownDuration = (rem + 999U) / 1000U;
+        return;
     }
+
+    /* Time over → stop everything */
+    ModelHandle_StopCountdown();
 }
+/* ============================================================
+   TWIST MODE
+   ------------------------------------------------------------
+   Packet:
+       @TWIST:SET:on:off#
+   ============================================================ */
+
+TwistSettings twistSettings;
+
+static bool     twist_on_phase = false;
+static uint32_t twist_deadline = 0;
 
 void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s)
 {
     clear_all_modes();
+
     if (on_s == 0)  on_s  = 1;
     if (off_s == 0) off_s = 1;
 
     twistSettings.onDurationSeconds  = on_s;
     twistSettings.offDurationSeconds = off_s;
-    twistSettings.twistActive  = true;
-    twistActive                = true;
-    twist_on_phase       = false;
-    twist_phase_deadline = now_ms() + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
-    twist_dry_cnt        = 0;
-    // Do NOT arm priming here; it's armed when ON actually starts.
+    twistSettings.twistActive = true;
+    twistActive = true;
 
-    twist_arm_priming();
-    ModelHandle_SaveCurrentStateToEEPROM();
+    twist_on_phase = false;  // start in OFF phase
+    twist_deadline = now_ms() + off_s * 1000UL;
 }
 
 void ModelHandle_StopTwist(void)
 {
     twistSettings.twistActive = false;
     twistActive = false;
-    twist_priming  = false;
-    twist_dry_cnt  = 0;
     stop_motor_keep_modes();
 }
-// Call this from your main scheduler at ~10–100ms rate
-// Call ~every 10–100 ms from your main loop/scheduler
-void twist_tick(void)
+
+static void twist_tick(void)
 {
-    // 0) Inert unless explicitly enabled by the user
-    if (!twistSettings.twistActive) {
-        // Defensive: never force motor here—other modes own it.
-        return;
-    }
+    if (!twistActive) return;
 
-    uint32_t tnow = now_ms();
+    uint32_t now = now_ms();
 
-    // 1) Global safety gates (if your project uses these flags)
-    //    If any protection is latched, keep Twist "enabled" but stop driving the motor.
-    if (senseOverLoad || senseOverUnderVolt || senseMaxRunReached) {
-        stop_motor_keep_modes();   // do not clear modes; just stop motor output
-        return;
-    }
-
-    // 2) Priming window logic:
-    //    When we first enter an ON phase we allow a short "prime" even if the sensor reads dry,
-    //    to build initial pressure. This DOES NOT move the phase deadline.
-    if (twist_priming) {
-        if ((int32_t)(twist_prime_deadline - tnow) > 0) {
-            if (!Motor_GetStatus()) start_motor();   // stay ON during priming
-            return;                                  // do not touch phase deadline
-        } else {
-            twist_priming = false;                   // priming finished
-        }
-    }
-
-    // 3) While in ON phase, you may optionally gate on "dry" (if your design wants this).
-    //    We DON’T toggle the motor from ADC elsewhere; we only *observe* a dry flag here.
-    //    If you don’t want dry handling in Twist, you can remove this block.
-//#if defined(DRY_STOP_DELAY_SECONDS) && (DRY_STOP_DELAY_SECONDS > 0)
-//    if (twist_on_phase) {
-//        // If a dry condition is being signaled by the sensing layer, count it.
-//        if (senseDryRun) {
-//            if (twist_dry_cnt < 0xFF) twist_dry_cnt++;
-//        } else {
-//            twist_dry_cnt = 0;
-//        }
-//
-//        // If dry persisted long enough, end the ON phase early and jump to OFF.
-//        if (twist_dry_cnt >= (uint8_t)DRY_STOP_DELAY_SECONDS) {
-//            stop_motor_keep_modes();
-//            twist_on_phase       = false;
-//            twist_dry_cnt        = 0;
-//            twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
-//            return;
-//        }
-//    }
-//#endif
-//
-    // 4) Phase timing: flip when deadline elapses (signed compare prevents wrap issues).
-    if ((int32_t)(twist_phase_deadline - tnow) <= 0) {
+    /* Phase transition */
+    if ((int32_t)(twist_deadline - now) <= 0)
+    {
         twist_on_phase = !twist_on_phase;
 
-        if (twist_on_phase) {
-            // Entering ON phase
-            twist_dry_cnt        = 0;
-            start_motor();
-            twist_phase_deadline = tnow + (uint32_t)twistSettings.onDurationSeconds * 1000UL;
-
-            // Arm priming exactly when ON begins (once per ON phase).
-#if defined(TWIST_PRIME_SECONDS) && (TWIST_PRIME_SECONDS > 0)
-            twist_priming        = true;
-            twist_prime_deadline = tnow + (uint32_t)TWIST_PRIME_SECONDS * 1000UL;
-#endif
-        } else {
-            // Entering OFF phase
-            stop_motor_keep_modes();
-            twist_dry_cnt        = 0;
-            twist_phase_deadline = tnow + (uint32_t)twistSettings.offDurationSeconds * 1000UL;
+        if (twist_on_phase)
+        {
+            /* ON phase */
+            if (senseDryRun == true)  // water present
+            {
+                start_motor();
+            }
+            else
+            {
+                /* dry → skip ON phase entirely */
+                twist_on_phase = false;
+            }
+            twist_deadline = now + twistSettings.onDurationSeconds * 1000UL;
         }
-    } else {
-        // 5) Maintain current phase outputs until the deadline arrives
-        if (twist_on_phase) {
-            if (!Motor_GetStatus()) start_motor();
-        } else {
-            if (Motor_GetStatus())  stop_motor_keep_modes();
+        else
+        {
+            /* OFF phase */
+            stop_motor_keep_modes();
+            twist_deadline = now + twistSettings.offDurationSeconds * 1000UL;
+        }
+    }
+
+    /* During ON — ensure water present */
+    if (twist_on_phase)
+    {
+        if (senseDryRun == false)  // DRY detected
+        {
+            stop_motor_keep_modes();
+            twist_on_phase = false;
+            twist_deadline = now + twistSettings.offDurationSeconds * 1000UL;
+        }
+        else
+        {
+            if (!Motor_GetStatus())
+                start_motor();
         }
     }
 }
-
-/* =======================
+/* ============================================================
    SEARCH MODE
-   ======================= */
-typedef enum {
-    SEARCH_GAP_WAIT = 0,
-    SEARCH_PROBE,
-    SEARCH_RUN
-} SearchState;
+   ------------------------------------------------------------
+   Packet:
+       @SEARCH:SET:gap:probe#
+   ============================================================ */
 
-static SearchState search_state = SEARCH_GAP_WAIT;
-static uint32_t    search_deadline_ms = 0;
-static uint8_t     search_dry_cnt = 0;
+SearchSettings searchSettings;
+
+typedef enum { SEARCH_GAP = 0, SEARCH_PROBE, SEARCH_RUN } SearchState;
+
+static SearchState search_state = SEARCH_GAP;
+static uint32_t search_deadline = 0;
 
 void ModelHandle_StartSearch(uint16_t gap_s, uint16_t probe_s)
 {
     clear_all_modes();
 
-    if (gap_s   == 0) gap_s   = 5;
+    if (gap_s == 0)   gap_s = 3;
     if (probe_s == 0) probe_s = 3;
 
-    searchSettings.testingGapSeconds = gap_s;
-    searchSettings.dryRunTimeSeconds = probe_s;
+    searchSettings.testingGapSeconds   = gap_s;
+    searchSettings.dryRunTimeSeconds   = probe_s;
+    searchSettings.searchActive        = true;
 
-    searchSettings.searchActive = true;
     searchActive = true;
 
     stop_motor_keep_modes();
-    search_state       = SEARCH_GAP_WAIT;
-    search_deadline_ms = now_ms() + (uint32_t)searchSettings.testingGapSeconds * 1000UL;
-    search_dry_cnt     = 0;
-    ModelHandle_SaveCurrentStateToEEPROM();
+    search_state = SEARCH_GAP;
+    search_deadline = now_ms() + gap_s * 1000UL;
 }
+
 void ModelHandle_StopSearch(void)
 {
     searchSettings.searchActive = false;
     searchActive = false;
-    search_state = SEARCH_GAP_WAIT;
     stop_motor_keep_modes();
+    search_state = SEARCH_GAP;
 }
-static inline bool isDryDebounced_RUN(void)
-{
-    if (dry_raw_is_dry()) {
-        if (search_dry_cnt < 255) search_dry_cnt++;
-    } else {
-        search_dry_cnt = 0;
-    }
-    return (search_dry_cnt >= 3);
-}
+
+/* tick */
 static void search_tick(void)
 {
-    if (!searchSettings.searchActive) { searchActive = false; return; }
-    searchActive = true;
+    if (!searchActive) return;
 
-    uint32_t nowt = now_ms();
+    uint32_t now = now_ms();
 
-    if (isTankFull()) {
+    /* Tank full → stop */
+    if (isTankFull())
+    {
         ModelHandle_StopAllModesAndMotor();
         return;
     }
 
     switch (search_state)
     {
-        case SEARCH_GAP_WAIT:
-            if (Motor_GetStatus()) stop_motor_keep_modes();
-            if ((int32_t)(search_deadline_ms - nowt) <= 0) {
-                start_motor(); // probe ON
-                search_state       = SEARCH_PROBE;
-                search_deadline_ms = nowt + (uint32_t)searchSettings.dryRunTimeSeconds * 1000UL;
-                search_dry_cnt     = 0;
+        case SEARCH_GAP:
+            stop_motor_keep_modes();
+
+            if ((int32_t)(search_deadline - now) <= 0)
+            {
+                /* start probe */
+                search_state = SEARCH_PROBE;
+                start_motor();
+                search_deadline = now + searchSettings.dryRunTimeSeconds * 1000UL;
             }
             break;
 
         case SEARCH_PROBE:
-            if (!dry_raw_is_dry()) {
-                // Water detected → RUN
-                search_state       = SEARCH_RUN;
-                search_deadline_ms = 0;
-                search_dry_cnt     = 0;
+            if (senseDryRun == true)
+            {
+                /* water detected → go to RUN */
+                search_state = SEARCH_RUN;
                 break;
             }
-            if ((int32_t)(search_deadline_ms - nowt) <= 0) {
-                // Still dry after probe
+
+            /* probe expired → still dry → back to gap */
+            if ((int32_t)(search_deadline - now) <= 0)
+            {
                 stop_motor_keep_modes();
-                search_state       = SEARCH_GAP_WAIT;
-                search_deadline_ms = nowt + (uint32_t)searchSettings.testingGapSeconds * 1000UL;
+                search_state = SEARCH_GAP;
+                search_deadline = now + searchSettings.testingGapSeconds * 1000UL;
             }
             break;
 
         case SEARCH_RUN:
-            if (isDryDebounced_RUN()) {
-                ModelHandle_StopAllModesAndMotor(); // terminal dry -> clear modes
+            /* water must remain present */
+            if (senseDryRun == false)
+            {
+                /* lost water → reset to gap */
+                stop_motor_keep_modes();
+                search_state = SEARCH_GAP;
+                search_deadline = now + searchSettings.testingGapSeconds * 1000UL;
                 break;
             }
-            if (!Motor_GetStatus()) start_motor(); // keep asserted
+
+            /* keep ON */
+            if (!Motor_GetStatus())
+                start_motor();
             break;
     }
+}/* ============================================================
+   TIMER MODE — FINAL, CLEAN, FULLY FIXED VERSION
+   ============================================================ */
+
+TimerSlot timerSlots[5];
+
+/* convert H:M → seconds since midnight */
+static uint32_t toSec(uint8_t h, uint8_t m)
+{
+    return (uint32_t)h * 3600UL + (uint32_t)m * 60UL;
 }
 
-/* =======================
-   TIMER (RTC based)
-   ======================= */
-
-
-void ModelHandle_SetTimerSlot(uint8_t i,
+/* Set ONE slot manually (from UART or UI) */
+void ModelHandle_SetTimerSlot(uint8_t slot,
                               uint8_t onH, uint8_t onM,
-                              uint8_t offH, uint8_t offM,
-                              bool en)
+                              uint8_t offH, uint8_t offM)
 {
-    if (i < 5)
+    if (slot >= 5) return;
+
+    TimerSlot* ts = &timerSlots[slot];
+
+    ts->onHour    = onH;
+    ts->onMinute  = onM;
+    ts->offHour   = offH;
+    ts->offMinute = offM;
+
+    /* Auto-enable only if ON!=OFF */
+    ts->enabled = !((onH == offH) && (onM == offM));
+}
+
+/* ============================================================
+   Returns TRUE if ANY slot should turn the motor ON
+   ============================================================ */
+static bool timer_any_slot_should_run(void)
+{
+    RTC_GetTimeDate();  // update time struct
+    uint32_t nowS = toSec(time.hour, time.minutes);
+
+    for (int i = 0; i < 5; i++)
     {
-        timerSlots[i].enabled = en;
-        timerSlots[i].onHour = onH;
-        timerSlots[i].onMinute = onM;
-        timerSlots[i].offHour = offH;
-        timerSlots[i].offMinute = offM;
-    }
-}
-
-void ModelHandle_ProcessTimerSlots(void)
-{
-    RTC_GetTimeDate();  // update 'time' from RTC
-
-    uint16_t nowM = time.hour * 60 + time.minutes;
-    bool motorShouldRun = false;
-
-    for (uint8_t i = 0; i < 5; i++)
-    {
-        if (!timerSlots[i].enabled)
-            continue;
-
-        uint16_t onM  = timerSlots[i].onHour * 60 + timerSlots[i].onMinute;
-        uint16_t offM = timerSlots[i].offHour * 60 + timerSlots[i].offMinute;
-
-        if (onM < offM)
-        {
-            if (nowM >= onM && nowM < offM)
-                motorShouldRun = true;
-        }
-        else  // handle midnight wrap-around (e.g., 23:00 → 02:00)
-        {
-            if (nowM >= onM || nowM < offM)
-                motorShouldRun = true;
-        }
-    }
-
-    ModelHandle_SetMotor(motorShouldRun);
-}
-
-static uint32_t seconds_since_midnight(void)
-{
-    RTC_GetTimeDate();
-    return ((uint32_t)time.hour * 3600UL) +
-           ((uint32_t)time.minutes * 60UL) +
-           (uint32_t)time.seconds;
-}
-/* =========================
-   TIMER MODE
-   ========================= */
-void timer_tick(void)
-{
-    if (!timerActive) return;
-
-    RTC_GetTimeDate();
-    uint32_t nowSec = ModelHandle_TimeToSeconds(time.hour, time.minutes);
-
-    bool shouldRun = false;
-    for (int i = 0; i < 5; i++) {
         if (!timerSlots[i].enabled) continue;
 
-        uint32_t onSec  = ModelHandle_TimeToSeconds(timerSlots[i].onHour,  timerSlots[i].onMinute);
-        uint32_t offSec = ModelHandle_TimeToSeconds(timerSlots[i].offHour, timerSlots[i].offMinute);
+        uint32_t on  = toSec(timerSlots[i].onHour,  timerSlots[i].onMinute);
+        uint32_t off = toSec(timerSlots[i].offHour, timerSlots[i].offMinute);
 
-        if (onSec < offSec) {
-            if (nowSec >= onSec && nowSec < offSec) shouldRun = true;
-        } else { // overnight slot (e.g. 23:00–05:00)
-            if (nowSec >= onSec || nowSec < offSec) shouldRun = true;
+        /* normal window: 10:00–14:00 */
+        if (on < off)
+        {
+            if (nowS >= on && nowS < off)
+                return true;
+        }
+        else
+        {
+            /* cross-midnight: 22:00–06:00 */
+            if (nowS >= on || nowS < off)
+                return true;
         }
     }
 
-    if (shouldRun && !Motor_GetStatus()) {
-        start_motor();
-    } else if (!shouldRun && Motor_GetStatus()) {
-        stop_motor_keep_modes();
-    }
-}
-void ModelHandle_StartTimer(void) {
-    clear_all_modes();
-    timerActive = true;
-    ModelHandle_SaveCurrentStateToEEPROM();
+    return false;
 }
 
-void ModelHandle_StopTimer(void) {
+/* ============================================================
+   Recalculate schedule IMMEDIATELY after editing a slot
+   ============================================================ */
+void ModelHandle_TimerRecalculateNow(void)
+{
+    if (!timerActive)
+        return;
+
+    bool shouldRun = timer_any_slot_should_run();
+
+    if (shouldRun)
+        start_motor();
+    else
+        stop_motor_keep_modes();
+}
+
+/* ============================================================
+   STOP TIMER MODE
+   ============================================================ */
+void ModelHandle_StopTimer(void)
+{
     timerActive = false;
     stop_motor_keep_modes();
 }
 
+/* ============================================================
+   START TIMER MODE
+   ============================================================ */
+void ModelHandle_StartTimer(void)
+{
+    clear_all_modes();
+    timerActive = true;
 
-/* =======================
-   SEMI-AUTO
-   ======================= */
+    bool shouldRun = timer_any_slot_should_run();
+
+    if (shouldRun)
+        start_motor();
+    else
+        stop_motor_keep_modes();
+}
+
+/* ============================================================
+   TIMER TICK — called in ModelHandle_Process()
+   ============================================================ */
+static void timer_tick(void)
+{
+    if (!timerActive)
+        return;
+
+    bool shouldRun = timer_any_slot_should_run();
+
+    if (shouldRun)
+    {
+        if (!Motor_GetStatus())
+            start_motor();
+    }
+    else
+    {
+        if (Motor_GetStatus())
+            stop_motor_keep_modes();
+    }
+}
+
+/* ============================================================
+   SEMI AUTO
+   ============================================================ */
+
 void ModelHandle_StartSemiAuto(void)
 {
     clear_all_modes();
+
     semiAutoActive = true;
 
-    if (!isTankFull()) {
+    if (!isTankFull())
         start_motor();
-        //printf("Semi-Auto Started\r\n");
-    } else {
-        ModelHandle_StopAllModesAndMotor();
-        //printf("Semi-Auto Not Started: Already Full\r\n");
-    }
-    ModelHandle_SaveCurrentStateToEEPROM();
 }
+
 void ModelHandle_StopSemiAuto(void)
 {
-    semiAutoActive   = false;
-    ModelHandle_StopAllModesAndMotor();
-    //printf("Semi-Auto Stopped\r\n");
+    semiAutoActive = false;
+    stop_motor_keep_modes();
 }
+
 static void semi_auto_tick(void)
 {
     if (!semiAutoActive) return;
 
-    // Only complete on full; keep asserting motor otherwise
-    if (isTankFull()) {
-        semiAutoActive = false;
+    /* full tank terminates mode */
+    if (isTankFull())
+    {
         ModelHandle_StopAllModesAndMotor();
-        //printf("Semi-Auto Complete: Tank Full\r\n");
         return;
     }
 
-    // Keep motor ON during semi-auto (protections may still cut it)
-    if (!Motor_GetStatus()) start_motor();
+    /* stay ON */
+    if (!Motor_GetStatus())
+        start_motor();
 }
+/* ============================================================
+   CENTRAL PROTECTION SYSTEM
+   ============================================================ */
 
-/* =======================
-   PROTECTIONS
-   ======================= */
 static void protections_tick(void)
 {
-    /* Manual override → only hard protections */
-    if (manualOverride && manualActive) {
-        if (senseOverLoad && motorStatus == 1U) ModelHandle_StopAllModesAndMotor();
-        if (senseOverUnderVolt) ModelHandle_StopAllModesAndMotor();
-        if (maxRunTimerArmed && (now_ms() - maxRunStartTick) >= MAX_CONT_RUN_MS) {
-            ModelHandle_StopAllModesAndMotor();
-            senseMaxRunReached = true;
-        }
+    static uint32_t maxRunStart = 0;
+    static bool maxRunArmed = false;
+
+    /* Overload / UnderVoltage — immediate hard stop */
+    if (senseOverLoad || senseOverUnderVolt)
+    {
+        ModelHandle_StopAllModesAndMotor();
         return;
     }
 
-    /* DRY-RUN: delayed stop */
-//    if (motorStatus == 1U) {
-//        if (dry_raw_is_dry()) {
-//            senseDryRun = true; // show on UI while counting
-//            if (!dryTimerArmed) {
-//                dryTimerArmed   = true;
-//                dryStopDeadline = now_ms() + (uint32_t)DRY_STOP_DELAY_SECONDS * 1000UL;
-//            } else {
-//                if ((int32_t)(dryStopDeadline - now_ms()) <= 0) {
-//                    ModelHandle_StopAllModesAndMotor();
-//                    // Keep flag true until user action clears (or water returns and motor restarts)
-//                }
-//            }
-//        } else {
-//            // water found => cancel dry timer & flag
-//            dryTimerArmed   = false;
-//            dryStopDeadline = 0;
-//            senseDryRun     = false;
-//        }
-//    } else {
-//        // motor is off; reset dry timing
-//        dryTimerArmed   = false;
-//        dryStopDeadline = 0;
-//        // keep senseDryRun as-is for UI; it will clear on next water detection
-//    }
+    /* Max continuous run time */
+    if (Motor_GetStatus() && !maxRunArmed)
+    {
+        maxRunStart = now_ms();
+        maxRunArmed = true;
+    }
+    else if (!Motor_GetStatus())
+    {
+        maxRunArmed = false;
+    }
 
-    /* Other protections -> hard clear */
-    if (senseOverLoad && motorStatus == 1U) ModelHandle_StopAllModesAndMotor();
-    if (senseOverUnderVolt) ModelHandle_StopAllModesAndMotor();
-
-    if (maxRunTimerArmed && (now_ms() - maxRunStartTick) >= MAX_CONT_RUN_MS) {
-        ModelHandle_StopAllModesAndMotor();
+    if (maxRunArmed &&
+        (now_ms() - maxRunStart) >= MAX_CONT_RUN_MS)
+    {
         senseMaxRunReached = true;
+        ModelHandle_StopAllModesAndMotor();
     }
 }
 
-/* =======================
-   LEDs
-   ======================= */
+/* ============================================================
+   LED SYSTEM (updated to match your logic)
+   ============================================================ */
+
 static void leds_from_model(void)
 {
     LED_ClearAllIntents();
 
-    if (motorStatus == 1U) {
+    /* GREEN = motor ON */
+    if (Motor_GetStatus())
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 0);
-    }
-    if (countdownActive) {
-        LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 500);
-    }
-    if (!senseDryRun && motorStatus == 1U) {
+
+    /* GREEN BLINK = countdown active */
+    if (countdownActive)
+        LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 400);
+
+    /* RED = dry-run problem (motor wants ON but no water) */
+    if (!senseDryRun && Motor_GetStatus())
         LED_SetIntent(LED_COLOR_RED, LED_MODE_STEADY, 0);
-    }
-    if (senseMaxRunReached) {
-        LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 400);
-    }
-    if (senseOverLoad) {
+
+    /* BLUE = overload */
+    if (senseOverLoad)
         LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 350);
-    }
-    if (senseOverUnderVolt) {
+
+    /* PURPLE = under/over voltage */
+    if (senseOverUnderVolt)
         LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_BLINK, 350);
-    }
+
+    /* RED BLINK = max runtime hit */
+    if (senseMaxRunReached)
+        LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 300);
 
     LED_ApplyIntents();
 }
 
-/* =======================
-   Public Motor APIs
-   ======================= */
-void ModelHandle_SetMotor(bool on)
-{
-    if (on) {
-        clear_all_modes();         // turning ON directly should not have stray modes
-        manualOverride = true;
-        start_motor();
-    } else {
-        ModelHandle_StopAllModesAndMotor();
-    }
-}
-void ModelHandle_ClearManualOverride(void) { manualOverride = false; }
-bool Motor_GetStatus(void) { return (motorStatus == 1U); }
+/* ============================================================
+   MAIN PROCESS LOOP (THE HEART OF THE SYSTEM)
+   ============================================================ */
 
-/* =======================
-   Main pump
-   ======================= */
 void ModelHandle_Process(void)
 {
-//	dry_run_protection();
-	 ModelHandle_SoftDryRunHandler();  // ✅ add this line here
-    /* keep your original order of tickers */
-	if (twistActive)    twist_tick();
-	if (countdownActive) countdown_tick();
-	if (searchActive)   search_tick();
-	if (timerActive)    timer_tick();   // ✅ add this
-    semi_auto_tick();
+    /* -------------------------------
+       1) Update water / dry state
+       ------------------------------- */
+    ModelHandle_SoftDryRunHandler();
 
-    /* --- Aux Burst auto-OFF (Relays 2 & 3) --- */
-    if (auxBurstActive) {
-        uint32_t nowt = HAL_GetTick();
-        if ((int32_t)(auxBurstDeadlineMs - nowt) <= 0) {
-            Relay_Set(2, false);
-            Relay_Set(3, false);
-            auxBurstActive = false;
-        }
-    }
+    /* -------------------------------
+       2) Tickers for all modes
+       (ONLY when mode is active)
+       ------------------------------- */
+    if (twistActive)         twist_tick();
+    if (countdownActive)     countdown_tick();
+    if (searchActive)        search_tick();
+    if (timerActive)        timer_tick();
 
+    if (semiAutoActive)      semi_auto_tick();
+
+    /* -------------------------------
+       3) Protections
+       ------------------------------- */
     protections_tick();
-    leds_from_model();
-}
 
-/* =======================
-   UART commands
-   ======================= */
+    /* -------------------------------
+       4) LEDs update
+       ------------------------------- */
+    leds_from_model();
+
+    /* -------------------------------
+       5) Throttled UART update
+       ------------------------------- */
+    Safe_SendStatusPacket();
+}
+/* ============================================================
+   UART COMMAND BRIDGE  (lightweight)
+   ============================================================ */
+
 void ModelHandle_ProcessUartCommand(const char* cmd)
 {
     if (!cmd || !*cmd) return;
 
-    if      (strcmp(cmd, "MOTOR_ON") == 0)  { ModelHandle_SetMotor(true); } //printf("Manual ON (UART)\r\n"); }
-    else if (strcmp(cmd, "MOTOR_OFF")== 0)  { ModelHandle_SetMotor(false);} //printf("Manual OFF (UART)\r\n"); }
-    else if (strcmp(cmd, "SEMI_AUTO_START")==0) { ModelHandle_StartSemiAuto(); }
-    else if (strcmp(cmd, "SEMI_AUTO_STOP")==0)  { ModelHandle_StopSemiAuto(); }
-    else if (strcmp(cmd, "TWIST_START")==0)     { ModelHandle_StartTwist(twistSettings.onDurationSeconds, twistSettings.offDurationSeconds); }
-    else if (strcmp(cmd, "TWIST_STOP")==0)      { ModelHandle_StopTwist(); }
-    else if (strcmp(cmd, "SEARCH_START")==0)    { ModelHandle_StartSearch(searchSettings.testingGapSeconds, searchSettings.dryRunTimeSeconds); }
-    else if (strcmp(cmd, "SEARCH_STOP")==0)     { ModelHandle_StopSearch(); }
-    else if (strcmp(cmd, "RESET_ALL")==0)       { ModelHandle_ResetAll(); }
+    /* ---------- MOTOR ---------- */
+    if (strcmp(cmd, "MOTOR_ON") == 0)
+    {
+        ModelHandle_SetMotor(true);
+    }
+    else if (strcmp(cmd, "MOTOR_OFF") == 0)
+    {
+        ModelHandle_SetMotor(false);
+    }
+
+    /* ---------- SEMI AUTO ---------- */
+    else if (strcmp(cmd, "SEMI_AUTO_START") == 0)
+    {
+        ModelHandle_StartSemiAuto();
+    }
+    else if (strcmp(cmd, "SEMI_AUTO_STOP") == 0)
+    {
+        ModelHandle_StopSemiAuto();
+    }
+
+    /* ---------- TWIST ---------- */
+    else if (strcmp(cmd, "TWIST_START") == 0)
+    {
+        ModelHandle_StartTwist(
+            twistSettings.onDurationSeconds,
+            twistSettings.offDurationSeconds
+        );
+    }
+    else if (strcmp(cmd, "TWIST_STOP") == 0)
+    {
+        ModelHandle_StopTwist();
+    }
+
+    /* ---------- SEARCH ---------- */
+    else if (strcmp(cmd, "SEARCH_START") == 0)
+    {
+        ModelHandle_StartSearch(
+            searchSettings.testingGapSeconds,
+            searchSettings.dryRunTimeSeconds
+        );
+    }
+    else if (strcmp(cmd, "SEARCH_STOP") == 0)
+    {
+        ModelHandle_StopSearch();
+    }
+
+    /* ---------- TIMER ---------- */
+    else if (strcmp(cmd, "TIMER_START") == 0)
+    {
+        ModelHandle_StartTimer();
+    }
+    else if (strcmp(cmd, "TIMER_STOP") == 0)
+    {
+        ModelHandle_StopTimer();
+    }
+
+    /* ---------- RESET ALL ---------- */
+    else if (strcmp(cmd, "RESET_ALL") == 0)
+    {
+        ModelHandle_ResetAll();
+    }
 }
-// --- Lightweight persistent save ---
-// ⚙️ Requires: RTC_SavePersistentState() from rtc_i2c.c
-// ⚙️ Safe for 24C32 / 24C02 EEPROM (4-Kbit+)
+
+/* ============================================================
+   RESET ALL + EEPROM DEFAULTS
+   ============================================================ */
+
+void ModelHandle_ResetAll(void)
+{
+    clear_all_modes();
+
+    stop_motor_keep_modes();
+
+    /* Reset flags */
+    senseDryRun        = false;
+    senseOverLoad      = false;
+    senseOverUnderVolt = false;
+    senseMaxRunReached = false;
+
+    /* Reset all modes */
+    countdownActive = false;
+    twistActive     = false;
+    searchActive    = false;
+    timerActive     = false;
+    semiAutoActive  = false;
+    manualActive    = false;
+
+    /* Reset timers/mode settings */
+    twistSettings.onDurationSeconds  = 5;
+    twistSettings.offDurationSeconds = 5;
+
+    searchSettings.testingGapSeconds = 6;
+    searchSettings.dryRunTimeSeconds = 4;
+
+    countdownDuration = 0;
+
+    for (int i = 0; i < 5; i++)
+    {
+        timerSlots[i].enabled = false;
+        timerSlots[i].onHour = 0;
+        timerSlots[i].onMinute = 0;
+        timerSlots[i].offHour = 0;
+        timerSlots[i].offMinute = 0;
+    }
+
+    UART_SendStatusPacket();
+}
+
+/* ============================================================
+   EEPROM — SAVE CURRENT STATE
+   ============================================================ */
 
 void ModelHandle_SaveCurrentStateToEEPROM(void)
 {
     static uint32_t lastWriteTick = 0;
-    static uint8_t  lastCRC = 0;        // 1-byte change fingerprint
-    uint32_t now = HAL_GetTick();
+    uint32_t now = now_ms();
 
-    // 🧭 Limit writes: once every 15 s
+    /* Write no faster than every 15 seconds */
     if (now - lastWriteTick < 15000U)
         return;
 
-    // 🧱 Allocate statically once (no stack each call)
     static RTC_PersistState s;
+    memset(&s, 0, sizeof(s));
 
-    // Manual zeroing (tiny, no memset())
-    for (uint16_t i = 0; i < sizeof(s); i++)
-        ((uint8_t*)&s)[i] = 0;
+    /* mode */
+    if      (manualActive)    s.mode = 1;
+    else if (semiAutoActive)  s.mode = 2;
+    else if (timerActive)     s.mode = 3;
+    else if (searchActive)    s.mode = 4;
+    else if (countdownActive) s.mode = 5;
+    else if (twistActive)     s.mode = 6;
+    else                      s.mode = 0;
 
-    // === Minimal state capture ===
-    if (manualActive)        s.mode = 1;
-    else if (semiAutoActive) s.mode = 2;
-    else if (timerActive)    s.mode = 3;
-    else if (searchActive)   s.mode = 4;
-    else if (countdownActive)s.mode = 5;
-    else if (twistActive)    s.mode = 6;
-    else                     s.mode = 0;
+    /* motor */
+    s.motor = Motor_GetStatus();
 
-    s.motor        = Motor_GetStatus();
-    s.searchGap    = searchSettings.testingGapSeconds;
-    s.searchProbe  = searchSettings.dryRunTimeSeconds;
-    s.twistOn      = twistSettings.onDurationSeconds;
-    s.twistOff     = twistSettings.offDurationSeconds;
-    s.countdownMin = (uint16_t)(countdownDuration / 60U);
-    s.countdownRep = 1U;
+    /* twist */
+    s.twistOn  = twistSettings.onDurationSeconds;
+    s.twistOff = twistSettings.offDurationSeconds;
 
-    // ⚙️ Copy only first timer slot (8–10 B)
-    extern TimerSlot timerSlots[5];
-    for (uint8_t i = 0; i < sizeof(TimerSlot); i++)
-        ((uint8_t*)&s.timerSlots[0])[i] = ((uint8_t*)&timerSlots[0])[i];
+    /* search */
+    s.searchGap   = searchSettings.testingGapSeconds;
+    s.searchProbe = searchSettings.dryRunTimeSeconds;
 
-    // === Compact 8-bit CRC-like fingerprint for quick diff ===
-    uint8_t crc = 0;
-    const uint8_t *p = (const uint8_t*)&s;
-    for (uint16_t i = 0; i < sizeof(s) - 2; i++)
-        crc ^= p[i];
+    /* countdown */
+    s.countdownMin = countdownDuration;
+    s.countdownRep = 1;
 
-    // Write only if changed since last save
-    if (crc != lastCRC)
-    {
-        RTC_SavePersistentState(&s);  // actual I2C write
-        lastCRC = crc;
-        lastWriteTick = now;
-    }
+    /* timer slot 0 only */
+    memcpy(&s.timerSlots[0], &timerSlots[0], sizeof(TimerSlot));
+
+    /* Save to EEPROM (rtc_i2c.c handles CRC) */
+    RTC_SavePersistentState(&s);
+
+    lastWriteTick = now;
 }
+
+/* ============================================================
+   END OF MODEL HANDLE
+   ============================================================ */

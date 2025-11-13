@@ -42,7 +42,6 @@ typedef enum {
     UI_SEARCH_EDIT_DRY,
     UI_COUNTDOWN,
     UI_COUNTDOWN_EDIT_MIN,
-    UI_COUNTDOWN_EDIT_REP,
     UI_COUNTDOWN_TOGGLE,   // NEW: enable/disable screen
     UI_TWIST,
     UI_TWIST_EDIT_ON,
@@ -107,7 +106,6 @@ static uint8_t  edit_timer_off_h = 18, edit_timer_off_m = 30;
 static uint16_t edit_search_gap_s = 60, edit_search_dry_s = 10;
 static uint16_t edit_twist_on_s = 5, edit_twist_off_s = 5;
 static uint16_t edit_countdown_min = 5;
-static uint16_t edit_countdown_rep = 1;   // NEW
 
 /* ===== LCD Helpers ===== */
 static inline void lcd_line(uint8_t row, const char* s) {
@@ -243,21 +241,24 @@ static void show_search(void){
 
 static void show_countdown(void){
     char l0[17], l1[17];
-    extern volatile uint16_t countdownRemainingRuns;
+
     if (countdownActive) {
         uint32_t sec = countdownDuration;
-        uint32_t min = sec/60;
-        uint32_t s   = sec%60;
-        snprintf(l0,sizeof(l0),"Run %02u %02d:%02d",
-                 (unsigned)countdownRemainingRuns,(int)min,(int)s);
-        snprintf(l1,sizeof(l1),">Stop     Back");
-    } else {
-        snprintf(l0,sizeof(l0),"Countdown Inact");
-        snprintf(l1,sizeof(l1),">Set Start Back");
+        uint32_t min = sec / 60;
+        uint32_t s   = sec % 60;
+
+        snprintf(l0, sizeof(l0), "Time %02d:%02d", (int)min, (int)s);
+        snprintf(l1, sizeof(l1), ">Stop     Back");
     }
+    else {
+        snprintf(l0, sizeof(l0), "Countdown Mode");
+        snprintf(l1, sizeof(l1), ">Set      Back");
+    }
+
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 
 
 static void show_twist(void){
@@ -303,13 +304,19 @@ static void disable_semi_auto(void){
     semiAutoEnabled = false;
 }
 
-static void apply_timer_settings(void){
+static void apply_timer_settings(void)
+{
     if (currentSlot >= 5) return;
+
     timerSlots[currentSlot].enabled = true;
     timerSlots[currentSlot].onHour  = edit_timer_on_h;
     timerSlots[currentSlot].onMinute = edit_timer_on_m;
     timerSlots[currentSlot].offHour  = edit_timer_off_h;
     timerSlots[currentSlot].offMinute = edit_timer_off_m;
+
+    /* 🔥 Immediately re-evaluate timer logic */
+    extern void ModelHandle_TimerRecalculateNow(void);
+    ModelHandle_TimerRecalculateNow();
 }
 
 
@@ -364,7 +371,6 @@ void Screen_Init(void){
     edit_twist_off_s  = twistSettings.offDurationSeconds;
     edit_countdown_min = (uint16_t)(countdownDuration / 60u);
     if (edit_countdown_min == 0) edit_countdown_min = 5; // sane default
-    if (edit_countdown_rep == 0) edit_countdown_rep = 1;
 }
 
 void Screen_ResetToHome(void){
@@ -482,20 +488,14 @@ static void menu_select(void){
             break;
 
         case UI_COUNTDOWN_EDIT_MIN:
-            ui = UI_COUNTDOWN_EDIT_REP;
-            break;
-
-        case UI_COUNTDOWN_EDIT_REP:
-            ui = UI_COUNTDOWN_TOGGLE;
             break;
 
         case UI_COUNTDOWN_TOGGLE: {
-            uint32_t seconds = (uint32_t)edit_countdown_min * 60u;
-            if (seconds == 0) seconds = 60;
-            if (edit_countdown_rep == 0) edit_countdown_rep = 1;
-            apply_countdown_settings();
-            ModelHandle_StartCountdown(seconds, (uint16_t)edit_countdown_rep);
-            ui = UI_COUNTDOWN;
+        	uint32_t seconds = (uint32_t)edit_countdown_min * 60u;
+        	if (seconds == 0) seconds = 60;
+        	apply_countdown_settings();
+        	ui = UI_COUNTDOWN;
+
             break;
         }
 
@@ -571,7 +571,6 @@ static void menu_reset(void){
 
         /* Countdown editing → back to countdown */
         case UI_COUNTDOWN_EDIT_MIN:
-        case UI_COUNTDOWN_EDIT_REP:
             ui = UI_COUNTDOWN;
             break;
 
@@ -605,7 +604,6 @@ void Screen_Update(void){
         case UI_SEARCH_EDIT_GAP:
         case UI_SEARCH_EDIT_DRY:
         case UI_COUNTDOWN_EDIT_MIN:
-        case UI_COUNTDOWN_EDIT_REP:
         case UI_TWIST_EDIT_ON:
         case UI_TWIST_EDIT_OFF:
             cursorBlinkActive = true;
@@ -730,14 +728,6 @@ void Screen_Update(void){
                 break;
             }
 
-            case UI_COUNTDOWN_EDIT_REP: {
-                char l0[17], l1[17];
-                snprintf(l0,sizeof(l0),"Set Reps: %3u", edit_countdown_rep);
-                snprintf(l1,sizeof(l1),">UpDn   Start");
-                lcd_line0(l0); lcd_line1(l1);
-                break;
-            }
-
             /* ==== TWIST ==== */
             case UI_TWIST_EDIT_ON: {
                 char l0[17], l1[17];
@@ -803,7 +793,6 @@ void Screen_HandleButton(UiButton b)
 
             /* Countdown */
             case UI_COUNTDOWN_EDIT_MIN: edit_countdown_min++; break;
-            case UI_COUNTDOWN_EDIT_REP: edit_countdown_rep++; break;
 
             /* Twist */
             case UI_TWIST_EDIT_ON:  if (edit_twist_on_s  < 600) edit_twist_on_s++;  break;
@@ -841,7 +830,6 @@ void Screen_HandleButton(UiButton b)
 
             /* Countdown */
             case UI_COUNTDOWN_EDIT_MIN: if (edit_countdown_min > 1) edit_countdown_min--; break;
-            case UI_COUNTDOWN_EDIT_REP: if (edit_countdown_rep > 1) edit_countdown_rep--; break;
 
             /* Twist */
             case UI_TWIST_EDIT_ON:  if (edit_twist_on_s  > 1) edit_twist_on_s--;  break;
@@ -932,22 +920,17 @@ void Screen_HandleButton(UiButton b)
                 break;
 
             case UI_COUNTDOWN_EDIT_MIN:
-                ui = UI_COUNTDOWN_EDIT_REP;
-                break;
-
-            case UI_COUNTDOWN_EDIT_REP:
-                ui = UI_COUNTDOWN_TOGGLE;
                 break;
 
             case UI_COUNTDOWN_TOGGLE: {
                 uint32_t seconds = (uint32_t)edit_countdown_min * 60u;
                 if (seconds == 0) seconds = 60;
-                if (edit_countdown_rep == 0) edit_countdown_rep = 1;
+
                 apply_countdown_settings();
-                ModelHandle_StartCountdown(seconds, (uint16_t)edit_countdown_rep);
                 ui = UI_COUNTDOWN;
                 break;
             }
+
 
             default:
                 menu_select();

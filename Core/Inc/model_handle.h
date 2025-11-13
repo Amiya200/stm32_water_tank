@@ -94,11 +94,10 @@ void ModelHandle_SetOverLoad(bool on);
 void ModelHandle_SetOverUnderVolt(bool on);
 void ModelHandle_ClearMaxRunFlag(void);
 
+void ModelHandle_SetTimerSlot(uint8_t slot,
+                              uint8_t onH, uint8_t onM,
+                              uint8_t offH, uint8_t offM);
 
-void ModelHandle_SetTimerSlot(uint8_t index,
-                              uint8_t onHour, uint8_t onMinute,
-                              uint8_t offHour, uint8_t offMinute,
-                              bool enable);
 void ModelHandle_ProcessTimerSlots(void);
 
 #endif /* MODEL_HANDLE_H */
