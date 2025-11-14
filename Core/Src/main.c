@@ -42,7 +42,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_CHANNEL_COUNT 7
+#define ADC_CHANNEL_COUNT 6
 uint16_t adcBuffer[ADC_CHANNEL_COUNT];
 #define ADC_BUFFER_SIZE ADC_CHANNEL_COUNT
 float g_adcAvg[ADC_CHANNEL_COUNT] = {0};
@@ -230,7 +230,7 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
     }
 
     /* Ensure safe reset of any transient states */
-    ModelHandle_ResetAll();
+//    ModelHandle_ResetAll();
 
     uint8_t lastSecond = 255;
     bool g_screenUpdatePending = false;
@@ -254,13 +254,8 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 
         /* ---------- RTC periodic update ---------- */
         RTC_GetTimeDate();
-        if (time.seconds != lastSecond) {
-            lastSecond = time.seconds;
-            // Debug: print current time if needed
-            // printf("⏰ %02d:%02d:%02d %02d-%02d-%04d DOW=%d\r\n",
-            //        time.hour, time.minutes, time.seconds,
-            //        time.dayofmonth, time.month, time.year, time.dayofweek);
-        }
+        ModelHandle_TimerRecalculateNow();
+
 
         /* ---------- UART Commands ---------- */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket))) {

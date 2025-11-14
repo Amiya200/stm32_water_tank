@@ -109,20 +109,45 @@ void ADC_Init(ADC_HandleTypeDef* hadc)
 void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
 {
     bool changed = false;
-    char loraPacket[32];   // buffer for LoRa payload
+    char loraPacket[32];
     loraPacket[0] = '\0';
 
-    // === Process water sensor channels ===
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
     {
         float v = readChannelVoltage(hadc, adcChannels[i]);
 
+        /* =====================================================
+           CHANNEL 0 — DRY RUN SENSOR ONLY
+           DO NOT USE FOR WATER LEVEL OR THRESHOLD LOGIC
+           ===================================================== */
+        if (i == 0)
+        {
+            // Keep filtering so ModelHandle_CheckDryRun() works
+            if (s_filtered[0] == 0.0f)
+                s_filtered[0] = v;
+            else
+                s_filtered[0] = EMA_ALPHA * v + (1 - EMA_ALPHA) * s_filtered[0];
+
+            v = s_filtered[0];
+
+            data->voltages[0]   = v;
+            data->rawValues[0]  = (uint16_t)((v * ADC_RES) / VREF);
+            data->maxReached[0] = false;
+            g_adcVoltages[0]    = v;
+
+            continue; // 🔥 IMPORTANT: skip water-level logic
+        }
+
+        /* =====================================================
+           CHANNELS 1–5 — WATER LEVEL PROCESSING
+           ===================================================== */
         if (s_filtered[i] == 0.0f)
             s_filtered[i] = v;
         else
             s_filtered[i] = EMA_ALPHA * v + (1 - EMA_ALPHA) * s_filtered[i];
 
         v = s_filtered[i];
+
         if (v < GROUND_THRESHOLD)
             v = 0.0f;
 
@@ -131,37 +156,41 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
         data->maxReached[i] = (v >= 3.2f);
         g_adcVoltages[i]    = v;
 
-        // Detect meaningful change
+        // Detect meaningful change (used for LoRa)
         if (fabsf(v - s_prev_volt[i]) > PRINT_DELTA) {
             changed = true;
             s_prev_volt[i] = v;
         }
 
-        // Normal threshold logic (sets motorStatus, etc.)
-        if (!s_level_flags[i] && v >= THR) {
+        // -------------------------
+        // Water level threshold logic
+        // -------------------------
+        if (!s_level_flags[i] && v >= THR)
+        {
             s_level_flags[i] = 1;
+
             switch (i) {
-                case 0: snprintf(dataPacketTx, sizeof(dataPacketTx), "@10W#"); break;
                 case 1: snprintf(dataPacketTx, sizeof(dataPacketTx), "@30W#"); break;
                 case 2: snprintf(dataPacketTx, sizeof(dataPacketTx), "@70W#"); break;
-                case 3: snprintf(dataPacketTx, sizeof(dataPacketTx), "@1:W#"); break;
+                case 3: snprintf(dataPacketTx, sizeof(dataPacketTx), "@1:W#");  break;
                 case 4: snprintf(dataPacketTx, sizeof(dataPacketTx), "@DRY#"); break;
+                case 5: snprintf(dataPacketTx, sizeof(dataPacketTx), "@FULL#"); break;
                 default: dataPacketTx[0] = '\0'; break;
             }
-//            motorStatus = 1;
+
             s_low_counts[i] = 0;
 
-            // append to LoRa packet buffer
             if (dataPacketTx[0]) {
                 strncat(loraPacket, dataPacketTx, sizeof(loraPacket)-strlen(loraPacket)-1);
                 strncat(loraPacket, ";", sizeof(loraPacket)-strlen(loraPacket)-1);
             }
         }
-        else if (s_level_flags[i] && v < (THR - HYST_DELTA)) {
+        else if (s_level_flags[i] && v < (THR - HYST_DELTA))
+        {
             s_level_flags[i] = 0;
         }
 
-        // dry run debounce
+        // Debounce for DRY LOW signal (water-level only)
         if (v < DRY_VOLTAGE_THRESHOLD) {
             if (s_low_counts[i] < 0xFF) s_low_counts[i]++;
         } else {
@@ -176,11 +205,11 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
         }
     }
 
-    // === Send LoRa packet only if ADC changed ===
     if (changed && loraPacket[0] != '\0') {
         LoRa_SendPacket((uint8_t*)loraPacket, strlen(loraPacket));
     }
 }
+
 
 uint8_t ADC_CheckMaxVoltage(ADC_Data* data, float threshold)
 {

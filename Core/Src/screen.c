@@ -148,24 +148,25 @@ static void show_dash(void) {
     if (manualActive)        mode = "Manual";
     else if (semiAutoActive) mode = "SemiAuto";
     else if (timerActive)    mode = "Timer";
-    else if (searchActive)   mode = "Search";
-    else if (countdownActive)mode = "Cntdwn";
+    else if (searchActive) mode = "SEARCH";
+    else if (countdownActive)mode = "Countdown";
     else if (twistActive)    mode = "Twist";
 
     snprintf(line0,sizeof(line0),"M:%s %s",motor,mode);
 
     int submergedCount = 0;
-    for (int i=0; i<5; i++) {
+    for (int i=1; i<6; i++) {
         if (adcData.voltages[i] < 0.1f) submergedCount++;
     }
 
     const char *level;
     switch (submergedCount) {
-        case 0:  level = "EMPTY"; break;
-        case 1:  level = "LOW";   break;
-        case 2:  level = "HALF";  break;
-        case 3:  level = "3/4";   break;
-        default: level = "FULL";  break;
+        case 0:  level = "00%"; break;
+        case 1:  level = "20%";   break;
+        case 2:  level = "40%";  break;
+        case 3:  level = "60%";   break;
+        case 4:  level = "80%";   break;
+        default: level = "100%";  break;
     }
 
     snprintf(line1,sizeof(line1),"Water:%-5s",level);
@@ -226,18 +227,39 @@ static void apply_timer_slot(uint8_t slot)
     ts->enabled   = true;
 }
 
-
-static void show_search(void){
+static void show_search(void)
+{
     char l0[17], l1[17];
-    snprintf(l0,sizeof(l0),"Sr %s G%us P%us",
-             searchSettings.searchActive ? "ON " : "OFF",
-             (unsigned)searchSettings.testingGapSeconds,
-             (unsigned)searchSettings.dryRunTimeSeconds);
-    snprintf(l1,sizeof(l1),">%s   Edit",
-             searchSettings.searchActive ? "Stop" : "Enable");
+
+    /* Line 0: Mode Title */
+    snprintf(l0, sizeof(l0), "Search Mode");
+
+    /* Line 1: Motor + Water Level */
+    const char *motor = Motor_GetStatus() ? "ON " : "OFF";
+
+    int submerged = 0;
+    for (int i = 0; i < 5; i++)
+    {
+        if (adcData.voltages[i] < 0.1f)
+            submerged++;
+    }
+
+    const char *level;
+    switch (submerged)
+    {
+        case 0:  level = "EMPTY"; break;
+        case 1:  level = "LOW";   break;
+        case 2:  level = "HALF";  break;
+        case 3:  level = "3/4";   break;
+        default: level = "FULL";  break;
+    }
+
+    snprintf(l1, sizeof(l1), "%s  W:%s", motor, level);
+
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 
 static void show_countdown(void){
     char l0[17], l1[17];
@@ -279,10 +301,12 @@ static void show_twist(void){
 
 
 /* ===== Apply functions ===== */
-static void apply_search_settings(void){
-    searchSettings.testingGapSeconds = edit_search_gap_s;
-    searchSettings.dryRunTimeSeconds = edit_search_dry_s;
+static void apply_search_settings(void)
+{
+    searchSettings.gapSeconds   = edit_search_gap_s;
+    searchSettings.probeSeconds = edit_search_dry_s;
 }
+
 
 static void apply_twist_settings(void){
     twistSettings.onDurationSeconds = edit_twist_on_s;
@@ -357,7 +381,8 @@ void Screen_ShowCurrentMode(void)
 
 
 /* ===== Initialization / Reset ===== */
-void Screen_Init(void){
+void Screen_Init(void)
+{
     lcd_init();
     ui = UI_WELCOME;
     last_ui = UI_MAX_;
@@ -365,12 +390,17 @@ void Screen_Init(void){
     lastLcdUpdateTime = HAL_GetTick();
     refreshInactivityTimer();
 
-    edit_search_gap_s = searchSettings.testingGapSeconds;
-    edit_search_dry_s = searchSettings.dryRunTimeSeconds;
+    /* --- Updated Search variables --- */
+    edit_search_gap_s = searchSettings.gapSeconds;
+    edit_search_dry_s = searchSettings.probeSeconds;
+
+    /* --- Existing modes --- */
     edit_twist_on_s   = twistSettings.onDurationSeconds;
     edit_twist_off_s  = twistSettings.offDurationSeconds;
+
     edit_countdown_min = (uint16_t)(countdownDuration / 60u);
-    if (edit_countdown_min == 0) edit_countdown_min = 5; // sane default
+    if (edit_countdown_min == 0)
+        edit_countdown_min = 5;
 }
 
 void Screen_ResetToHome(void){

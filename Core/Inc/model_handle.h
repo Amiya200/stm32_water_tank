@@ -17,9 +17,14 @@ typedef struct {
 
 /* ===== Search mode settings ===== */
 typedef struct {
-    bool     searchActive;
-    uint16_t testingGapSeconds;
-    uint16_t dryRunTimeSeconds;
+    uint16_t gapSeconds;
+    uint16_t probeSeconds;
+    uint8_t onHour;
+    uint8_t onMinute;
+    uint8_t offHour;
+    uint8_t offMinute;
+    bool dayEnabled[7];
+    bool searchActive;
 } SearchSettings;
 
 /* ===== Twist mode settings ===== */

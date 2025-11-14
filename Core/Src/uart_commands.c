@@ -128,18 +128,49 @@ void UART_HandleCommand(const char *pkt)
     }
 
     /* ---- SEARCH ---- */
-    else if (!strcmp(cmd, "SEARCH")) {
+    else if (!strcmp(cmd, "SEARCH"))
+    {
         char *sub = next_token(&ctx);
-        if (sub && !strcmp(sub, "SET")) {
-            uint16_t gap = atoi(next_token(&ctx));
-            uint16_t probe = atoi(next_token(&ctx));
-            ModelHandle_StartSearch(gap, probe);
+
+        if (sub && !strcmp(sub, "SET"))
+        {
+            uint16_t gap      = atoi(next_token(&ctx));
+            uint16_t probe    = atoi(next_token(&ctx));
+            uint8_t  onH      = atoi(next_token(&ctx));
+            uint8_t  onM      = atoi(next_token(&ctx));
+            uint8_t  offH     = atoi(next_token(&ctx));
+            uint8_t  offM     = atoi(next_token(&ctx));
+
+            // clear day flags
+            for (int i = 0; i < 7; i++)
+                searchSettings.dayEnabled[i] = false;
+
+            // parse days until NULL
+            char *dk = NULL;
+            int idx = 0;
+
+            while ((dk = next_token(&ctx)) != NULL)
+            {
+                if (!strcmp(dk, "sun")) searchSettings.dayEnabled[0] = true;
+                if (!strcmp(dk, "mon")) searchSettings.dayEnabled[1] = true;
+                if (!strcmp(dk, "tue")) searchSettings.dayEnabled[2] = true;
+                if (!strcmp(dk, "wed")) searchSettings.dayEnabled[3] = true;
+                if (!strcmp(dk, "thu")) searchSettings.dayEnabled[4] = true;
+                if (!strcmp(dk, "fri")) searchSettings.dayEnabled[5] = true;
+                if (!strcmp(dk, "sat")) searchSettings.dayEnabled[6] = true;
+            }
+
+            ModelHandle_StartSearch(gap, probe, onH, onM, offH, offM);
             ack("SEARCH_OK");
-        } else if (sub && !strcmp(sub, "STOP")) {
+        }
+        else if (sub && !strcmp(sub, "STOP"))
+        {
             ModelHandle_StopSearch();
             ack("SEARCH_STOP");
-        } else err("FORMAT");
+        }
+        else err("FORMAT");
     }
+
 
     /* ---- TIMER (multi-slot support) ---- */
     else if (!strcmp(cmd, "TIMER")) {
