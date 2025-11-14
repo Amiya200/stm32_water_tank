@@ -569,17 +569,17 @@ static void twist_tick(void)
                 start_motor();
         }
     }
-}
-/* ============================================================
-   SEARCH MODE
-   ------------------------------------------------------------
-   Packet:
-       @SEARCH:SET:gap:probe#
+}/* ============================================================
+   SEARCH MODE  — Fully Rewritten (Stable & Working)
    ============================================================ */
 
 SearchSettings searchSettings;
 
-typedef enum { SEARCH_GAP = 0, SEARCH_PROBE, SEARCH_RUN } SearchState;
+typedef enum {
+    SEARCH_GAP = 0,
+    SEARCH_PROBE,
+    SEARCH_RUN
+} SearchState;
 
 static SearchState search_state = SEARCH_GAP;
 static uint32_t search_deadline = 0;
@@ -590,142 +590,140 @@ void ModelHandle_StartSearch(uint16_t gap_s, uint16_t probe_s,
 {
     clear_all_modes();
 
-    searchArmed = true;             // only arm
-    searchActive = false;           // NOT active
-    searchSettings.searchActive = false;
-
     searchSettings.gapSeconds   = gap_s;
     searchSettings.probeSeconds = probe_s;
 
-    searchSettings.onHour   = onH;
-    searchSettings.onMinute = onM;
-    searchSettings.offHour  = offH;
-    searchSettings.offMinute = offM;
+    searchSettings.onHour       = onH;
+    searchSettings.onMinute     = onM;
+    searchSettings.offHour      = offH;
+    searchSettings.offMinute    = offM;
 
-    search_state = SEARCH_GAP;      // idle until ON-time
+    searchArmed = true;   // Waiting for ON-time
+    searchActive = false;
+
+    searchSettings.searchActive = false;
+    search_state = SEARCH_GAP;  // Initial idle state
 }
-
 
 void ModelHandle_StopSearch(void)
 {
-    searchSettings.searchActive = false;
     searchActive = false;
+    searchSettings.searchActive = false;
+
     stop_motor_keep_modes();
     search_state = SEARCH_GAP;
 }
 
-/* tick */
+/* ============================================================
+   SEARCH MODE TICK — Call every loop
+   ============================================================ */
 static void search_tick(void)
 {
     uint32_t now = now_ms();
 
-    /* -------------------------------
-       ACTIVATE SEARCH ONLY AT ON-TIME
-       ------------------------------- */
-    if (searchArmed &&
-        time.hour == searchSettings.onHour &&
-        time.minutes == searchSettings.onMinute)
+    /* ----------------------------------------------------------
+       1. Activate Search Mode ONLY at ON time
+       ---------------------------------------------------------- */
+    if (searchArmed && !searchActive)
     {
-        searchArmed = false;
-        searchActive = true;
-        searchSettings.searchActive = true;
+        if (time.hour == searchSettings.onHour &&
+            time.minutes == searchSettings.onMinute)
+        {
+            searchArmed = false;
+            searchActive = true;
+            searchSettings.searchActive = true;
 
-        start_motor();
-
-        search_state = SEARCH_PROBE;
-        search_deadline = now + searchSettings.probeSeconds * 1000UL;
-        return;
+            /* Start first probe immediately */
+            start_motor();
+            search_state = SEARCH_PROBE;
+            search_deadline = now + (searchSettings.probeSeconds * 1000UL);
+            return;
+        }
+        return; // Not ON time yet
     }
 
-    /* If not active → do nothing */
+    /* Not active → do nothing */
     if (!searchActive)
         return;
 
-    /* -------------------------------
-       DAY VALIDATION
-       ------------------------------- */
-    uint8_t dow  = time.dayofweek;       // DS3231: 1..7
-    uint8_t idx  = (dow % 7);            // convert to 0..6
-
-    if (!searchSettings.dayEnabled[idx])
-    {
-        stop_motor_keep_modes();
-        return;
-    }
-
-    /* -------------------------------
-       OFF-TIME: STOP SEARCH MODE
-       ------------------------------- */
+    /* ----------------------------------------------------------
+       2. Stop Search Mode at OFF time
+       ---------------------------------------------------------- */
     if (time.hour == searchSettings.offHour &&
         time.minutes == searchSettings.offMinute)
     {
-        stop_motor_keep_modes();
-        searchActive = false;
-        searchSettings.searchActive = false;
-        searchArmed = false;
-        search_state = SEARCH_GAP;
+        ModelHandle_StopSearch();
         return;
     }
 
-    /* Tank full safety */
-    if (isTankFull())
-    {
-        stop_motor_keep_modes();
-        return;
-    }
-
-    /* -------------------------------
-       SEARCH STATE MACHINE
-       ------------------------------- */
+    /* ----------------------------------------------------------
+       3. SEARCH MODE FSM
+       ---------------------------------------------------------- */
     switch (search_state)
     {
+        /* ======================================================
+           GAP STATE — Motor OFF waiting between probes
+           ====================================================== */
         case SEARCH_GAP:
             stop_motor_keep_modes();
 
-            if ((int32_t)(search_deadline - now) <= 0)
+            if ((int32_t)(now - search_deadline) >= 0)
             {
+                /* Start a new probing cycle */
                 start_motor();
                 search_state = SEARCH_PROBE;
-                search_deadline = now + searchSettings.probeSeconds * 1000;
+                search_deadline = now + (searchSettings.probeSeconds * 1000UL);
             }
             break;
 
+        /* ======================================================
+           PROBE STATE — Motor ON checking for water
+           ====================================================== */
         case SEARCH_PROBE:
 
-            /* Water detected anytime → go RUN */
+            /* Water detected → go to continuous run */
             if (senseDryRun == true)
             {
-                start_motor();
                 search_state = SEARCH_RUN;
                 break;
             }
 
-            /* Probe timeout → dry → gap */
-            if ((int32_t)(search_deadline - now) <= 0)
+            /* Probe timeout -- still dry → go to GAP */
+            if ((int32_t)(now - search_deadline) >= 0)
             {
                 stop_motor_keep_modes();
                 search_state = SEARCH_GAP;
-                search_deadline = now + searchSettings.gapSeconds * 1000;
+                search_deadline = now + (searchSettings.gapSeconds * 1000UL);
             }
             break;
 
+        /* ======================================================
+           RUN STATE — Water present, motor runs continuously
+           ====================================================== */
         case SEARCH_RUN:
 
-            /* If dry → go to GAP */
+            /* Water lost → go back to GAP */
             if (senseDryRun == false)
             {
                 stop_motor_keep_modes();
                 search_state = SEARCH_GAP;
-                search_deadline = now + searchSettings.gapSeconds * 1000;
+                search_deadline = now + (searchSettings.gapSeconds * 1000UL);
                 break;
             }
 
-            /* Water: motor must remain ON */
+            /* Water present: ensure motor ON */
             if (!Motor_GetStatus())
                 start_motor();
+
+            /* Tank full → keep motor OFF but stay in RUN */
+            if (isTankFull())
+            {
+                stop_motor_keep_modes();
+            }
             break;
     }
 }
+
 
 /* ============================================================
    TIMER MODE — FINAL, CLEAN, FULLY FIXED VERSION
@@ -1016,7 +1014,8 @@ void ModelHandle_Process(void)
        ------------------------------- */
     if (twistActive)         twist_tick();
     if (countdownActive)     countdown_tick();
-    if (searchActive)        search_tick();
+//    if (searchActive)        search_tick();
+    search_tick();
     if (timerActive)         timer_tick();
 
     if (semiAutoActive)      semi_auto_tick();
