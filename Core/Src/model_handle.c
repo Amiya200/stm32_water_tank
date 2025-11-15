@@ -74,7 +74,17 @@ static inline void clear_all_modes(void)
     timerActive = false;
     manualOverride = false;
 }
+static void Safe_SendStatusPacket(void)
+{
+    static uint32_t last = 0;
+    uint32_t now = now_ms();
 
+    if (now - last >= 3000)
+    {
+        UART_SendStatusPacket();
+        last = now;
+    }
+}
 /* ============================================================
    MOTOR CONTROL CORE
    ============================================================ */
@@ -100,7 +110,7 @@ static inline void motor_apply(bool on)
         maxRunArmed = false;
     }
 
-    UART_SendStatusPacket();
+    Safe_SendStatusPacket();
 }
 
 static inline void start_motor(void)
@@ -141,8 +151,8 @@ void ModelHandle_SetMotor(bool on)
 void ModelHandle_CheckDryRun(void)
 {
     /* Ignore dry-run completely during countdown */
-    if (countdownActive) {
-        senseDryRun = true;     // force WATER PRESENT
+    if (manualActive || semiAutoActive || countdownActive) {
+        senseDryRun = true;   // force WATER PRESENT
         return;
     }
 
@@ -172,17 +182,7 @@ static inline bool isTankFull(void)
 /* ============================================================
    A small safe UART status sender
    ============================================================ */
-static void Safe_SendStatusPacket(void)
-{
-    static uint32_t last = 0;
-    uint32_t now = now_ms();
 
-    if (now - last >= 3000)
-    {
-        UART_SendStatusPacket();
-        last = now;
-    }
-}
 /* ============================================================
    SOFT DRY-RUN STATE MACHINE (FULLY UPDATED)
    ------------------------------------------------------------
@@ -200,22 +200,25 @@ static DryFSMState dryState = DRY_IDLE;
 static uint32_t dryDeadline = 0;
 static uint32_t dryConfirmStart = 0;
 static bool dryConfirming = false;
+
 void ModelHandle_ToggleManual(void)
 {
+    clear_all_modes();   // disable all other modes
+
     if (!manualActive)
     {
-        clear_all_modes();
         manualActive = true;
-        manualOverride = true;
-        start_motor();
+        senseDryRun = true;     // ignore dry sensor fully
+        start_motor();          // pure ON
     }
     else
     {
         manualActive = false;
-        manualOverride = false;
-        stop_motor_keep_modes();
+        stop_motor_keep_modes(); // pure OFF
     }
 }
+
+
 void ModelHandle_StopAllModesAndMotor(void)
 {
     clear_all_modes();
@@ -692,63 +695,81 @@ static void search_tick(void)
         /* ======================================================
            GAP STATE — Motor OFF waiting between probes
            ====================================================== */
-        case SEARCH_GAP:
-            stop_motor_keep_modes();
+    case SEARCH_GAP:
 
-            if ((int32_t)(now - search_deadline) >= 0)
-            {
-                /* Start a new probing cycle */
-                start_motor();
-                search_state = SEARCH_PROBE;
-                search_deadline = now + (searchSettings.probeSeconds * 1000UL);
-            }
+        /* If water appears during GAP → motor must remain ON until OFF time */
+        if (senseDryRun == true)
+        {
+            /* Move directly to RUN state and keep motor ON */
+            start_motor();
+            search_state = SEARCH_RUN;
             break;
+        }
+
+        /* No water → remain in GAP cycle (motor OFF) */
+        stop_motor_keep_modes();
+
+        /* Wait for next probe cycle */
+        if ((int32_t)(now - search_deadline) >= 0)
+        {
+            start_motor();
+            search_state = SEARCH_PROBE;
+            search_deadline = now + (searchSettings.probeSeconds * 1000UL);
+        }
+        break;
+
 
         /* ======================================================
            PROBE STATE — Motor ON checking for water
            ====================================================== */
-        case SEARCH_PROBE:
+    case SEARCH_PROBE:
 
-            /* Water detected → go to continuous run */
-            if (senseDryRun == true)
-            {
-                search_state = SEARCH_RUN;
-                break;
-            }
+        /* Motor MUST remain ON */
+        if (!Motor_GetStatus())
+            start_motor();
 
-            /* Probe timeout -- still dry → go to GAP */
-            if ((int32_t)(now - search_deadline) >= 0)
-            {
-                stop_motor_keep_modes();
-                search_state = SEARCH_GAP;
-                search_deadline = now + (searchSettings.gapSeconds * 1000UL);
-            }
+        /* Water found → go RUN immediately */
+        if (senseDryRun == true)
+        {
+            search_state = SEARCH_RUN;
             break;
+        }
+
+        /* Probe timeout → still no water → go GAP */
+        if ((int32_t)(now - search_deadline) >= 0)
+        {
+            stop_motor_keep_modes();
+            search_state = SEARCH_GAP;
+            search_deadline = now + (searchSettings.gapSeconds * 1000UL);
+        }
+        break;
+
 
         /* ======================================================
            RUN STATE — Water present, motor runs continuously
            ====================================================== */
-        case SEARCH_RUN:
+    case SEARCH_RUN:
 
-            /* Water lost → go back to GAP */
-            if (senseDryRun == false)
-            {
-                stop_motor_keep_modes();
-                search_state = SEARCH_GAP;
-                search_deadline = now + (searchSettings.gapSeconds * 1000UL);
-                break;
-            }
-
-            /* Water present: ensure motor ON */
+        /* Water present → stay ON */
+        if (senseDryRun == true)
+        {
             if (!Motor_GetStatus())
                 start_motor();
 
-            /* Tank full → keep motor OFF but stay in RUN */
+            /* Tank full protection */
             if (isTankFull())
-            {
                 stop_motor_keep_modes();
-            }
+
             break;
+        }
+
+        /* Water lost → go back to GAP cycle */
+        stop_motor_keep_modes();
+        search_state = SEARCH_GAP;
+        search_deadline = now + (searchSettings.gapSeconds * 1000UL);
+
+        break;
+
     }
 }
 
@@ -904,6 +925,23 @@ void ModelHandle_StartTimer(void)
    ============================================================ */
 static void timer_tick(void)
 {
+	if (semiAutoActive)
+	{
+	    /* Always ON unless tank is full */
+	    if (isTankFull())
+	    {
+	        stop_motor_keep_modes();
+	        semiAutoActive = false;   // auto cut
+	    }
+	    else
+	    {
+	        start_motor();  // Always ON
+	    }
+
+	    /* Semi-auto must ignore dry sensor */
+	    senseDryRun = true;
+	}
+
     if (!timerActive)
         return;
 
@@ -1206,7 +1244,7 @@ void ModelHandle_ResetAll(void)
         timerSlots[i].offMinute = 0;
     }
 
-    UART_SendStatusPacket();
+    Safe_SendStatusPacket();
 }
 void ModelHandle_SaveCurrentStateToEEPROM(void)
 {
