@@ -130,19 +130,13 @@ bool Motor_GetStatus(void)
 
 void ModelHandle_SetMotor(bool on)
 {
-    if (on)
-    {
-        clear_all_modes();
-        manualOverride = true;
-        start_motor();
-    }
-    else
-    {
-        clear_all_modes();
-        stop_motor_keep_modes();
-    }
-}
+    clear_all_modes();
+    manualOverride = true;
+    senseDryRun = true;     // ignore dry-run always
 
+    if (on) start_motor();
+    else    stop_motor_keep_modes();
+}
 /* ============================================================
    DRY SENSOR CHECK (YOU CONFIRMED LOGIC)
    TRUE  => WATER
@@ -203,25 +197,35 @@ static bool dryConfirming = false;
 
 void ModelHandle_ToggleManual(void)
 {
-    clear_all_modes();   // disable all other modes
-
+    /* Turning ON manual mode */
     if (!manualActive)
     {
+        clear_all_modes();          // stop all other modes
         manualActive = true;
-        senseDryRun = true;     // ignore dry sensor fully
-        start_motor();          // pure ON
+
+        manualOverride = true;      // manual control is the top override
+        senseDryRun = true;         // ignore dry-run sensor completely
+
+        start_motor();              // PURE direct ON
     }
     else
     {
+        /* Turning OFF manual mode */
         manualActive = false;
-        stop_motor_keep_modes(); // pure OFF
+        manualOverride = false;
+        senseDryRun = true;         // stay safe (ignore dry-run)
+
+        stop_motor_keep_modes();    // PURE direct OFF
     }
 }
+
 
 
 void ModelHandle_StopAllModesAndMotor(void)
 {
     clear_all_modes();
+    manualOverride = false;
+    senseDryRun = true;     // safe
     stop_motor_keep_modes();
 }
 void ModelHandle_ClearManualOverride(void)
