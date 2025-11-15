@@ -527,49 +527,70 @@ static void twist_tick(void)
 
     uint32_t now = now_ms();
 
-    /* Phase transition */
+    /* ===== Phase timeout reached ===== */
     if ((int32_t)(twist_deadline - now) <= 0)
     {
-        twist_on_phase = !twist_on_phase;
-
         if (twist_on_phase)
         {
-            /* ON phase */
-            if (senseDryRun == true)  // water present
+            /* -------------------------
+               ON → PHASE TRANSITION
+               ------------------------- */
+
+            if (senseDryRun == true)
             {
+                /* WATER PRESENT:
+                   Continue ON phase (stay ON)
+                */
+                twist_on_phase = true;
                 start_motor();
+                twist_deadline = now + twistSettings.onDurationSeconds * 1000UL;
             }
             else
             {
-                /* dry → skip ON phase entirely */
+                /* DRY CONDITION:
+                   Move to OFF phase
+                */
                 twist_on_phase = false;
+                stop_motor_keep_modes();
+                twist_deadline = now + twistSettings.offDurationSeconds * 1000UL;
             }
-            twist_deadline = now + twistSettings.onDurationSeconds * 1000UL;
         }
         else
         {
-            /* OFF phase */
-            stop_motor_keep_modes();
-            twist_deadline = now + twistSettings.offDurationSeconds * 1000UL;
+            /* -------------------------
+               OFF → ON TRANSITION
+               ------------------------- */
+
+            twist_on_phase = true;
+
+            /* Motor must start ON BEFORE checking dry-run */
+            start_motor();
+
+            twist_deadline = now + twistSettings.onDurationSeconds * 1000UL;
         }
     }
 
-    /* During ON — ensure water present */
+    /* ===== ACTIVE PHASE CONTROL ===== */
+
     if (twist_on_phase)
     {
-        if (senseDryRun == false)  // DRY detected
-        {
-            stop_motor_keep_modes();
-            twist_on_phase = false;
-            twist_deadline = now + twistSettings.offDurationSeconds * 1000UL;
-        }
-        else
-        {
-            if (!Motor_GetStatus())
-                start_motor();
-        }
+        /* ✔ ON duration:
+           Motor must remain ON always
+        */
+        if (!Motor_GetStatus())
+            start_motor();
     }
-}/* ============================================================
+    else
+    {
+        /* ✔ OFF duration:
+           Motor must remain OFF always
+        */
+        stop_motor_keep_modes();
+    }
+}
+
+
+/* ============================================================
    SEARCH MODE  — Fully Rewritten (Stable & Working)
    ============================================================ */
 
