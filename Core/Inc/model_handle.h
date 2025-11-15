@@ -29,10 +29,18 @@ typedef struct {
 
 /* ===== Twist mode settings ===== */
 typedef struct {
-    bool     twistActive;
     uint16_t onDurationSeconds;
     uint16_t offDurationSeconds;
+
+    uint8_t  onHour;
+    uint8_t  onMinute;
+    uint8_t  offHour;
+    uint8_t  offMinute;
+
+    bool     twistActive;
+    bool     twistArmed;     // NEW → waiting for ON time
 } TwistSettings;
+
 
 /* ===== Public State ===== */
 extern volatile uint8_t  motorStatus;

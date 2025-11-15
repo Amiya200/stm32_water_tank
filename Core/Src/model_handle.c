@@ -498,7 +498,9 @@ TwistSettings twistSettings;
 static bool     twist_on_phase = false;
 static uint32_t twist_deadline = 0;
 
-void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s)
+void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s,
+                            uint8_t onH, uint8_t onM,
+                            uint8_t offH, uint8_t offM)
 {
     clear_all_modes();
 
@@ -507,12 +509,17 @@ void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s)
 
     twistSettings.onDurationSeconds  = on_s;
     twistSettings.offDurationSeconds = off_s;
-    twistSettings.twistActive = true;
-    twistActive = true;
 
-    twist_on_phase = false;  // start in OFF phase
-    twist_deadline = now_ms() + off_s * 1000UL;
+    twistSettings.onHour   = onH;
+    twistSettings.onMinute = onM;
+    twistSettings.offHour  = offH;
+    twistSettings.offMinute= offM;
+    twistSettings.twistArmed  = true;
+    twistSettings.twistActive = false;
+    twistActive = false;  // global flag
+
 }
+
 
 void ModelHandle_StopTwist(void)
 {
@@ -1022,40 +1029,62 @@ static void leds_from_model(void)
 /* ============================================================
    MAIN PROCESS LOOP (THE HEART OF THE SYSTEM)
    ============================================================ */
+static void twist_time_logic(void)
+{
+    if (!twistSettings.twistArmed)
+        return;
+
+    /* Activate at ON time */
+    if (!twistActive &&
+        time.hour == twistSettings.onHour &&
+        time.minutes == twistSettings.onMinute)
+    {
+        twistActive = true;
+        twistSettings.twistActive = true;
+
+        twist_on_phase = true;
+        twist_deadline = now_ms() + twistSettings.onDurationSeconds * 1000UL;
+
+        start_motor();
+    }
+
+    /* Deactivate at OFF time */
+    if (twistActive &&
+        time.hour == twistSettings.offHour &&
+        time.minutes == twistSettings.offMinute)
+    {
+        twistActive = false;
+        twistSettings.twistActive = false;
+
+        stop_motor_keep_modes();
+    }
+}
 
 void ModelHandle_Process(void)
 {
-    /* -------------------------------
-       1) Update dry-run input state
-       ------------------------------- */
+    /* 1) Dry run logic */
     ModelHandle_SoftDryRunHandler();
 
-    /* -------------------------------
-       2) Tick active modes
-       ------------------------------- */
-    if (twistActive)         twist_tick();
+    /* ⭐ NEW: Twist time-based ON/OFF control */
+    twist_time_logic();   // <<<< NEW
+    if (twistActive)
+        twist_tick();
+
     if (countdownActive)     countdown_tick();
-//    if (searchActive)        search_tick();
     search_tick();
     if (timerActive)         timer_tick();
-
     if (semiAutoActive)      semi_auto_tick();
 
-    /* -------------------------------
-       3) Protection tick
-       ------------------------------- */
+    /* 3) Protections */
     protections_tick();
 
-    /* -------------------------------
-       4) LEDs update
-       ------------------------------- */
+    /* 4) Led */
     leds_from_model();
 
-    /* -------------------------------
-       5) UART: Send throttled status
-       ------------------------------- */
+    /* 5) Status */
     Safe_SendStatusPacket();
 }
+
 
 
 /* ============================================================
@@ -1088,10 +1117,17 @@ void ModelHandle_ProcessUartCommand(const char* cmd)
     /* ---------- TWIST ---------- */
     else if (strcmp(cmd, "TWIST_START") == 0)
     {
-        ModelHandle_StartTwist(
-            twistSettings.onDurationSeconds,
-            twistSettings.offDurationSeconds
-        );
+    	ModelHandle_StartTwist(
+    	    twistSettings.onDurationSeconds,
+    	    twistSettings.offDurationSeconds,
+    	    twistSettings.onHour,
+    	    twistSettings.onMinute,
+    	    twistSettings.offHour,
+    	    twistSettings.offMinute
+    	);
+
+
+
     }
     else if (strcmp(cmd, "TWIST_STOP") == 0)
     {
