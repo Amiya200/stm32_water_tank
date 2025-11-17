@@ -522,9 +522,10 @@ void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s,
     twistSettings.offHour  = offH;
     twistSettings.offMinute= offM;
 
-    twistSettings.twistArmed  = false;   // not time-based now
-    twistSettings.twistActive = true;
-    twistActive = true;
+
+    twistSettings.twistArmed  = true;
+    twistSettings.twistActive = false;
+    twistActive = false;  // global flag
 
     /* Start ON-phase immediately */
     twist_on_phase = true;
@@ -640,12 +641,12 @@ void ModelHandle_StartSearch(uint16_t gap_s, uint16_t probe_s,
     searchSettings.offHour  = offH;
     searchSettings.offMinute= offM;
 
-    searchArmed  = false;   // no schedule waiting
-    searchActive = true;
-    searchSettings.searchActive = true;
 
-    /* Start immediately in PROBE state */
-    search_state = SEARCH_PROBE;
+    searchArmed = true;   // Waiting for ON-time
+    searchActive = false;
+
+    searchSettings.searchActive = false;
+    search_state = SEARCH_GAP;  // Initial idle state
     search_deadline = now_ms() + (searchSettings.probeSeconds * 1000UL);
 
     start_motor();

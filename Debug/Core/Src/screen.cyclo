@@ -23,8 +23,8 @@
 ../Core/Src/screen.c:367:6:Screen_ShowCurrentMode	1
 ../Core/Src/screen.c:403:6:Screen_Init	2
 ../Core/Src/screen.c:425:6:Screen_ResetToHome	1
-../Core/Src/screen.c:438:13:menu_select	39
-../Core/Src/screen.c:620:13:menu_reset	8
-../Core/Src/screen.c:687:6:Screen_Update	43
-../Core/Src/screen.c:906:6:Screen_HandleSwitches	19
-../Core/Src/screen.c:1017:6:Screen_HandleButton	94
+../Core/Src/screen.c:438:13:menu_select	40
+../Core/Src/screen.c:623:13:menu_reset	8
+../Core/Src/screen.c:690:6:Screen_Update	43
+../Core/Src/screen.c:909:6:Screen_HandleSwitches	19
+../Core/Src/screen.c:1022:6:Screen_HandleButton	67
