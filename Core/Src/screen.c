@@ -554,16 +554,18 @@ static void menu_select(void){
             break;
 
         case UI_COUNTDOWN_EDIT_MIN:
+            ui = UI_COUNTDOWN_TOGGLE;   // ✅ FIX: go to next step
             break;
 
-        case UI_COUNTDOWN_TOGGLE: {
-        	uint32_t seconds = (uint32_t)edit_countdown_min * 60u;
-        	if (seconds == 0) seconds = 60;
-        	apply_countdown_settings();
-        	ui = UI_COUNTDOWN;
-
+        case UI_COUNTDOWN_TOGGLE:
+        {
+            uint32_t seconds = (uint32_t)edit_countdown_min * 60u;
+            if (seconds == 0) seconds = 60;
+            apply_countdown_settings();
+            ui = UI_COUNTDOWN;
             break;
         }
+
 
         /* === TWIST === */
         case UI_TWIST:
@@ -671,6 +673,10 @@ static void menu_reset(void){
 
         /* Countdown editing → back to countdown */
         case UI_COUNTDOWN_EDIT_MIN:
+            ui = UI_COUNTDOWN;
+            break;
+
+        case UI_COUNTDOWN_TOGGLE:
             ui = UI_COUNTDOWN;
             break;
 
@@ -871,6 +877,17 @@ void Screen_Update(void){
                 break;
             }
 
+            case UI_COUNTDOWN_TOGGLE: {
+                char l0[17], l1[17];
+                snprintf(l0,sizeof(l0),"Start Countdown?");
+                snprintf(l1,sizeof(l1),">Yes     Back");
+                lcd_line0(l0);
+                lcd_line1(l1);
+                break;
+            }
+
+
+
             /* ==== TWIST ==== */
             case UI_TWIST_EDIT_ON: {
                 char l0[17], l1[17];
@@ -1058,7 +1075,10 @@ void Screen_HandleButton(UiButton b)
             case UI_SEARCH_EDIT_DRY: edit_search_dry_s += 1; break;
 
             /* Countdown */
-            case UI_COUNTDOWN_EDIT_MIN: edit_countdown_min++; break;
+            case UI_COUNTDOWN_EDIT_MIN:
+                ui = UI_COUNTDOWN_TOGGLE;   // Move to next step
+                break;
+
 
             /* Twist */
             case UI_TWIST_EDIT_ON:  if (edit_twist_on_s  < 600) edit_twist_on_s++;  break;
@@ -1194,25 +1214,31 @@ void Screen_HandleButton(UiButton b)
 
 
             /* ================= COUNTDOWN ================= */
-            case UI_COUNTDOWN:
-                if (countdownActive)
-                    ModelHandle_StopCountdown();
-                else
-                    ui = UI_COUNTDOWN_EDIT_MIN;
-                break;
+                /* ================= COUNTDOWN ================= */
+                case UI_COUNTDOWN:
+                    if (countdownActive)
+                        ModelHandle_StopCountdown();
+                    else
+                        ui = UI_COUNTDOWN_EDIT_MIN;
+                    break;
 
-            case UI_COUNTDOWN_EDIT_MIN:
-                /* next screen will handle save */
-                break;
+                case UI_COUNTDOWN_EDIT_MIN:
+                    ui = UI_COUNTDOWN_TOGGLE;   // ✅ FIX
+                    break;
 
-            case UI_COUNTDOWN_TOGGLE:
-            {
-                uint32_t seconds = edit_countdown_min * 60u;
-                if (seconds == 0) seconds = 60;
-                apply_countdown_settings();
-                ui = UI_COUNTDOWN;
-                break;
-            }
+                case UI_COUNTDOWN_TOGGLE:
+                {
+                    uint32_t seconds = (uint32_t)edit_countdown_min * 60u;
+                    if (seconds == 0) seconds = 60;
+
+                    apply_countdown_settings();
+
+                    /* ENABLE COUNTDOWN MODE */
+                    ModelHandle_StartCountdown(seconds, 1);   // 1 repetition or your logic
+
+                    ui = UI_COUNTDOWN;
+                    break;
+                }
 
 
             /* ================= OTHER MENUS ================= */

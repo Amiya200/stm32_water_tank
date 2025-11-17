@@ -24,7 +24,7 @@
 ../Core/Src/screen.c:403:6:Screen_Init	8	static
 ../Core/Src/screen.c:425:6:Screen_ResetToHome	8	static
 ../Core/Src/screen.c:438:13:menu_select	32	static
-../Core/Src/screen.c:623:13:menu_reset	8	static
-../Core/Src/screen.c:690:6:Screen_Update	464	static
-../Core/Src/screen.c:909:6:Screen_HandleSwitches	40	static
-../Core/Src/screen.c:1022:6:Screen_HandleButton	24	static
+../Core/Src/screen.c:625:13:menu_reset	8	static
+../Core/Src/screen.c:696:6:Screen_Update	504	static
+../Core/Src/screen.c:926:6:Screen_HandleSwitches	40	static
+../Core/Src/screen.c:1039:6:Screen_HandleButton	24	static
