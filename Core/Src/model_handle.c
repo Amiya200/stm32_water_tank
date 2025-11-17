@@ -521,10 +521,16 @@ void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s,
     twistSettings.onMinute = onM;
     twistSettings.offHour  = offH;
     twistSettings.offMinute= offM;
-    twistSettings.twistArmed  = true;
-    twistSettings.twistActive = false;
-    twistActive = false;  // global flag
 
+    twistSettings.twistArmed  = false;   // not time-based now
+    twistSettings.twistActive = true;
+    twistActive = true;
+
+    /* Start ON-phase immediately */
+    twist_on_phase = true;
+    twist_deadline = now_ms() + (twistSettings.onDurationSeconds * 1000UL);
+
+    start_motor();
 }
 
 
@@ -532,6 +538,7 @@ void ModelHandle_StopTwist(void)
 {
     twistSettings.twistActive = false;
     twistActive = false;
+
     stop_motor_keep_modes();
 }
 
@@ -628,26 +635,32 @@ void ModelHandle_StartSearch(uint16_t gap_s, uint16_t probe_s,
     searchSettings.gapSeconds   = gap_s;
     searchSettings.probeSeconds = probe_s;
 
-    searchSettings.onHour       = onH;
-    searchSettings.onMinute     = onM;
-    searchSettings.offHour      = offH;
-    searchSettings.offMinute    = offM;
+    searchSettings.onHour   = onH;
+    searchSettings.onMinute = onM;
+    searchSettings.offHour  = offH;
+    searchSettings.offMinute= offM;
 
-    searchArmed = true;   // Waiting for ON-time
-    searchActive = false;
+    searchArmed  = false;   // no schedule waiting
+    searchActive = true;
+    searchSettings.searchActive = true;
 
-    searchSettings.searchActive = false;
-    search_state = SEARCH_GAP;  // Initial idle state
+    /* Start immediately in PROBE state */
+    search_state = SEARCH_PROBE;
+    search_deadline = now_ms() + (searchSettings.probeSeconds * 1000UL);
+
+    start_motor();
 }
 
 void ModelHandle_StopSearch(void)
 {
     searchActive = false;
     searchSettings.searchActive = false;
+    searchArmed = false;
 
     stop_motor_keep_modes();
     search_state = SEARCH_GAP;
 }
+
 
 /* ============================================================
    SEARCH MODE TICK — Call every loop
