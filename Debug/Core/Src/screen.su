@@ -13,7 +13,7 @@
 ../Core/Src/screen.c:245:13:apply_timer_slot	24	static
 ../Core/Src/screen.c:256:13:show_search	48	static
 ../Core/Src/screen.c:271:13:show_countdown	72	static
-../Core/Src/screen.c:293:13:show_twist	64	static
+../Core/Src/screen.c:294:13:show_twist	64	static
 ../Core/Src/screen.c:312:13:apply_search_settings	4	static
 ../Core/Src/screen.c:324:13:apply_twist_settings	4	static
 ../Core/Src/screen.c:335:13:apply_countdown_settings	4	static
@@ -24,7 +24,7 @@
 ../Core/Src/screen.c:403:6:Screen_Init	8	static
 ../Core/Src/screen.c:425:6:Screen_ResetToHome	8	static
 ../Core/Src/screen.c:438:13:menu_select	32	static
-../Core/Src/screen.c:625:13:menu_reset	8	static
-../Core/Src/screen.c:696:6:Screen_Update	504	static
-../Core/Src/screen.c:926:6:Screen_HandleSwitches	40	static
-../Core/Src/screen.c:1039:6:Screen_HandleButton	24	static
+../Core/Src/screen.c:623:13:menu_reset	8	static
+../Core/Src/screen.c:694:6:Screen_Update	664	static
+../Core/Src/screen.c:946:6:Screen_HandleSwitches	40	static
+../Core/Src/screen.c:1058:40:Screen_HandleButton	32	static

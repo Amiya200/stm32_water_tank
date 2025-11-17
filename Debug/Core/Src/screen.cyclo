@@ -13,7 +13,7 @@
 ../Core/Src/screen.c:245:13:apply_timer_slot	2
 ../Core/Src/screen.c:256:13:show_search	2
 ../Core/Src/screen.c:271:13:show_countdown	2
-../Core/Src/screen.c:293:13:show_twist	3
+../Core/Src/screen.c:294:13:show_twist	3
 ../Core/Src/screen.c:312:13:apply_search_settings	1
 ../Core/Src/screen.c:324:13:apply_twist_settings	1
 ../Core/Src/screen.c:335:13:apply_countdown_settings	1
@@ -23,8 +23,8 @@
 ../Core/Src/screen.c:367:6:Screen_ShowCurrentMode	1
 ../Core/Src/screen.c:403:6:Screen_Init	2
 ../Core/Src/screen.c:425:6:Screen_ResetToHome	1
-../Core/Src/screen.c:438:13:menu_select	41
-../Core/Src/screen.c:625:13:menu_reset	9
-../Core/Src/screen.c:696:6:Screen_Update	44
-../Core/Src/screen.c:926:6:Screen_HandleSwitches	19
-../Core/Src/screen.c:1039:6:Screen_HandleButton	67
+../Core/Src/screen.c:438:13:menu_select	40
+../Core/Src/screen.c:623:13:menu_reset	9
+../Core/Src/screen.c:694:6:Screen_Update	44
+../Core/Src/screen.c:946:6:Screen_HandleSwitches	19
+../Core/Src/screen.c:1058:40:Screen_HandleButton	106
