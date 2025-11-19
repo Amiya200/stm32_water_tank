@@ -206,6 +206,7 @@ static void show_dash(void) {
     const char *mode = "IDLE";
     if (manualActive)        mode = "Manual";
     else if (semiAutoActive) mode = "SemiAuto";
+    else if (autoActive) mode = "Auto";
     else if (timerActive)    mode = "Timer";
     else if (countdownActive)mode = "Countdown";
     else if (twistActive)    mode = "Twist";
@@ -1060,12 +1061,25 @@ void Screen_HandleSwitches(void)
 
             case BTN_RESET_LONG:
             {
-                ModelHandle_StopAllModesAndMotor();
-                ModelHandle_ToggleManual();
+                if (manualActive)
+                {
+                    // manual is ON → turn it OFF
+                    manualActive = false;
+                    ModelHandle_SetMotor(false);
+//                    ModelHandle_ClearManualOverride();
+                }
+                else
+                {
+                    // manual is OFF → turn it ON
+                    ModelHandle_StopAllModesAndMotor();
+                    ModelHandle_ToggleManual();
+                }
+
                 ui = UI_DASH;
                 screenNeedsRefresh = true;
                 return;
             }
+
 
             /* ====================================================
                SW2 – YELLOW "P"
