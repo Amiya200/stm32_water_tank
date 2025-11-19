@@ -28,35 +28,37 @@ typedef enum {
     UI_WELCOME = 0,
     UI_DASH,
     UI_MENU,
+
     UI_MANUAL,
     UI_SEMI_AUTO,
     UI_TIMER,
-    UI_TIMER_SLOT_SELECT,      // new multi-slot entry screen
+    UI_TIMER_SLOT_SELECT,
     UI_TIMER_EDIT_SLOT_ON_H,
     UI_TIMER_EDIT_SLOT_ON_M,
     UI_TIMER_EDIT_SLOT_OFF_H,
     UI_TIMER_EDIT_SLOT_OFF_M,
     UI_TIMER_EDIT_SLOT_ENABLE,
-    UI_SEARCH,
-    UI_SEARCH_EDIT_GAP,
-    UI_SEARCH_EDIT_DRY,
+
+    UI_AUTO_MENU,           // Auto menu root
+    UI_AUTO_EDIT_GAP,       // Dry gap time
+    UI_AUTO_EDIT_MAXRUN,    // Max run time
+    UI_AUTO_EDIT_RETRY,     // Retry count
+
     UI_COUNTDOWN,
     UI_COUNTDOWN_EDIT_MIN,
-    UI_COUNTDOWN_TOGGLE,   // NEW: enable/disable screen
+    UI_COUNTDOWN_TOGGLE,
+
     UI_TWIST,
     UI_TWIST_EDIT_ON,
     UI_TWIST_EDIT_OFF,
-	UI_SEARCH_EDIT_ON_H,
-	UI_SEARCH_EDIT_ON_M,
-	UI_SEARCH_EDIT_OFF_H,
-	UI_SEARCH_EDIT_OFF_M,
-	UI_TWIST_EDIT_ON_H,
-	UI_TWIST_EDIT_ON_M,
-	UI_TWIST_EDIT_OFF_H,
-	UI_TWIST_EDIT_OFF_M,
+    UI_TWIST_EDIT_ON_H,
+    UI_TWIST_EDIT_ON_M,
+    UI_TWIST_EDIT_OFF_H,
+    UI_TWIST_EDIT_OFF_M,
 
     UI_MAX_
 } UiState;
+
 char buf[17];
 
 /* ===== Timing ===== */
@@ -78,7 +80,6 @@ extern ADC_Data adcData;
 
 extern TimerSlot timerSlots[5];
 static uint8_t currentSlot = 0;
-extern SearchSettings searchSettings;
 extern TwistSettings  twistSettings;
 extern volatile bool  countdownActive;
 extern volatile uint32_t countdownDuration;
@@ -86,14 +87,7 @@ extern volatile bool  countdownMode;
 extern volatile bool  manualActive;
 extern volatile bool  semiAutoActive;
 extern volatile bool  timerActive;
-extern volatile bool  searchActive;
 extern volatile bool  twistActive;
-// ---- SEARCH extended params ----
-static uint8_t edit_search_on_h = 18;
-static uint8_t edit_search_on_m = 30;
-static uint8_t edit_search_off_h = 18;
-static uint8_t edit_search_off_m = 35;
-
 // ---- TWIST extended params ----
 static uint8_t edit_twist_on_hh = 6;
 static uint8_t edit_twist_on_mm = 0;
@@ -106,13 +100,10 @@ extern bool Motor_GetStatus(void);
 
 /* ===== Menu definitions ===== */
 static const char * const main_menu[] = {
-    "Manual Mode",
-    "Semi-Auto Mode",
     "Timer Mode",
-    "Search Mode",
-    "Countdown",
-    "Twist Mode",
-    "Back to Dash"
+    "Auto Settings",
+    "Twist Settings",
+    "Back"
 };
 
 #define MAIN_MENU_COUNT (sizeof(main_menu)/sizeof(main_menu[0]))
@@ -174,7 +165,6 @@ static void show_dash(void) {
     if (manualActive)        mode = "Manual";
     else if (semiAutoActive) mode = "SemiAuto";
     else if (timerActive)    mode = "Timer";
-    else if (searchActive) mode = "SEARCH";
     else if (countdownActive)mode = "Countdown";
     else if (twistActive)    mode = "Twist";
 
@@ -219,6 +209,42 @@ static void show_manual(void){
     lcd_line0(line0);
     lcd_line1(line1);
 }
+static uint16_t edit_auto_gap_s = 10;
+static uint16_t edit_auto_maxrun_min = 120;
+static uint16_t edit_auto_retry = 0;
+
+static void show_auto_menu(void)
+{
+    char l0[17], l1[17];
+    switch(ui)
+    {
+        case UI_AUTO_MENU:
+            lcd_line0(">Gap / MaxRun");
+            lcd_line1(" Retry  Back");
+            break;
+
+        case UI_AUTO_EDIT_GAP:
+            snprintf(l0,sizeof(l0),"Gap: %us",edit_auto_gap_s);
+            lcd_line0(l0);
+            lcd_line1("UP/DN  Next");
+            break;
+
+        case UI_AUTO_EDIT_MAXRUN:
+            snprintf(l0,sizeof(l0),"MaxRun %umin",edit_auto_maxrun_min);
+            lcd_line0(l0);
+            lcd_line1("UP/DN  Next");
+            break;
+
+        case UI_AUTO_EDIT_RETRY:
+            snprintf(l0,sizeof(l0),"Retry: %u",edit_auto_retry);
+            lcd_line0(l0);
+            lcd_line1("UP/DN  Save");
+            break;
+
+        default:
+            break;
+    }
+}
 
 static void show_semi_auto(void){
     char line0[17], line1[17];
@@ -251,20 +277,6 @@ static void apply_timer_slot(uint8_t slot)
     ts->offHour   = edit_timer_off_h;
     ts->offMinute = edit_timer_off_m;
     ts->enabled   = true;
-}
-
-static void show_search(void)
-{
-    char l0[17], l1[17];
-    snprintf(l0, sizeof(l0), "Search Mode");
-
-    // Line 1: Enable/Disable + Edit
-    snprintf(l1, sizeof(l1),
-             ">%s   Edit",
-             searchActive ? "Disable" : "Enable");
-
-    lcd_line0(l0);
-    lcd_line1(l1);
 }
 
 
@@ -309,16 +321,6 @@ static void show_twist(void){
 
 
 /* ===== Apply functions ===== */
-static void apply_search_settings(void)
-{
-    searchSettings.gapSeconds   = edit_search_gap_s;
-    searchSettings.probeSeconds = edit_search_dry_s;
-
-    searchSettings.onHour   = edit_search_on_h;
-    searchSettings.onMinute = edit_search_on_m;
-    searchSettings.offHour  = edit_search_off_h;
-    searchSettings.offMinute= edit_search_off_m;
-}
 
 
 static void apply_twist_settings(void)
@@ -366,35 +368,6 @@ static void apply_timer_settings(void)
 
 void Screen_ShowCurrentMode(void)
 {
-//    extern volatile bool manualActive;
-//    extern volatile bool semiAutoActive;
-//    extern volatile bool timerActive;
-//    extern volatile bool searchActive;
-//    extern volatile bool countdownActive;
-//    extern volatile bool twistActive;
-//
-//    /* This function must NEVER allocate heap.
-//       Only change logical UI state — let Screen_Update() do rendering. */
-//
-//    static UiState lastUi = UI_MAX_;
-//    UiState newUi;
-//
-//    // Determine which logical mode is active
-//    if (manualActive)        newUi = UI_MANUAL;
-//    else if (semiAutoActive) newUi = UI_SEMI_AUTO;
-//    else if (timerActive)    newUi = UI_TIMER;
-//    else if (searchActive)   newUi = UI_SEARCH;
-//    else if (countdownActive)newUi = UI_COUNTDOWN;
-//    else if (twistActive)    newUi = UI_TWIST;
-//    else                     newUi = UI_DASH;
-//
-//    // Only switch UI state if mode actually changed
-//    if (newUi != lastUi) {
-//        ui = newUi;
-//        lastUi = newUi;
-//        screenNeedsRefresh = true;
-//        // no lcd_clear(), no snprintf(), no lcd_send_string()
-//    }
 }
 
 
@@ -408,10 +381,6 @@ void Screen_Init(void)
     screenNeedsRefresh = true;
     lastLcdUpdateTime = HAL_GetTick();
     refreshInactivityTimer();
-
-    /* --- Updated Search variables --- */
-    edit_search_gap_s = searchSettings.gapSeconds;
-    edit_search_dry_s = searchSettings.probeSeconds;
 
     /* --- Existing modes --- */
     edit_twist_on_s   = twistSettings.onDurationSeconds;
@@ -435,59 +404,101 @@ void Screen_ResetToHome(void){
 /* ============================
    MENU SELECTION LOGIC
    ============================ */
-static void menu_select(void){
+/* ============================================================
+   MENU SELECT (SW2 short press)
+   ============================================================ */
+static void menu_select(void)
+{
     refreshInactivityTimer();
 
-    switch (ui){
+    switch (ui)
+    {
+        /* --------------------------
+           WELCOME SCREEN
+        --------------------------- */
         case UI_WELCOME:
             ui = UI_DASH;
             break;
 
+        /* --------------------------
+           DASHBOARD → MENU
+        --------------------------- */
         case UI_DASH:
             ui = UI_MENU;
             goto_menu_top();
             break;
 
-        /* === MENU ITEMS === */
+        /* ======================================================
+           MAIN MENU ITEMS
+           ====================================================== */
         case UI_MENU:
-            switch (menu_idx){
-                case 0: ui = UI_MANUAL; break;
-                case 1: ui = UI_SEMI_AUTO; break;
-                case 2:
+            switch (menu_idx)
+            {
+                /* ------------------------------------
+                   0) TIMER MODE
+                ------------------------------------- */
+                case 0:
                     ui = UI_TIMER;
                     currentSlot = 0;
+
+                    // Load slot into edit fields
                     edit_timer_on_h  = timerSlots[currentSlot].onHour;
                     edit_timer_on_m  = timerSlots[currentSlot].onMinute;
                     edit_timer_off_h = timerSlots[currentSlot].offHour;
                     edit_timer_off_m = timerSlots[currentSlot].offMinute;
+
                     break;
-                case 3: ui = UI_SEARCH; break;
-                case 4: ui = UI_COUNTDOWN; break;
-                case 5: ui = UI_TWIST; break;
-                case 6: ui = UI_DASH; break;
-                default: ui = UI_DASH; break;
+
+                /* ------------------------------------
+                   1) AUTO MODE SETTINGS
+                   ------------------------------------ */
+                case 1:
+                    ui = UI_AUTO_MENU;     // NOTE: create UI_AUTO_MENU if you want full editor
+                    break;
+
+                /* ------------------------------------
+                   2) TWIST MODE
+                   ------------------------------------ */
+                case 2:
+                    ui = UI_TWIST;
+                    break;
+
+                /* ------------------------------------
+                   3) BACK → DASHBOARD
+                   ------------------------------------ */
+                case 3:
+                    ui = UI_DASH;
+                    break;
+
+                default:
+                    ui = UI_DASH;
+                    break;
             }
             break;
 
-        /* === MANUAL === */
+        /* ======================================================
+           MANUAL MODE (should not be in menu anymore)
+           ====================================================== */
         case UI_MANUAL:
             ModelHandle_ToggleManual();
             screenNeedsRefresh = true;
             break;
 
-        /* === SEMI AUTO === */
+        /* ======================================================
+           SEMI-AUTO MODE
+           ====================================================== */
         case UI_SEMI_AUTO:
             if (!semiAutoEnabled) enable_semi_auto();
             else disable_semi_auto();
             ui = UI_DASH;
             break;
 
-        /* === TIMER SLOT EDIT FLOW === */
+        /* ======================================================
+           TIMER MODE SLOT SELECT / EDIT FLOW
+           ====================================================== */
         case UI_TIMER:
-            // Entered only when coming from long press (handled in switches)
-            // Short press toggles enable, handled in Screen_HandleButton()
+            // Timer state — short press does nothing
             break;
-
 
         case UI_TIMER_SLOT_SELECT:
             ui = UI_TIMER_EDIT_SLOT_ON_H;
@@ -510,42 +521,13 @@ static void menu_select(void){
             break;
 
         case UI_TIMER_EDIT_SLOT_ENABLE:
-            apply_timer_slot(currentSlot);
+            apply_timer_settings();
             ui = UI_TIMER;
             break;
 
-        /* === SEARCH === */
-        case UI_SEARCH:
-            ui = UI_SEARCH_EDIT_GAP;
-            break;
-
-        case UI_SEARCH_EDIT_GAP:
-            ui = UI_SEARCH_EDIT_DRY;
-            break;
-
-        case UI_SEARCH_EDIT_DRY:
-            ui = UI_SEARCH_EDIT_ON_H;
-            break;
-
-        case UI_SEARCH_EDIT_ON_H:
-            ui = UI_SEARCH_EDIT_ON_M;
-            break;
-
-        case UI_SEARCH_EDIT_ON_M:
-            ui = UI_SEARCH_EDIT_OFF_H;
-            break;
-
-        case UI_SEARCH_EDIT_OFF_H:
-            ui = UI_SEARCH_EDIT_OFF_M;
-            break;
-
-        case UI_SEARCH_EDIT_OFF_M:
-            apply_search_settings();
-            ui = UI_SEARCH;
-            break;
-
-
-        /* === COUNTDOWN === */
+        /* ======================================================
+           COUNTDOWN EDIT FLOW
+           ====================================================== */
         case UI_COUNTDOWN:
             if (countdownActive)
                 ModelHandle_StopCountdown();
@@ -554,22 +536,19 @@ static void menu_select(void){
             break;
 
         case UI_COUNTDOWN_EDIT_MIN:
-            ui = UI_COUNTDOWN_TOGGLE;   // ✅ FIX: go to next step
+            ui = UI_COUNTDOWN_TOGGLE;
             break;
 
         case UI_COUNTDOWN_TOGGLE:
-        {
-            uint32_t seconds = (uint32_t)edit_countdown_min * 60u;
-            if (seconds == 0) seconds = 60;
             apply_countdown_settings();
             ui = UI_COUNTDOWN;
             break;
-        }
 
-
-        /* === TWIST === */
+        /* ======================================================
+           TWIST MODE EDIT FLOW
+           ====================================================== */
         case UI_TWIST:
-            if (twistSettings.twistActive)
+            if (twistActive)
                 ModelHandle_StopTwist();
             else
                 ui = UI_TWIST_EDIT_ON;
@@ -597,19 +576,25 @@ static void menu_select(void){
 
         case UI_TWIST_EDIT_OFF_M:
             apply_twist_settings();
-                ModelHandle_StartTwist(
-                    twistSettings.onDurationSeconds,
-                    twistSettings.offDurationSeconds,
-                    twistSettings.onHour,
-                    twistSettings.onMinute,
-                    twistSettings.offHour,
-                    twistSettings.offMinute
-                );
-
+            ModelHandle_StartTwist(
+                twistSettings.onDurationSeconds,
+                twistSettings.offDurationSeconds,
+                twistSettings.onHour,
+                twistSettings.onMinute,
+                twistSettings.offHour,
+                twistSettings.offMinute
+            );
             ui = UI_TWIST;
             break;
 
+        case UI_AUTO_EDIT_RETRY:
+            // Save to model_handle
+            extern void ModelHandle_SetAutoSettings(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry);
+            ModelHandle_SetAutoSettings(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
+            ui = UI_AUTO_MENU;
+            break;
 
+        /* ------------------------------- */
         default:
             break;
     }
@@ -628,7 +613,6 @@ static void menu_reset(void){
         case UI_MANUAL:
         case UI_SEMI_AUTO:
         case UI_TIMER:
-        case UI_SEARCH:
         case UI_COUNTDOWN:
         case UI_TWIST:
             ui = UI_MENU;
@@ -650,13 +634,6 @@ static void menu_reset(void){
         case UI_TIMER_EDIT_SLOT_OFF_M:
         case UI_TIMER_EDIT_SLOT_ENABLE:
             ui = UI_TIMER;
-            break;
-
-        case UI_SEARCH_EDIT_ON_H:
-        case UI_SEARCH_EDIT_ON_M:
-        case UI_SEARCH_EDIT_OFF_H:
-        case UI_SEARCH_EDIT_OFF_M:
-            ui = UI_SEARCH;
             break;
 
         case UI_TWIST_EDIT_ON:
@@ -701,8 +678,6 @@ void Screen_Update(void){
         case UI_TIMER_EDIT_SLOT_ON_M:
         case UI_TIMER_EDIT_SLOT_OFF_H:
         case UI_TIMER_EDIT_SLOT_OFF_M:
-        case UI_SEARCH_EDIT_GAP:
-        case UI_SEARCH_EDIT_DRY:
         case UI_COUNTDOWN_EDIT_MIN:
         case UI_TWIST_EDIT_ON:
         case UI_TWIST_EDIT_OFF:
@@ -749,7 +724,6 @@ void Screen_Update(void){
             case UI_MANUAL:      show_manual(); break;
             case UI_SEMI_AUTO:   show_semi_auto(); break;
             case UI_TIMER:       show_timer(); break;
-            case UI_SEARCH:      show_search(); break;
             case UI_COUNTDOWN:   show_countdown(); break;
             case UI_TWIST:       show_twist(); break;
 
@@ -804,56 +778,6 @@ void Screen_Update(void){
 
             /* ==== SEARCH EDIT SCREENS (FIXED & PROPER) ==== */
 
-            case UI_SEARCH_EDIT_GAP:
-            {
-                char l0[17], l1[17];
-                snprintf(l0, sizeof(l0), "Gap:    %3ds", edit_search_gap_s);
-                snprintf(l1, sizeof(l1), ">UpDn   Next");
-                lcd_line0(l0);
-                lcd_line1(l1);
-                break;
-            }
-
-            case UI_SEARCH_EDIT_ON_H:
-            {
-                char l0[17], l1[17];
-                snprintf(l0, sizeof(l0), "ON Hour:   %02d", edit_search_on_h);
-                snprintf(l1, sizeof(l1), ">UpDn   Next");
-                lcd_line0(l0);
-                lcd_line1(l1);
-                break;
-            }
-
-            case UI_SEARCH_EDIT_ON_M:
-            {
-                char l0[17], l1[17];
-                snprintf(l0, sizeof(l0), "ON Min:    %02d", edit_search_on_m);
-                snprintf(l1, sizeof(l1), ">UpDn   Next");
-                lcd_line0(l0);
-                lcd_line1(l1);
-                break;
-            }
-
-            case UI_SEARCH_EDIT_OFF_H:
-            {
-                char l0[17], l1[17];
-                snprintf(l0, sizeof(l0), "OFF Hour:  %02d", edit_search_off_h);
-                snprintf(l1, sizeof(l1), ">UpDn   Next");
-                lcd_line0(l0);
-                lcd_line1(l1);
-                break;
-            }
-
-            case UI_SEARCH_EDIT_OFF_M:
-            {
-                char l0[17], l1[17];
-                snprintf(l0, sizeof(l0), "OFF Min:   %02d", edit_search_off_m);
-                snprintf(l1, sizeof(l1), ">Save");
-                lcd_line0(l0);
-                lcd_line1(l1);
-                break;
-            }
-
 
             case UI_TWIST_EDIT_ON_H:
                 lcd_line0("Twist ON Hour");
@@ -879,14 +803,6 @@ void Screen_Update(void){
                 lcd_line1(buf);
                 break;
 
-
-            case UI_SEARCH_EDIT_DRY: {
-                char l0[17], l1[17];
-                snprintf(l0,sizeof(l0),"Edit Dry: %3ds", edit_search_dry_s);
-                snprintf(l1,sizeof(l1),">UpDn   Save");
-                lcd_line0(l0); lcd_line1(l1);
-                break;
-            }
 
             /* ==== COUNTDOWN ==== */
             case UI_COUNTDOWN_EDIT_MIN: {
@@ -936,121 +852,157 @@ void Screen_Update(void){
 /* ============================
    BUTTON HANDLER
    ============================ */
+static void increase_edit_value(void)
+{
+    switch (ui)
+    {
+        case UI_TIMER_EDIT_SLOT_ON_H:  if (++edit_timer_on_h  > 23) edit_timer_on_h = 0;  break;
+        case UI_TIMER_EDIT_SLOT_ON_M:  if (++edit_timer_on_m  > 59) edit_timer_on_m = 0;  break;
+        case UI_TIMER_EDIT_SLOT_OFF_H: if (++edit_timer_off_h > 23) edit_timer_off_h = 0; break;
+        case UI_TIMER_EDIT_SLOT_OFF_M: if (++edit_timer_off_m > 59) edit_timer_off_m = 0; break;
 
-/* ============================
-   SWITCH POLLING + LONG PRESS
-   ============================ */
-/* ============================
-   SWITCH POLLING + LONG PRESS
-   ============================ */
-void Screen_HandleSwitches(void) {
-  static const struct {
-    GPIO_TypeDef* port;
-    uint16_t pin;
-    UiButton btn;
-    uint16_t ledPin;
-  } switchMap[] = {
-    { SWITCH1_GPIO_Port, SWITCH1_Pin, BTN_RESET, LED1_Pin },   // Manual
-    { SWITCH2_GPIO_Port, SWITCH2_Pin, BTN_SELECT, LED2_Pin },  // Select
-    { SWITCH3_GPIO_Port, SWITCH3_Pin, BTN_UP, LED3_Pin },      // Up
-    { SWITCH4_GPIO_Port, SWITCH4_Pin, BTN_DOWN, LED4_Pin }     // Down / Back
-  };
+        case UI_TWIST_EDIT_ON:    if (++edit_twist_on_s  > 999) edit_twist_on_s = 0;  break;
+        case UI_TWIST_EDIT_OFF:   if (++edit_twist_off_s > 999) edit_twist_off_s = 0; break;
 
-  static bool prev[4] = { true, true, true, true };
-  static uint32_t pressStart[4] = { 0, 0, 0, 0 };
+        case UI_COUNTDOWN_EDIT_MIN: if (++edit_countdown_min > 999) edit_countdown_min = 1; break;
 
-  for (int i = 0; i < 4; i++) {
-    bool pressed = (HAL_GPIO_ReadPin(switchMap[i].port, switchMap[i].pin) == GPIO_PIN_RESET);
-
-    if (pressed && prev[i]) {
-      prev[i] = false;
-      pressStart[i] = HAL_GetTick();
-    } else if (!pressed && !prev[i]) {
-      uint32_t pressDuration = HAL_GetTick() - pressStart[i];
-      prev[i] = true;
-
-      /* ---- SW3 ≥3s => "Summer Save" burst ---- */
-      if (i == 2 && pressDuration >= 3000UL) {
-        ModelHandle_TriggerAuxBurst(30);
-        lcd_clear();
-        lcd_put_cur(0, 0);
-        lcd_send_string("Summer Save 30s");
-        lcd_put_cur(1, 0);
-        lcd_send_string("Relays 2&3 ON");
-        HAL_GPIO_TogglePin(switchMap[i].port, switchMap[i].ledPin);
-      }
-
-      /* ---- SW1 ≥2s => System reset ---- */
-      else if (i == 0 && pressDuration > 2000UL) {
-        ModelHandle_ManualLongPress();
-      }
-
-      /* ---- SW4 ≥2s => Back/menu reset ---- */
-      else if (i == 3 && pressDuration > 2000UL) {
-        menu_reset();
-      }
-
-      /* ---- SW2 (SELECT) short vs long ---- */
-      /* ---- SW2 (SELECT) short vs long ---- */
-      else if (i == 1) {
-        /* ========== LONG PRESS (ENABLE/DISABLE) ========== */
-        if (pressDuration >= 3000UL) {
-          /* TIMER → slot select */
-          if (ui == UI_TIMER) {
-            ui = UI_TIMER_SLOT_SELECT;
-            screenNeedsRefresh = true;
-          }
-
-          /* SEARCH ON/OFF */
-          else if (ui == UI_SEARCH) {
-            if (!searchActive) {
-              ModelHandle_StartSearch(
-                searchSettings.gapSeconds,
-                searchSettings.probeSeconds,
-                searchSettings.onHour,
-                searchSettings.onMinute,
-                searchSettings.offHour,
-                searchSettings.offMinute);
-            } else {
-              ModelHandle_StopSearch();
-            }
-
-            screenNeedsRefresh = true;
-          }
-
-          /* TWIST ON/OFF */
-          else if (ui == UI_TWIST) {
-            if (!twistActive) {
-              ModelHandle_StartTwist(
-                twistSettings.onDurationSeconds,
-                twistSettings.offDurationSeconds,
-                twistSettings.onHour,
-                twistSettings.onMinute,
-                twistSettings.offHour,
-                twistSettings.offMinute);
-            } else {
-              ModelHandle_StopTwist();
-            }
-
-            screenNeedsRefresh = true;
-          }
-        }
-
-        /* ========== SHORT PRESS (EDIT MODE) ========== */
-        else {
-          Screen_HandleButton(switchMap[i].btn);
-        }
-
-        HAL_GPIO_TogglePin(switchMap[i].port, switchMap[i].ledPin);
-      }
-
-      /* ---- Short press default ---- */
-      else {
-        HAL_GPIO_TogglePin(switchMap[i].port, switchMap[i].ledPin);
-        Screen_HandleButton(switchMap[i].btn);
-      }
+        default: break;
     }
-  }
+}
+
+static void decrease_edit_value(void)
+{
+    switch (ui)
+    {
+        case UI_TIMER_EDIT_SLOT_ON_H:  if (edit_timer_on_h--  == 0) edit_timer_on_h  = 23; break;
+        case UI_TIMER_EDIT_SLOT_ON_M:  if (edit_timer_on_m--  == 0) edit_timer_on_m  = 59; break;
+        case UI_TIMER_EDIT_SLOT_OFF_H: if (edit_timer_off_h-- == 0) edit_timer_off_h = 23; break;
+        case UI_TIMER_EDIT_SLOT_OFF_M: if (edit_timer_off_m-- == 0) edit_timer_off_m = 59; break;
+
+        case UI_TWIST_EDIT_ON:    if (edit_twist_on_s--  == 0) edit_twist_on_s = 999;  break;
+        case UI_TWIST_EDIT_OFF:   if (edit_twist_off_s-- == 0) edit_twist_off_s = 999; break;
+
+        case UI_COUNTDOWN_EDIT_MIN: if (edit_countdown_min-- == 1) edit_countdown_min = 999; break;
+
+        default: break;
+    }
+}
+
+void Screen_HandleSwitches(void)
+{
+    static uint8_t last[4] = {1,1,1,1};
+    static uint32_t pressT[4] = {0,0,0,0};
+
+    uint32_t now = HAL_GetTick();
+
+    bool inMenu = (ui == UI_MENU) ||
+                  (ui >= UI_TIMER_SLOT_SELECT && ui <= UI_TWIST_EDIT_OFF_M) ||
+                  (ui == UI_COUNTDOWN_EDIT_MIN);
+
+    /* MAP BUTTONS */
+    bool sw1 = (HAL_GPIO_ReadPin(SWITCH1_GPIO_Port, SWITCH1_Pin) == GPIO_PIN_RESET);
+    bool sw2 = (HAL_GPIO_ReadPin(SWITCH2_GPIO_Port, SWITCH2_Pin) == GPIO_PIN_RESET);
+    bool sw3 = (HAL_GPIO_ReadPin(SWITCH3_GPIO_Port, SWITCH3_Pin) == GPIO_PIN_RESET);
+    bool sw4 = (HAL_GPIO_ReadPin(SWITCH4_GPIO_Port, SWITCH4_Pin) == GPIO_PIN_RESET);
+
+    bool sw[4] = { sw1, sw2, sw3, sw4 };
+
+    for (int i=0;i<4;i++)
+    {
+        if (sw[i] && last[i]) {        // pressed now, released last tick
+            pressT[i] = now;
+            last[i] = 0;
+        }
+        else if (!sw[i] && !last[i]) {  // released now
+            uint32_t dur = now - pressT[i];
+            last[i] = 1;
+
+            /* ================================
+               LONG PRESS (>=3s)
+               ================================ */
+            if (dur >= 3000)
+            {
+                if (inMenu)
+                {
+                    if (i==2) {     // UP long → continuous increase
+                        cursorVisible = true;
+                        // editing screens increase value
+                    }
+                    else if (i==3) { // DOWN long → continuous decrease
+                        cursorVisible = true;
+                    }
+                }
+                else
+                {
+                    /* NORMAL MODE LONG-PRESS ACTIONS */
+                    if (i==0)      ModelHandle_ToggleManual();          // RED → Manual toggle
+                    else if (i==1) ui = UI_MENU;                        // P → open menu
+                    else if (i==2) ModelHandle_StartSemiAuto();         // UP → Semi Auto
+                    else if (i==3) {                                    // DOWN → increase countdown
+                        edit_countdown_min++;
+                        apply_countdown_settings();
+                    }
+                }
+                screenNeedsRefresh = true;
+                continue;
+            }
+
+            /* ================================
+               SHORT PRESS BEHAVIOR
+               ================================ */
+            if (inMenu)
+            {
+                /* ===== MENU MODE BUTTONS ===== */
+
+                if (i==0)      menu_reset();    // BACK
+                else if (i==1) menu_select();   // SELECT
+                else if (i==2) {                // UP
+                    if (ui == UI_MENU) {
+                        if (--menu_idx < 0) menu_idx = MAIN_MENU_COUNT - 1;
+                    } else {
+                        // Increase edit values
+                        increase_edit_value();
+                    }
+                }
+                else if (i==3) {                 // DOWN
+                    if (ui == UI_MENU) {
+                        if (++menu_idx >= MAIN_MENU_COUNT) menu_idx = 0;
+                    } else {
+                        // Decrease edit values
+                        decrease_edit_value();
+                    }
+                }
+
+                screenNeedsRefresh = true;
+            }
+
+            else
+            {
+                /* ===== NORMAL MODE BUTTONS ===== */
+
+                if (i==0) {
+                    // RED short press → restart pump
+                    ModelHandle_StopAllModesAndMotor();
+                    HAL_Delay(100);
+                    ModelHandle_SetMotor(true);
+                }
+                else if (i==1) {
+                    // AUTO toggle
+                    ModelHandle_ToggleAuto();
+                }
+                else if (i==2) {
+                    // Activate nearest timer slot
+                    ModelHandle_StartNearestTimer();
+                }
+                else if (i==3) {
+                    // Start countdown
+                    ModelHandle_StartCountdown(edit_countdown_min*60, 0);
+                }
+
+                screenNeedsRefresh = true;
+            }
+        }
+    }
 }
 
 /* ============================
@@ -1092,14 +1044,6 @@ void Screen_HandleSwitches(void) {
                case UI_TIMER_EDIT_SLOT_OFF_H: if (edit_timer_off_h < 23) edit_timer_off_h++; break;
                case UI_TIMER_EDIT_SLOT_OFF_M: if (edit_timer_off_m < 59) edit_timer_off_m++; break;
 
-               /* -------- SEARCH EDITING -------- */
-               case UI_SEARCH_EDIT_GAP:     if (edit_search_gap_s < 999) edit_search_gap_s++; break;
-               case UI_SEARCH_EDIT_DRY:     if (edit_search_dry_s < 999) edit_search_dry_s++; break;
-               case UI_SEARCH_EDIT_ON_H:    if (edit_search_on_h < 23)   edit_search_on_h++;  break;
-               case UI_SEARCH_EDIT_ON_M:    if (edit_search_on_m < 59)   edit_search_on_m++;  break;
-               case UI_SEARCH_EDIT_OFF_H:   if (edit_search_off_h < 23)  edit_search_off_h++; break;
-               case UI_SEARCH_EDIT_OFF_M:   if (edit_search_off_m < 59)  edit_search_off_m++; break;
-
                /* -------- COUNTDOWN EDIT -------- */
                case UI_COUNTDOWN_EDIT_MIN:  edit_countdown_min++; break;
 
@@ -1140,13 +1084,6 @@ void Screen_HandleSwitches(void) {
                case UI_TIMER_EDIT_SLOT_OFF_H: if (edit_timer_off_h > 0) edit_timer_off_h--; break;
                case UI_TIMER_EDIT_SLOT_OFF_M: if (edit_timer_off_m > 0) edit_timer_off_m--; break;
 
-               case UI_SEARCH_EDIT_GAP:     if (edit_search_gap_s > 1) edit_search_gap_s--; break;
-               case UI_SEARCH_EDIT_DRY:     if (edit_search_dry_s > 1) edit_search_dry_s--; break;
-               case UI_SEARCH_EDIT_ON_H:    if (edit_search_on_h > 0) edit_search_on_h--;    break;
-               case UI_SEARCH_EDIT_ON_M:    if (edit_search_on_m > 0) edit_search_on_m--;    break;
-               case UI_SEARCH_EDIT_OFF_H:   if (edit_search_off_h > 0) edit_search_off_h--;  break;
-               case UI_SEARCH_EDIT_OFF_M:   if (edit_search_off_m > 0) edit_search_off_m--;  break;
-
                case UI_COUNTDOWN_EDIT_MIN:  if (edit_countdown_min > 1) edit_countdown_min--; break;
 
                case UI_TWIST_EDIT_ON:       if (edit_twist_on_s  > 1) edit_twist_on_s--;  break;
@@ -1183,31 +1120,6 @@ void Screen_HandleSwitches(void) {
                case UI_TIMER_EDIT_SLOT_ENABLE:
                    apply_timer_slot(currentSlot);
                    ui = UI_TIMER;
-                   break;
-
-               /* ----- SEARCH FLOW ------ */
-               case UI_SEARCH: ui = UI_SEARCH_EDIT_GAP; break;
-               case UI_SEARCH_EDIT_GAP:  ui = UI_SEARCH_EDIT_DRY; break;
-               case UI_SEARCH_EDIT_DRY:  ui = UI_SEARCH_EDIT_ON_H; break;
-               case UI_SEARCH_EDIT_ON_H: ui = UI_SEARCH_EDIT_ON_M; break;
-               case UI_SEARCH_EDIT_ON_M: ui = UI_SEARCH_EDIT_OFF_H; break;
-               case UI_SEARCH_EDIT_OFF_H:ui = UI_SEARCH_EDIT_OFF_M; break;
-
-               case UI_SEARCH_EDIT_OFF_M:
-                   apply_search_settings();
-
-                   // 🔥 ENABLE SEARCH MODE EXACTLY LIKE UART
-                   ModelHandle_StartSearch(
-                       searchSettings.gapSeconds,
-                       searchSettings.probeSeconds,
-                       searchSettings.onHour,
-                       searchSettings.onMinute,
-                       searchSettings.offHour,
-                       searchSettings.offMinute
-                   );
-
-                   ui = UI_SEARCH;
-                   screenNeedsRefresh = true;
                    break;
 
 

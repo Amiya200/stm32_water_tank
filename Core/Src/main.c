@@ -212,13 +212,10 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
             case 3:   // Timer Mode
                 ModelHandle_StartTimer();
                 break;
-            case 4:   // Search Mode
-                ModelHandle_StartSearch(st.searchGap, st.searchProbe);
-                break;
-            case 5:   // Countdown Mode
+            case 4:   // Countdown Mode
                 ModelHandle_StartCountdown(st.countdownMin * 60, st.countdownRep);
                 break;
-            case 6:   // Twist Mode
+            case 5:   // Twist Mode
                 ModelHandle_StartTwist(st.twistOn, st.twistOff);
                 break;
             default:

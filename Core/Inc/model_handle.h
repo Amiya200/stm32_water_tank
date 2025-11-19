@@ -7,11 +7,10 @@
 
 /* ===== Timer slot ===== */
 typedef struct {
-    bool enabled;          // slot enable/disable
-    uint8_t onHour;        // ON time hour
-    uint8_t onMinute;      // ON time minute
-    uint8_t offHour;       // OFF time hour
-    uint8_t offMinute;     // OFF time minute
+    uint8_t enabled;
+    uint8_t onHour, onMinute;
+    uint8_t offHour, offMinute;
+    uint8_t dayMask;     // bit0=Mon ... bit6=Sun
 } TimerSlot;
 
 
@@ -41,6 +40,17 @@ typedef struct {
     bool     twistArmed;     // NEW → waiting for ON time
 } TwistSettings;
 
+typedef struct {
+    uint16_t gap_seconds;     // dry gap between retries
+    uint16_t maxrun_minutes;  // max continuous run
+    uint16_t retry_limit;     // 0 = infinite
+} AutoSettings;
+
+static AutoSettings autoSettings = {
+    .gap_seconds = 10,
+    .maxrun_minutes = 120,
+    .retry_limit = 0
+};
 
 /* ===== Public State ===== */
 extern volatile uint8_t  motorStatus;

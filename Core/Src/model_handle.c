@@ -29,7 +29,8 @@
 #define DRY_CONFIRM_MS    1500UL    // confirm water loss before shutting down
 
 /* General max-run protection */
-static const uint32_t MAX_CONT_RUN_MS = 2UL * 60UL * 60UL * 1000UL; // 2 hours
+static uint32_t MAX_CONT_RUN_MS = 2UL * 60UL * 60UL * 1000UL;
+
 
 /* ============================================================
    GLOBAL FLAGS
@@ -44,18 +45,21 @@ volatile bool manualActive    = false;
 volatile bool semiAutoActive  = false;
 volatile bool countdownActive = false;
 volatile bool twistActive     = false;
-volatile bool searchActive    = false;
 volatile bool timerActive     = false;
 
 volatile bool senseDryRun         = false;  // TRUE = water present
 volatile bool senseOverLoad       = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
+volatile bool autoActive = false;
+
+static uint32_t auto_gap_ms = 10000;         // 10 sec default
+static uint32_t auto_next_retry_time = 0;
+static uint32_t auto_retry_counter = 0;
+static uint32_t auto_retry_limit = 0;        // 0 = infinite retries
 
 /* manual override (MOTOR_ON/MOTOR_OFF manual push) */
 volatile bool manualOverride = false;
-volatile bool searchArmed = false;   // NEW — search configured but not yet active
-
 /* ============================================================
    UTILS
    ============================================================ */
@@ -70,7 +74,6 @@ static inline void clear_all_modes(void)
     semiAutoActive = false;
     countdownActive = false;
     twistActive = false;
-    searchActive = false;
     timerActive = false;
     manualOverride = false;
 }
@@ -255,7 +258,6 @@ static inline bool isAnyModeActive(void)
             semiAutoActive ||
             countdownActive ||
             twistActive ||
-            searchActive ||
             timerActive);
 }
 void ModelHandle_SoftDryRunHandler(void)
@@ -265,9 +267,6 @@ void ModelHandle_SoftDryRunHandler(void)
     /* Always refresh dry-run sensor */
     ModelHandle_CheckDryRun();  // TRUE = WATER, FALSE = DRY
 
-    /* 🔥 Do NOT run dry-run FSM when SEARCH mode is active */
-    if (searchActive)
-        return;
 
     /* Skip global dry-run if TIMER mode active */
     if (timerActive)
@@ -282,12 +281,6 @@ void ModelHandle_SoftDryRunHandler(void)
         return;
     }
 
-    /* ------------------------------------------------------------
-       IMPORTANT:
-       If a mode (search, manual, semi-auto) wants MOTOR ON,
-       we DO NOT block it here. We allow motor to turn ON first,
-       then we evaluate DRY logic in NORMAL state.
-       ------------------------------------------------------------ */
 
     switch (dryState)
     {
@@ -347,7 +340,7 @@ void ModelHandle_SoftDryRunHandler(void)
             if ((int32_t)(dryDeadline - now) <= 0)
             {
                 /* Only turn OFF if mode did not force ON */
-                if (!searchActive && !manualActive && !semiAutoActive)
+                if (!manualActive && !semiAutoActive)
                     stop_motor_keep_modes();
 
                 dryState = DRY_IDLE;
@@ -378,7 +371,7 @@ void ModelHandle_SoftDryRunHandler(void)
                 if ((int32_t)(now - dryConfirmStart) >= (int32_t)DRY_CONFIRM_MS)
                 {
                     /* Stop ONLY if mode didn’t ask for ON */
-                    if (!searchActive && !manualActive && !semiAutoActive)
+                    if (!manualActive && !semiAutoActive)
                         stop_motor_keep_modes();
 
                     dryState = DRY_IDLE;
@@ -612,185 +605,6 @@ static void twist_tick(void)
 }
 
 
-/* ============================================================
-   SEARCH MODE  — Fully Rewritten (Stable & Working)
-   ============================================================ */
-
-SearchSettings searchSettings;
-
-typedef enum {
-    SEARCH_GAP = 0,
-    SEARCH_PROBE,
-    SEARCH_RUN
-} SearchState;
-
-static SearchState search_state = SEARCH_GAP;
-static uint32_t search_deadline = 0;
-
-void ModelHandle_StartSearch(uint16_t gap_s, uint16_t probe_s,
-                             uint8_t onH, uint8_t onM,
-                             uint8_t offH, uint8_t offM)
-{
-    clear_all_modes();
-
-    searchSettings.gapSeconds   = gap_s;
-    searchSettings.probeSeconds = probe_s;
-
-    searchSettings.onHour   = onH;
-    searchSettings.onMinute = onM;
-    searchSettings.offHour  = offH;
-    searchSettings.offMinute= offM;
-
-
-    searchArmed = true;   // Waiting for ON-time
-    searchActive = false;
-
-    searchSettings.searchActive = false;
-    search_state = SEARCH_GAP;  // Initial idle state
-    search_deadline = now_ms() + (searchSettings.probeSeconds * 1000UL);
-
-    start_motor();
-}
-
-void ModelHandle_StopSearch(void)
-{
-    searchActive = false;
-    searchSettings.searchActive = false;
-    searchArmed = false;
-
-    stop_motor_keep_modes();
-    search_state = SEARCH_GAP;
-}
-
-
-/* ============================================================
-   SEARCH MODE TICK — Call every loop
-   ============================================================ */
-static void search_tick(void)
-{
-    uint32_t now = now_ms();
-
-    /* ----------------------------------------------------------
-       1. Activate Search Mode ONLY at ON time
-       ---------------------------------------------------------- */
-    if (searchArmed && !searchActive)
-    {
-        if (time.hour == searchSettings.onHour &&
-            time.minutes == searchSettings.onMinute)
-        {
-            searchArmed = false;
-            searchActive = true;
-            searchSettings.searchActive = true;
-
-            /* Start first probe immediately */
-            start_motor();
-            search_state = SEARCH_PROBE;
-            search_deadline = now + (searchSettings.probeSeconds * 1000UL);
-            return;
-        }
-        return; // Not ON time yet
-    }
-
-    /* Not active → do nothing */
-    if (!searchActive)
-        return;
-
-    /* ----------------------------------------------------------
-       2. Stop Search Mode at OFF time
-       ---------------------------------------------------------- */
-    if (time.hour == searchSettings.offHour &&
-        time.minutes == searchSettings.offMinute)
-    {
-        ModelHandle_StopSearch();
-        return;
-    }
-
-    /* ----------------------------------------------------------
-       3. SEARCH MODE FSM
-       ---------------------------------------------------------- */
-    switch (search_state)
-    {
-        /* ======================================================
-           GAP STATE — Motor OFF waiting between probes
-           ====================================================== */
-    case SEARCH_GAP:
-
-        /* If water appears during GAP → motor must remain ON until OFF time */
-        if (senseDryRun == true)
-        {
-            /* Move directly to RUN state and keep motor ON */
-            start_motor();
-            search_state = SEARCH_RUN;
-            break;
-        }
-
-        /* No water → remain in GAP cycle (motor OFF) */
-        stop_motor_keep_modes();
-
-        /* Wait for next probe cycle */
-        if ((int32_t)(now - search_deadline) >= 0)
-        {
-            start_motor();
-            search_state = SEARCH_PROBE;
-            search_deadline = now + (searchSettings.probeSeconds * 1000UL);
-        }
-        break;
-
-
-        /* ======================================================
-           PROBE STATE — Motor ON checking for water
-           ====================================================== */
-    case SEARCH_PROBE:
-
-        /* Motor MUST remain ON */
-        if (!Motor_GetStatus())
-            start_motor();
-
-        /* Water found → go RUN immediately */
-        if (senseDryRun == true)
-        {
-            search_state = SEARCH_RUN;
-            break;
-        }
-
-        /* Probe timeout → still no water → go GAP */
-        if ((int32_t)(now - search_deadline) >= 0)
-        {
-            stop_motor_keep_modes();
-            search_state = SEARCH_GAP;
-            search_deadline = now + (searchSettings.gapSeconds * 1000UL);
-        }
-        break;
-
-
-        /* ======================================================
-           RUN STATE — Water present, motor runs continuously
-           ====================================================== */
-    case SEARCH_RUN:
-
-        /* Water present → stay ON */
-        if (senseDryRun == true)
-        {
-            if (!Motor_GetStatus())
-                start_motor();
-
-            /* Tank full protection */
-            if (isTankFull())
-                stop_motor_keep_modes();
-
-            break;
-        }
-
-        /* Water lost → go back to GAP cycle */
-        stop_motor_keep_modes();
-        search_state = SEARCH_GAP;
-        search_deadline = now + (searchSettings.gapSeconds * 1000UL);
-
-        break;
-
-    }
-}
-
 
 /* ============================================================
    TIMER MODE — FINAL, CLEAN, FULLY FIXED VERSION
@@ -907,6 +721,25 @@ static bool timer_any_slot_should_run(void)
 
     return false;
 }
+void ModelHandle_StartAuto(void)
+{
+    clear_all_modes();
+
+    autoActive = true;
+    auto_retry_counter = 0;
+    auto_next_retry_time = now_ms();
+
+    // start motor only if tank is not full
+    if (!isTankFull() && senseDryRun == true)
+        start_motor();
+}
+
+void ModelHandle_StopAuto(void)
+{
+    autoActive = false;
+    stop_motor_keep_modes();
+}
+
 
 /* ============================================================
    Recalculate schedule IMMEDIATELY after editing a slot
@@ -997,21 +830,82 @@ void ModelHandle_StopSemiAuto(void)
     stop_motor_keep_modes();
 }
 
-static void semi_auto_tick(void)
+static void auto_tick(void)
 {
-    if (!semiAutoActive) return;
+    if (!autoActive) return;
 
-    /* full tank terminates mode */
+    uint32_t now = now_ms();
+
+    /* 1) Tank full → stop AUTO */
     if (isTankFull())
     {
-        ModelHandle_StopAllModesAndMotor();
+        autoActive = false;
+        stop_motor_keep_modes();
         return;
     }
 
-    /* stay ON */
-    if (!Motor_GetStatus())
-        start_motor();
+    /* 2) Protection fault → stop AUTO */
+    if (senseOverLoad || senseOverUnderVolt || senseMaxRunReached)
+    {
+        autoActive = false;
+        stop_motor_keep_modes();
+        return;
+    }
+
+    /* 3) If WATER PRESENT → keep ON */
+    if (senseDryRun == true)
+    {
+        auto_retry_counter = 0;
+
+        if (!Motor_GetStatus())
+            start_motor();
+
+        return;
+    }
+
+    /* 4) WATER NOT PRESENT → stop and retry later */
+    stop_motor_keep_modes();
+
+    /* Wait until retry time */
+    if (now < auto_next_retry_time)
+        return;
+
+    /* Check retry limit */
+    if (auto_retry_limit > 0 && auto_retry_counter >= auto_retry_limit)
+    {
+        autoActive = false;
+        stop_motor_keep_modes();
+        return;
+    }
+
+    /* Retry */
+    auto_retry_counter++;
+    auto_next_retry_time = now + (autoSettings.gap_seconds * 1000UL);
+
+    start_motor();
 }
+
+void ModelHandle_SetAutoSettings(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
+{
+    if (gap_s == 0) gap_s = 1;
+
+    autoSettings.gap_seconds     = gap_s;
+    autoSettings.maxrun_minutes  = maxrun_min;
+    autoSettings.retry_limit     = retry;
+
+    auto_gap_ms      = gap_s * 1000UL;
+    auto_retry_limit = retry;
+    MAX_CONT_RUN_MS  = (uint32_t)maxrun_min * 60UL * 1000UL;
+}
+
+void ModelHandle_ToggleAuto(void)
+{
+    if (autoActive)
+        ModelHandle_StopAuto();
+    else
+        ModelHandle_StartAuto();
+}
+
 /* ============================================================
    CENTRAL PROTECTION SYSTEM
    ============================================================ */
@@ -1116,6 +1010,50 @@ static void twist_time_logic(void)
     }
 }
 
+
+void ModelHandle_StartNearestTimer(void)
+{
+    /* If no slots enabled → do nothing */
+    int bestSlot = -1;
+    int bestDelta = 24 * 60 + 1; // > max minutes in day
+
+    uint16_t nowMin = time.hour * 60 + time.minutes;
+
+    for (int i = 0; i < 5; i++)
+    {
+        if (!timerSlots[i].enabled)
+            continue;
+
+        uint16_t slotMin = timerSlots[i].onHour * 60 + timerSlots[i].onMinute;
+
+        int delta = slotMin - nowMin;
+        if (delta < 0) delta += 24 * 60;  // wrap next day
+
+        if (delta < bestDelta)
+        {
+            bestDelta = delta;
+            bestSlot = i;
+        }
+    }
+
+    if (bestSlot < 0)
+    {
+        /* No timer slots active */
+        return;
+    }
+
+    /* Turn on TIMER MODE */
+    clear_all_modes();
+    timerActive = true;
+
+    /* If nearest slot should already be ON, start motor */
+    if (timer_any_slot_should_run())
+        start_motor();
+    else
+        stop_motor_keep_modes();
+}
+
+
 void ModelHandle_Process(void)
 {
     /* 1) Dry run logic */
@@ -1125,11 +1063,12 @@ void ModelHandle_Process(void)
     twist_time_logic();   // <<<< NEW
     if (twistActive)
         twist_tick();
+    if (autoActive)      auto_tick();
 
     if (countdownActive)     countdown_tick();
-    search_tick();
     if (timerActive)         timer_tick();
-    if (semiAutoActive)      semi_auto_tick();
+    if (autoActive) auto_tick();
+
 
     /* 3) Protections */
     protections_tick();
@@ -1190,24 +1129,6 @@ void ModelHandle_ProcessUartCommand(const char* cmd)
         ModelHandle_StopTwist();
     }
 
-    /* ---------- SEARCH ---------- */
-    else if (strcmp(cmd, "SEARCH_START") == 0)
-    {
-        ModelHandle_StartSearch(
-            searchSettings.gapSeconds,
-            searchSettings.probeSeconds,
-            searchSettings.onHour,
-            searchSettings.onMinute,
-            searchSettings.offHour,
-            searchSettings.offMinute
-        );
-    }
-
-    else if (strcmp(cmd, "SEARCH_STOP") == 0)
-    {
-        ModelHandle_StopSearch();
-    }
-
     /* ---------- TIMER ---------- */
     else if (strcmp(cmd, "TIMER_START") == 0)
     {
@@ -1238,7 +1159,6 @@ void ModelHandle_ResetAll(void)
     /* Reset all modes */
     countdownActive = false;
     twistActive     = false;
-    searchActive    = false;
     timerActive     = false;
     semiAutoActive  = false;
     manualActive    = false;
@@ -1247,8 +1167,6 @@ void ModelHandle_ResetAll(void)
     twistSettings.onDurationSeconds  = 5;
     twistSettings.offDurationSeconds = 5;
 
-    searchSettings.gapSeconds   = 6;
-    searchSettings.probeSeconds = 4;
 
 
     countdownDuration = 0;
@@ -1279,9 +1197,8 @@ void ModelHandle_SaveCurrentStateToEEPROM(void)
     if      (manualActive)    s.mode = 1;
     else if (semiAutoActive)  s.mode = 2;
     else if (timerActive)     s.mode = 3;
-    else if (searchActive)    s.mode = 4;
-    else if (countdownActive) s.mode = 5;
-    else if (twistActive)     s.mode = 6;
+    else if (countdownActive) s.mode = 4;
+    else if (twistActive)     s.mode = 5;
     else                      s.mode = 0;
 
     s.motor = Motor_GetStatus();
@@ -1289,10 +1206,6 @@ void ModelHandle_SaveCurrentStateToEEPROM(void)
     /* twist */
     s.twistOn  = twistSettings.onDurationSeconds;
     s.twistOff = twistSettings.offDurationSeconds;
-
-    /* search (only gap + probe stored!) */
-    s.searchGap   = searchSettings.gapSeconds;
-    s.searchProbe = searchSettings.probeSeconds;
 
 
     /* countdown */
