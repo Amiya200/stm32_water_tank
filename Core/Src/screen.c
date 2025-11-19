@@ -101,8 +101,9 @@ extern bool Motor_GetStatus(void);
 /* ===== Menu definitions ===== */
 static const char * const main_menu[] = {
     "Timer Mode",
-    "Auto Settings",
-    "Twist Settings",
+    "Auto Mode",
+    "Twist Mode",
+	"Settings",
     "Back"
 };
 
@@ -398,9 +399,6 @@ void Screen_ResetToHome(void){
     lastLcdUpdateTime = HAL_GetTick();
     refreshInactivityTimer();
 }
-/* ============================
-   MENU SELECTION LOGIC
-   ============================ */
 /* ============================
    MENU SELECTION LOGIC
    ============================ */
@@ -890,124 +888,191 @@ static void decrease_edit_value(void)
 
 void Screen_HandleSwitches(void)
 {
-    static uint8_t last[4] = {1,1,1,1};
-    static uint32_t pressT[4] = {0,0,0,0};
+    /* Map raw switch events */
+    SwitchEvent ev_sw1 = Switch_GetEvent(0);   // RED
+    SwitchEvent ev_sw2 = Switch_GetEvent(1);   // Yellow P
+    SwitchEvent ev_sw3 = Switch_GetEvent(2);   // UP
+    SwitchEvent ev_sw4 = Switch_GetEvent(3);   // DOWN
 
-    uint32_t now = HAL_GetTick();
+    bool inMenu =
+        (ui == UI_MENU) ||
+        (ui == UI_TIMER) ||
+        (ui == UI_TIMER_EDIT_SLOT_ON_H) ||
+        (ui == UI_TIMER_EDIT_SLOT_ON_M) ||
+        (ui == UI_TIMER_EDIT_SLOT_OFF_H) ||
+        (ui == UI_TIMER_EDIT_SLOT_OFF_M) ||
+        (ui == UI_AUTO_MENU) ||
+        (ui == UI_AUTO_EDIT_GAP) ||
+        (ui == UI_AUTO_EDIT_MAXRUN) ||
+        (ui == UI_AUTO_EDIT_RETRY) ||
+        (ui == UI_COUNTDOWN) ||
+        (ui == UI_COUNTDOWN_EDIT_MIN) ||
+        (ui == UI_TWIST) ||
+        (ui == UI_TWIST_EDIT_ON) ||
+        (ui == UI_TWIST_EDIT_OFF);
 
-    bool inMenu = (ui == UI_MENU) ||
-                  (ui >= UI_TIMER_SLOT_SELECT && ui <= UI_TWIST_EDIT_OFF_M) ||
-                  (ui == UI_COUNTDOWN_EDIT_MIN);
-
-    /* MAP BUTTONS */
-    bool sw1 = (HAL_GPIO_ReadPin(SWITCH1_GPIO_Port, SWITCH1_Pin) == GPIO_PIN_RESET);
-    bool sw2 = (HAL_GPIO_ReadPin(SWITCH2_GPIO_Port, SWITCH2_Pin) == GPIO_PIN_RESET);
-    bool sw3 = (HAL_GPIO_ReadPin(SWITCH3_GPIO_Port, SWITCH3_Pin) == GPIO_PIN_RESET);
-    bool sw4 = (HAL_GPIO_ReadPin(SWITCH4_GPIO_Port, SWITCH4_Pin) == GPIO_PIN_RESET);
-
-    bool sw[4] = { sw1, sw2, sw3, sw4 };
-
-    for (int i=0;i<4;i++)
+    /* ===========================================================
+       NORMAL MODE (DASHBOARD)
+       =========================================================== */
+    if (!inMenu)
     {
-        if (sw[i] && last[i]) {        // pressed now, released last tick
-            pressT[i] = now;
-            last[i] = 0;
+        /* ------------------------
+           SW1 (RED)
+           SHORT = Restart Pump
+           LONG  = Toggle Manual
+           ------------------------ */
+        if (ev_sw1 == SWITCH_EVT_SHORT)
+        {
+            ModelHandle_SetMotor(false);
+            ModelHandle_SetMotor(true);
         }
-        else if (!sw[i] && !last[i]) {  // released now
-            uint32_t dur = now - pressT[i];
-            last[i] = 1;
+        else if (ev_sw1 == SWITCH_EVT_LONG)
+        {
+            ModelHandle_ToggleManual();
+        }
 
-            /* ================================
-               LONG PRESS (>=3s)
-               ================================ */
-            if (dur >= 3000)
-            {
-                if (inMenu)
-                {
-                    if (i==2) {     // UP long → continuous increase
-                        cursorVisible = true;
-                        // editing screens increase value
-                    }
-                    else if (i==3) { // DOWN long → continuous decrease
-                        cursorVisible = true;
-                    }
-                }
-                else
-                {
-                    /* NORMAL MODE LONG-PRESS ACTIONS */
-                    if (i==0)      ModelHandle_ToggleManual();          // RED → Manual toggle
-                    else if (i==1) ui = UI_MENU;                        // P → open menu
-                    else if (i==2) ModelHandle_StartSemiAuto();         // UP → Semi Auto
-                    else if (i==3) {                                    // DOWN → increase countdown
-                        edit_countdown_min++;
-                        apply_countdown_settings();
-                    }
-                }
-                screenNeedsRefresh = true;
-                continue;
-            }
-
-            /* ================================
-               SHORT PRESS BEHAVIOR
-               ================================ */
-            if (inMenu)
-            {
-                /* ===== MENU MODE BUTTONS ===== */
-
-                if (i==0)      menu_reset();    // BACK
-                else if (i==1) menu_select();   // SELECT
-                else if (i==2) {                // UP
-                    if (ui == UI_MENU) {
-                        if (--menu_idx < 0) menu_idx = MAIN_MENU_COUNT - 1;
-                    } else {
-                        // Increase edit values
-                        increase_edit_value();
-                    }
-                }
-                else if (i==3) {                 // DOWN
-                    if (ui == UI_MENU) {
-                        if (++menu_idx >= MAIN_MENU_COUNT) menu_idx = 0;
-                    } else {
-                        // Decrease edit values
-                        decrease_edit_value();
-                    }
-                }
-
-                screenNeedsRefresh = true;
-            }
-
+        /* ------------------------
+           SW2 (YELLOW P)
+           SHORT = Toggle TIMER (AUTO equivalent)
+           LONG  = Open menu
+           ------------------------ */
+        if (ev_sw2 == SWITCH_EVT_SHORT)
+        {
+            if (timerActive)
+                ModelHandle_StopAllModesAndMotor();
             else
-            {
-                /* ===== NORMAL MODE BUTTONS ===== */
-
-                if (i==0) {
-                    // RED short press → restart pump
-                    ModelHandle_StopAllModesAndMotor();
-                    HAL_Delay(100);
-                    ModelHandle_SetMotor(true);
-                }
-                else if (i==1) {
-                    // AUTO toggle
-                    ModelHandle_ToggleAuto();
-                }
-                else if (i==2) {
-                    // Activate nearest timer slot
-                    ModelHandle_StartNearestTimer();
-                }
-                else if (i==3) {
-                    // Start countdown
-                    ModelHandle_StartCountdown(edit_countdown_min*60, 0);
-                }
-
-                screenNeedsRefresh = true;
-            }
+                ModelHandle_StartTimer();
         }
+        else if (ev_sw2 == SWITCH_EVT_LONG)
+        {
+            ui = UI_MENU;
+            goto_menu_top();
+            screenNeedsRefresh = true;
+            return;
+        }
+
+        /* ------------------------
+           SW3 (UP)
+           SHORT = Timer slot
+           LONG  = Semi-auto toggle
+           ------------------------ */
+        if (ev_sw3 == SWITCH_EVT_SHORT)
+        {
+            ModelHandle_StartTimer();
+        }
+        else if (ev_sw3 == SWITCH_EVT_LONG)
+        {
+            if (semiAutoActive)
+                ModelHandle_StopAllModesAndMotor();
+            else
+                ModelHandle_StartSemiAuto();
+        }
+
+        /* ------------------------
+           SW4 (DOWN)
+           SHORT = Start countdown
+           LONG  = Increase countdown
+           ------------------------ */
+        if (ev_sw4 == SWITCH_EVT_SHORT)
+        {
+            ModelHandle_StartCountdown(countdownDuration, 1);
+        }
+        else if (ev_sw4 == SWITCH_EVT_LONG)
+        {
+            edit_countdown_min++;
+            countdownDuration = edit_countdown_min * 60;
+            screenNeedsRefresh = true;
+        }
+
+        return;
+    }
+
+    /* ===========================================================
+       MENU MODE
+       =========================================================== */
+
+    /* SW1 BACK */
+    if (ev_sw1 == SWITCH_EVT_SHORT)
+    {
+        ui = UI_DASH;
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* SW2 SELECT */
+    if (ev_sw2 == SWITCH_EVT_SHORT)
+    {
+        menu_select();
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* ------------------------
+       SW3 = UP (and increment)
+       ------------------------ */
+    if (ev_sw3 == SWITCH_EVT_SHORT)
+    {
+        menu_idx--;
+        if (menu_idx < 0) menu_idx = MAIN_MENU_COUNT - 1;
+        screenNeedsRefresh = true;
+    }
+    else if (ev_sw3 == SWITCH_EVT_LONG)
+    {
+        switch (ui)
+        {
+            case UI_TIMER_EDIT_SLOT_ON_H:  if (edit_timer_on_h < 23) edit_timer_on_h++; break;
+            case UI_TIMER_EDIT_SLOT_ON_M:  if (edit_timer_on_m < 59) edit_timer_on_m++; break;
+            case UI_TIMER_EDIT_SLOT_OFF_H: if (edit_timer_off_h < 23) edit_timer_off_h++; break;
+            case UI_TIMER_EDIT_SLOT_OFF_M: if (edit_timer_off_m < 59) edit_timer_off_m++; break;
+
+            case UI_AUTO_EDIT_GAP:         edit_auto_gap_s++; break;
+            case UI_AUTO_EDIT_MAXRUN:      edit_auto_maxrun_min++; break;
+            case UI_AUTO_EDIT_RETRY:       edit_auto_retry++; break;
+
+            case UI_COUNTDOWN_EDIT_MIN:    edit_countdown_min++; break;
+
+            case UI_TWIST_EDIT_ON:         edit_twist_on_s++; break;
+            case UI_TWIST_EDIT_OFF:        edit_twist_off_s++; break;
+        }
+        screenNeedsRefresh = true;
+    }
+
+    /* ------------------------
+       SW4 = DOWN (and decrement)
+       ------------------------ */
+    if (ev_sw4 == SWITCH_EVT_SHORT)
+    {
+        menu_idx++;
+        if (menu_idx >= MAIN_MENU_COUNT) menu_idx = 0;
+        screenNeedsRefresh = true;
+    }
+    else if (ev_sw4 == SWITCH_EVT_LONG)
+    {
+        switch (ui)
+        {
+            case UI_TIMER_EDIT_SLOT_ON_H:  if (edit_timer_on_h > 0) edit_timer_on_h--; break;
+            case UI_TIMER_EDIT_SLOT_ON_M:  if (edit_timer_on_m > 0) edit_timer_on_m--; break;
+            case UI_TIMER_EDIT_SLOT_OFF_H: if (edit_timer_off_h > 0) edit_timer_off_h--; break;
+            case UI_TIMER_EDIT_SLOT_OFF_M: if (edit_timer_off_m > 0) edit_timer_off_m--; break;
+
+            case UI_AUTO_EDIT_GAP:         if (edit_auto_gap_s > 0) edit_auto_gap_s--; break;
+            case UI_AUTO_EDIT_MAXRUN:      if (edit_auto_maxrun_min > 1) edit_auto_maxrun_min--; break;
+            case UI_AUTO_EDIT_RETRY:       if (edit_auto_retry > 0) edit_auto_retry--; break;
+
+            case UI_COUNTDOWN_EDIT_MIN:    if (edit_countdown_min > 1) edit_countdown_min--; break;
+
+            case UI_TWIST_EDIT_ON:         if (edit_twist_on_s > 1) edit_twist_on_s--; break;
+            case UI_TWIST_EDIT_OFF:        if (edit_twist_off_s > 1) edit_twist_off_s--; break;
+        }
+        screenNeedsRefresh = true;
     }
 }
 
 /* ============================
    BUTTON HANDLER  (FIXED)
-   ============================ */void Screen_HandleButton(UiButton b)
+   ============================ */
+
+void Screen_HandleButton(UiButton b)
    {
        if (b == BTN_NONE) return;
        refreshInactivityTimer();
