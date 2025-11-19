@@ -57,6 +57,15 @@ static uint32_t auto_gap_ms = 10000;         // 10 sec default
 static uint32_t auto_next_retry_time = 0;
 static uint32_t auto_retry_counter = 0;
 static uint32_t auto_retry_limit = 0;        // 0 = infinite retries
+typedef struct {
+    uint16_t dryRunThreshold;
+    uint16_t overloadCurrent;
+    uint16_t underloadCurrent;
+    uint16_t overVoltage;
+    uint16_t underVoltage;
+} SafetySettings;
+
+extern SafetySettings safety;
 
 /* manual override (MOTOR_ON/MOTOR_OFF manual push) */
 volatile bool manualOverride = false;
@@ -114,6 +123,15 @@ static inline void motor_apply(bool on)
     }
 
     Safe_SendStatusPacket();
+}
+void Motor_ImmediateOff(void)
+{
+	motor_apply(false);
+}
+
+void Motor_ImmediateOn(void)
+{
+	motor_apply(true);
 }
 
 static inline void start_motor(void)

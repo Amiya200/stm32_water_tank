@@ -213,7 +213,7 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
                 ModelHandle_StartTimer();
                 break;
             case 4:   // Countdown Mode
-                ModelHandle_StartCountdown(st.countdownMin * 60, st.countdownRep);
+                ModelHandle_StartCountdown(st.countdownMin * 60);
                 break;
             case 5:   // Twist Mode
                 ModelHandle_StartTwist(st.twistOn, st.twistOff);
