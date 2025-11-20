@@ -113,11 +113,39 @@ void ModelHandle_SetMotor(bool on)
    ============================================================ */
 static inline bool isTankFull(void)
 {
-    int submerged = 0;
-    for (int i = 1; i <= 5; i++)
-        if (adcData.voltages[i] < 0.1f) submerged++;
+    static uint32_t stableStart = 0;
+    static bool lastState = false;
 
-    return (submerged >= 4);
+    /* --- CHECK ALL 5 LEVEL SENSORS (ADC1-ADC5) --- */
+    bool allZero = true;
+    for (int i = 1; i <= 5; i++)
+    {
+        if (adcData.voltages[i] > 0.10f)   // any sensor touched water
+        {
+            allZero = false;
+            break;
+        }
+    }
+
+    uint32_t now = HAL_GetTick();
+
+    if (allZero)
+    {
+        if (!lastState)
+        {
+            stableStart = now;    // start 1-second stability timer
+            lastState = true;
+        }
+
+        if (now - stableStart >= 1000)
+            return true;          // ★ Tank FULL confirmed
+    }
+    else
+    {
+        lastState = false;
+    }
+
+    return false;
 }
 
 /* ============================================================
@@ -262,65 +290,61 @@ void ModelHandle_SoftDryRunHandler(void)
             break;
     }
 }
-
 /* ============================================================
-   COUNTDOWN MODE
+   COUNTDOWN MODE  — FINAL SMOOTH VERSION
    ============================================================ */
 
-volatile uint32_t countdownDuration = 0;
-volatile bool countdownMode = false;
+volatile uint32_t countdownDuration = 0;   // remaining seconds (for LCD)
 
-static uint32_t cd_deadline_ms = 0;
-static uint32_t cd_run_seconds = 0;
+static uint32_t cd_deadline = 0;
 
+/* STOP Countdown */
 void ModelHandle_StopCountdown(void)
 {
     countdownActive = false;
-    countdownMode = false;
     countdownDuration = 0;
     stop_motor();
 }
 
+/* START Countdown */
 void ModelHandle_StartCountdown(uint32_t seconds)
 {
     clear_all_modes();
 
-    if (seconds == 0)
-    {
-        ModelHandle_StopCountdown();
+    if (seconds == 0) {
+        countdownActive = false;
+        countdownDuration = 0;
         return;
     }
 
-    cd_run_seconds = seconds;
     countdownActive = true;
-    countdownMode   = true;
-
-    cd_deadline_ms = now_ms() + (seconds * 1000UL);
     countdownDuration = seconds;
+    cd_deadline = now_ms() + seconds * 1000UL;
 
     start_motor();
 }
 
+/* TICK – MUST BE CALLED EVERY LOOP */
 static void countdown_tick(void)
 {
-    if (!countdownActive) return;
+    if (!countdownActive)
+        return;
 
     uint32_t now = now_ms();
 
-    if (isTankFull())
-    {
+    if (isTankFull()) {
         ModelHandle_StopCountdown();
         return;
     }
 
-    if (now < cd_deadline_ms)
-    {
-        countdownDuration = (cd_deadline_ms - now) / 1000UL;
-        return;
+    if (now < cd_deadline) {
+        countdownDuration = (cd_deadline - now) / 1000UL;
+    } else {
+        countdownDuration = 0;
+        // stays at 0 until user presses SW4 to stop
     }
-
-    ModelHandle_StopCountdown();
 }
+
 
 /* ============================================================
    TWIST MODE
@@ -392,6 +416,11 @@ static void twist_time_logic(void)
 static void twist_tick(void)
 {
     if (!twistActive) return;
+    if (isTankFull())
+    {
+        ModelHandle_StopTwist();
+        return;
+    }
 
     uint32_t now = now_ms();
 
@@ -479,6 +508,11 @@ void ModelHandle_StopTimer(void)
 static void timer_tick(void)
 {
     if (!timerActive) return;
+    if (isTankFull())
+    {
+        stop_motor();
+        return;
+    }
 
     if (timer_any_slot_should_run()) start_motor();
     else stop_motor();
@@ -501,88 +535,144 @@ void ModelHandle_StopSemiAuto(void)
     semiAutoActive = false;
     stop_motor();
 }
-
 /* ============================================================
-   ★★★★★ NEW CLEAN AUTO MODE (Option 1)
+   ★★★★★ NEW AUTO MODE WITH DELAYED DRY RUN LOGIC (Option B)
    ============================================================ */
 
-static uint16_t auto_gap_s        = 60;
-static uint16_t auto_maxrun_min   = 12;
-static uint16_t auto_retry_limit  = 5;
-static uint16_t auto_retry_count  = 0;
+/* USER SETTINGS (from UART/menu) */
+static uint16_t auto_gap_s        = 60;   // Gap wait seconds
+static uint16_t auto_maxrun_min   = 12;   // Max run minutes
+static uint16_t auto_retry_limit  = 5;    // User input
+static uint8_t  auto_retry_count  = 0;
 
-static uint32_t auto_start_tick   = 0;
-static uint32_t auto_next_retry   = 0;
+/* AUTO FSM */
+typedef enum {
+    AUTO_IDLE = 0,
+    AUTO_ON_WAIT,      // Motor ON → Wait gap
+    AUTO_DRY_CHECK,    // After ON wait, check dry-run
+    AUTO_OFF_WAIT      // Motor OFF → Wait gap → Retry
+} AutoState;
 
+static AutoState autoState = AUTO_IDLE;
+static uint32_t  autoDeadline = 0;
+static uint32_t  autoRunStart = 0;
+
+/* ========== START AUTO ========== */
 void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
 {
     clear_all_modes();
+    autoActive = true;
 
-    /* Load user configuration */
+    /* Load user parameters */
     auto_gap_s       = gap_s;
     auto_maxrun_min  = maxrun_min;
     auto_retry_limit = retry;
-
     auto_retry_count = 0;
-    auto_start_tick  = now_ms();
-    auto_next_retry  = 0;
 
-    autoActive = true;
+    /* Initialize FSM */
+    autoState = AUTO_ON_WAIT;
 
-    /* Start motor immediately */
     start_motor();
+    autoDeadline = now_ms() + (auto_gap_s * 1000UL);
+    autoRunStart = now_ms();
 }
 
-
+/* ========== STOP AUTO ========== */
 void ModelHandle_StopAuto(void)
 {
     autoActive = false;
+    autoState = AUTO_IDLE;
     stop_motor();
 }
 
+/* ========== AUTO TICK ========== */
 static void auto_tick(void)
 {
-    if (!autoActive) return;
+    if (!autoActive)
+        return;
 
     uint32_t now = now_ms();
 
-    /* stop if tank full or faults */
-    if (isTankFull() || senseOverLoad || senseOverUnderVolt || senseMaxRunReached)
+    /* ------------ PROTECTION CHECK ------------ */
+    if (isTankFull() ||
+        senseOverLoad ||
+        senseOverUnderVolt ||
+        senseMaxRunReached)
     {
         ModelHandle_StopAuto();
         return;
     }
 
-    /* max run */
-    uint32_t maxrun_ms = auto_maxrun_min * 60000UL;
-    if (now - auto_start_tick >= maxrun_ms)
+
+    /* ------------ MAX RUN PROTECTION ------------ */
+    if (now - autoRunStart >= (auto_maxrun_min * 60000UL))
     {
         ModelHandle_StopAuto();
         return;
     }
 
-    /* water present → keep running */
-    if (senseDryRun)
-        return;
-
-    /* dry → stop */
-    stop_motor();
-
-    /* wait for gap time */
-    if (now < auto_next_retry) return;
-
-    /* retry limit */
-    if (auto_retry_limit != 0 && auto_retry_count >= auto_retry_limit)
+    /* ------------ AUTO FSM ------------ */
+    switch (autoState)
     {
-        ModelHandle_StopAuto();
-        return;
-    }
+        /* ------------------------------
+           MOTOR ON → WAIT FOR GAP TIME
+           ------------------------------ */
+        case AUTO_ON_WAIT:
+            if (now >= autoDeadline)
+            {
+                autoState = AUTO_DRY_CHECK;
+            }
+            break;
 
-    /* retry */
-    auto_retry_count++;
-    auto_next_retry = now + auto_gap_s * 1000UL;
-    start_motor();
-    auto_start_tick = now;
+        /* ------------------------------
+           CHECK DRY AFTER ON WAIT
+           ------------------------------ */
+        case AUTO_DRY_CHECK:
+
+            ModelHandle_CheckDryRun();
+
+            if (senseDryRun)
+            {
+                /* WATER FOUND → Continue running normally */
+                autoState = AUTO_ON_WAIT;
+                autoDeadline = now + (auto_gap_s * 1000UL);
+            }
+            else
+            {
+                /* DRY FOUND → Stop motor → Go to off-wait */
+                stop_motor();
+                autoState = AUTO_OFF_WAIT;
+                autoDeadline = now + (auto_gap_s * 1000UL);
+            }
+            break;
+
+        /* ------------------------------
+           MOTOR OFF → WAIT GAP → RETRY
+           ------------------------------ */
+        case AUTO_OFF_WAIT:
+            if (now >= autoDeadline)
+            {
+                auto_retry_count++;
+
+                /* Retry limit exceeded */
+                if (auto_retry_limit != 0 &&
+                    auto_retry_count > auto_retry_limit)
+                {
+                    ModelHandle_StopAuto();
+                    return;
+                }
+
+                /* Do a retry */
+                start_motor();
+                autoRunStart = now;
+                autoState = AUTO_ON_WAIT;
+                autoDeadline = now + (auto_gap_s * 1000UL);
+            }
+            break;
+
+        default:
+            break;
+    }
 }
 
 /* ============================================================
@@ -627,36 +717,117 @@ static void leds_from_model(void)
 
     LED_ApplyIntents();
 }
+void ModelHandle_CountdownTick(void)
+{
+    countdown_tick();
+}
 
 /* ============================================================
    MAIN PROCESS LOOP
    ============================================================ */
 void ModelHandle_Process(void)
 {
-    /* Dry FSM */
-    ModelHandle_SoftDryRunHandler();
+    uint32_t now = HAL_GetTick();
+    extern void ModelHandle_CountdownTick(void);
+    ModelHandle_CountdownTick();
 
-    /* Twist */
-    twist_time_logic();
-    if (twistActive) twist_tick();
+    /* ============================================================
+       AUTO MODE — FIXED LOGIC
+       ============================================================ */
+    if (autoActive)
+    {
+        /* ---- AUTO ignores dry-run ---- */
+        senseDryRun = true;
 
-    /* Auto mode */
-    if (autoActive) auto_tick();
+        /* ---- AUTO turns ON motor immediately when tank NOT full ---- */
+        if (!isTankFull())
+        {
+            if (!Motor_GetStatus())
+            {
+                start_motor();      // turn ON motor immediately
+            }
+        }
+        else
+        {
+            /* ---- Tank full → motor OFF ---- */
+            if (Motor_GetStatus())
+            {
+                stop_motor();
+            }
+        }
 
-    /* Countdown */
-    if (countdownActive) countdown_tick();
+        /* No further processing is required */
+        return;
+    }
 
-    /* Timer */
-    if (timerActive) timer_tick();
+    /* ============================================================
+       SEMI-AUTO MODE
+       ============================================================ */
+    if (semiAutoActive)
+    {
+        /* Semi-auto also ignores dry-run */
+        senseDryRun = true;
 
-    /* Protections */
-    protections_tick();
+        if (!isTankFull())
+        {
+            if (!Motor_GetStatus())
+            {
+                start_motor();
+            }
+        }
+        else
+        {
+            stop_motor();
+            semiAutoActive = false;    // End semi-auto cycle after full tank
+        }
 
-    /* LEDs */
-    leds_from_model();
+        return;
+    }
 
-    /* Status → UART */
-    UART_SendStatusPacket();
+    /* ============================================================
+       TIMER MODE
+       ============================================================ */
+    if (timerActive)
+    {
+        if (isTankFull())
+        {
+            stop_motor();
+            return;
+        }
+
+    }
+
+    /* ============================================================
+       COUNTDOWN MODE
+       ============================================================ */
+    if (countdownActive)
+    {
+        countdown_tick();
+        return;
+    }
+
+    /* ============================================================
+       TWIST MODE
+       ============================================================ */
+    if (twistActive)
+    {
+        twist_tick();
+        return;
+    }
+
+    /* ============================================================
+       MANUAL MODE
+       ============================================================ */
+    if (manualActive)
+    {
+        /* Manual completely ignores tank full */
+        return;
+    }
+
+    /* ============================================================
+       IDLE — no active mode
+       ============================================================ */
+    stop_motor();
 }
 
 /* ============================================================
@@ -676,6 +847,27 @@ void ModelHandle_ResetAll(void)
 
     UART_SendStatusPacket();
 }
+
+/* ============================================================
+   AUTO SETTINGS INTERFACE FOR SCREEN.C (FINAL & CORRECT)
+   ============================================================ */
+
+void ModelHandle_SetAutoSettings(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry_count)
+{
+    /* These variables already exist in your file */
+    auto_gap_s       = gap_s;
+    auto_maxrun_min  = maxrun_min;
+    auto_retry_limit = retry_count;
+
+    /* Reset retry counter when new settings are applied */
+    auto_retry_count = 0;
+}
+
+bool ModelHandle_IsAutoActive(void)
+{
+    return autoActive;
+}
+
 
 /* ============================================================
    EEPROM SAVE
