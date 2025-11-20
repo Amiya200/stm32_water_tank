@@ -1053,9 +1053,9 @@ void Screen_HandleSwitches(void)
                ==================================================== */
             case BTN_RESET:
             {
-                ModelHandle_SetMotor(false);          // OFF immediately
+                ModelHandle_SetMotor(false);
                 restartingMotor = true;
-                restartDeadline = now + 3000;         // restart in 3 sec
+                restartDeadline = now + 3000;
                 return;
             }
 
@@ -1063,14 +1063,11 @@ void Screen_HandleSwitches(void)
             {
                 if (manualActive)
                 {
-                    // manual is ON → turn it OFF
                     manualActive = false;
                     ModelHandle_SetMotor(false);
-//                    ModelHandle_ClearManualOverride();
                 }
                 else
                 {
-                    // manual is OFF → turn it ON
                     ModelHandle_StopAllModesAndMotor();
                     ModelHandle_ToggleManual();
                 }
@@ -1080,18 +1077,26 @@ void Screen_HandleSwitches(void)
                 return;
             }
 
-
             /* ====================================================
                SW2 – YELLOW "P"
                SHORT → Toggle AUTO MODE ON/OFF
-               LONG → Open MAIN MENU
+               LONG  → Open MAIN MENU
                ==================================================== */
             case BTN_SELECT:
             {
-//                if (autoActive)
-//                    ModelHandle_StopAllModesAndMotor();
-//                else
-//                    ModelHandle_StartAutoMode();  // your auto handler
+                if (!autoActive)
+                {
+                    // Start Auto Mode using AUTO settings
+                    ModelHandle_StartAuto(
+                        edit_auto_gap_s,          // GAP seconds
+                        edit_auto_maxrun_min,     // MAX RUN minutes
+                        edit_auto_retry           // RETRY count
+                    );
+                }
+                else
+                {
+                    ModelHandle_StopAuto();
+                }
 
                 ui = UI_DASH;
                 screenNeedsRefresh = true;
@@ -1108,8 +1113,8 @@ void Screen_HandleSwitches(void)
 
             /* ====================================================
                SW3 – UP BUTTON
-               SHORT → Activate nearest Timer Slot
-               LONG → Toggle SEMI-AUTO
+               SHORT → Activate Timer
+               LONG  → Toggle Semi-Auto
                ==================================================== */
             case BTN_UP:
             {
@@ -1121,10 +1126,12 @@ void Screen_HandleSwitches(void)
             {
                 if (semiAutoActive)
                     ModelHandle_StopAllModesAndMotor();
-                else {
+                else
+                {
                     ModelHandle_StopAllModesAndMotor();
                     ModelHandle_StartSemiAuto();
                 }
+
                 ui = UI_DASH;
                 screenNeedsRefresh = true;
                 return;
@@ -1132,8 +1139,8 @@ void Screen_HandleSwitches(void)
 
             /* ====================================================
                SW4 – DOWN BUTTON
-               SHORT → Start Countdown (last-set value)
-               LONG → Increase countdown every 3 sec
+               SHORT → Start Countdown
+               LONG  → Increase countdown time every 3 sec
                ==================================================== */
             case BTN_DOWN:
             {
@@ -1159,7 +1166,7 @@ void Screen_HandleSwitches(void)
     }
 
     /* ============================================================
-       ======================= MENU MODE ============================
+       ======================= MENU MODE ==========================
        ============================================================ */
     switch (b)
     {
@@ -1182,18 +1189,23 @@ void Screen_HandleSwitches(void)
            SW3 – UP / INCREASE
            ======================================================== */
         case BTN_UP:
+        {
             if (ui == UI_MENU)
             {
                 if (menu_idx > 0)
                     menu_idx--;
             }
             else
+            {
                 increase_edit_value();
+            }
 
             screenNeedsRefresh = true;
             return;
+        }
 
         case BTN_UP_LONG:
+        {
             if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
             {
                 last_repeat_time = now;
@@ -1201,23 +1213,29 @@ void Screen_HandleSwitches(void)
                 screenNeedsRefresh = true;
             }
             return;
+        }
 
         /* ========================================================
            SW4 – DOWN / DECREASE
            ======================================================== */
         case BTN_DOWN:
+        {
             if (ui == UI_MENU)
             {
                 if (menu_idx < MAIN_MENU_COUNT - 1)
                     menu_idx++;
             }
             else
+            {
                 decrease_edit_value();
+            }
 
             screenNeedsRefresh = true;
             return;
+        }
 
         case BTN_DOWN_LONG:
+        {
             if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
             {
                 last_repeat_time = now;
@@ -1225,6 +1243,7 @@ void Screen_HandleSwitches(void)
                 screenNeedsRefresh = true;
             }
             return;
+        }
 
         default:
             return;

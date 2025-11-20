@@ -30,4 +30,4 @@
 ../Core/Src/screen.c:864:13:increase_edit_value	11
 ../Core/Src/screen.c:904:13:decrease_edit_value	15
 ../Core/Src/screen.c:944:17:decode_button_press	18
-../Core/Src/screen.c:1008:6:Screen_HandleSwitches	37
+../Core/Src/screen.c:1008:6:Screen_HandleSwitches	38
