@@ -1,7 +1,7 @@
 /***************************************************************
  *  HELONIX Water Pump Controller
- *  FINAL MODEL HANDLE (Option B - Fix Errors & Workflow Only)
- *  Cleaned AUTO flow, DRY RUN stability, TIMER/TWIST fixes
+ *  FINAL MODEL HANDLE — Updated for rtc_i2c v2.0
+ *  Fixes: time.minutes → time.min, twist/timer logic, warnings
  ***************************************************************/
 
 #include "model_handle.h"
@@ -26,7 +26,7 @@ extern ADC_Data adcData;
 extern RTC_Time_t time;
 
 /* ============================================================
-   GLOBAL FLAGS (UNCHANGED — do not rename)
+   GLOBAL FLAGS (UNCHANGED)
    ============================================================ */
 volatile bool manualActive    = false;
 volatile bool semiAutoActive  = false;
@@ -41,9 +41,9 @@ volatile bool autoActive      = false;
 volatile uint8_t motorStatus = 0;
 
 /* ============================================================
-   SAFETY FLAGS (Your design: TRUE = Water for dry-run)
+   SAFETY FLAGS
    ============================================================ */
-volatile bool senseDryRun         = false;    // TRUE = WATER
+volatile bool senseDryRun         = false;
 volatile bool senseOverLoad       = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
@@ -73,12 +73,12 @@ static inline void clear_all_modes(void)
 }
 
 /* ============================================================
-   MOTOR CONTROL — FIXED RELAY CHATTERING
+   MOTOR CONTROL — ANTI-CHATTER
    ============================================================ */
 static inline void motor_apply(bool on)
 {
     if (on == Motor_GetStatus())
-        return;  // Prevent unnecessary relay toggling
+        return;
 
     Relay_Set(1, on);
     motorStatus = on ? 1 : 0;
@@ -86,15 +86,8 @@ static inline void motor_apply(bool on)
     UART_SendStatusPacket();
 }
 
-static inline void start_motor(void)
-{
-    motor_apply(true);
-}
-
-static inline void stop_motor(void)
-{
-    motor_apply(false);
-}
+static inline void start_motor(void) { motor_apply(true); }
+static inline void stop_motor(void)  { motor_apply(false); }
 
 bool Motor_GetStatus(void)
 {
@@ -102,14 +95,12 @@ bool Motor_GetStatus(void)
 }
 
 /* ============================================================
-   MANUAL SET MOTOR
+   MANUAL CONTROL
    ============================================================ */
 void ModelHandle_SetMotor(bool on)
 {
     clear_all_modes();
     manualOverride = true;
-
-    /* Manual mode ignores dry-run → treat as WATER true */
     senseDryRun = true;
 
     if (on) start_motor();
@@ -117,7 +108,7 @@ void ModelHandle_SetMotor(bool on)
 }
 
 /* ============================================================
-   TANK FULL DETECTION (Stabilized)
+   TANK FULL DETECTION
    ============================================================ */
 static inline bool isTankFull(void)
 {
@@ -127,7 +118,7 @@ static inline bool isTankFull(void)
     bool allZero = true;
     for (int i = 1; i <= 5; i++)
     {
-        if (adcData.voltages[i] > 0.10f)  // Water present
+        if (adcData.voltages[i] > 0.10f)
         {
             allZero = false;
             break;
@@ -145,39 +136,33 @@ static inline bool isTankFull(void)
         }
 
         if (now - stableStart >= 1000)
-            return true;   // tank full stable
+            return true;
     }
     else
+    {
         lastState = false;
+    }
 
     return false;
 }
 
 /* ============================================================
-   DRY RUN CHECK (Your convention: TRUE = WATER)
+   DRY RUN CHECK
    ============================================================ */
 void ModelHandle_CheckDryRun(void)
 {
-    /* Manual, Semi-Auto, Countdown ignore dry */
     if (manualActive || semiAutoActive || countdownActive)
     {
-        senseDryRun = true;       // treat as WATER
+        senseDryRun = true;
         return;
     }
 
-    /* Actual dry-run sensor */
     float v = adcData.voltages[0];
-
-    /* You defined:
-        <= 0.01V = WATER present
-        > 0.01V  = DRY
-    */
-
-    senseDryRun = (v <= 0.01f);   // TRUE = WATER
+    senseDryRun = (v <= 0.01f);
 }
 
 /* ============================================================
-   MANUAL TOGGLE (fixed: was leaving motor on)
+   MANUAL MODE TOGGLE
    ============================================================ */
 void ModelHandle_ToggleManual(void)
 {
@@ -191,31 +176,26 @@ void ModelHandle_ToggleManual(void)
         clear_all_modes();
         manualActive = true;
         manualOverride = true;
-
         start_motor();
     }
 }
 
 /* ============================================================
-   STOP ALL MODES + MOTOR
+   STOP EVERYTHING
    ============================================================ */
 void ModelHandle_StopAllModesAndMotor(void)
 {
     clear_all_modes();
     stop_motor();
 }
+/***************************************************************
+ *  MODEL_HANDLE.C — PART 2 OF 4
+ *  Countdown + Twist (time & duration) + Timer Mode
+ ***************************************************************/
 
 /* ============================================================
-   DRY RUN FSM (YOU PICKED SOFT-DRY-RUN → KEEP, FIXED)
+   DRY RUN SOFT PROBE HANDLER
    ============================================================ */
-
-/*
-   FIXES:
-   ❌ You forced senseDryRun=true in auto → broke FSM
-   ❌ FSM broke because MODE ACTIVE check was wrong
-   ❌ DRY_PROBE never retried properly
-   ✔ This version keeps your design but repairs logic
-*/
 
 typedef enum {
     DRY_IDLE = 0,
@@ -246,10 +226,9 @@ static inline bool isAnyModeActive(void)
 void ModelHandle_SoftDryRunHandler(void)
 {
     uint32_t now = now_ms();
-
-    /* First: detect dry-run state correctly */
     ModelHandle_CheckDryRun();
 
+    /* No modes active → ignore */
     if (!isAnyModeActive())
     {
         stop_motor();
@@ -261,12 +240,12 @@ void ModelHandle_SoftDryRunHandler(void)
     switch (dryState)
     {
         case DRY_IDLE:
-            if (senseDryRun)   // WATER detected
+            if (senseDryRun)   // Water
             {
                 start_motor();
                 dryState = DRY_NORMAL;
             }
-            else  // DRY
+            else               // Dry
             {
                 if (now >= dryDeadline)
                 {
@@ -278,7 +257,7 @@ void ModelHandle_SoftDryRunHandler(void)
             break;
 
         case DRY_PROBE:
-            if (senseDryRun)   // WATER
+            if (senseDryRun)
             {
                 dryState = DRY_NORMAL;
                 break;
@@ -293,7 +272,7 @@ void ModelHandle_SoftDryRunHandler(void)
             break;
 
         case DRY_NORMAL:
-            if (!senseDryRun)  // DRY detected
+            if (!senseDryRun) // dry detected
             {
                 if (!dryConfirming)
                 {
@@ -304,8 +283,8 @@ void ModelHandle_SoftDryRunHandler(void)
                 {
                     stop_motor();
                     dryState = DRY_IDLE;
-                    dryDeadline = now + DRY_PROBE_OFF_MS;
                     dryConfirming = false;
+                    dryDeadline = now + DRY_PROBE_OFF_MS;
                 }
             }
             else
@@ -313,22 +292,17 @@ void ModelHandle_SoftDryRunHandler(void)
             break;
     }
 }
+
 void ModelHandle_ProcessDryRun(void)
 {
     ModelHandle_SoftDryRunHandler();
 }
 
 /***************************************************************
- *  MODEL_HANDLE.C — PART 2 OF 3
- *  Countdown + Twist + Timer + Semi-Auto + Auto FSM FIXED
+ *  ==================== COUNTDOWN MODE =======================
  ***************************************************************/
 
-/* ============================================================
-   COUNTDOWN MODE (fixed stability, tank stop, 0-lock)
-   ============================================================ */
-
-volatile uint32_t countdownDuration = 0;  // remaining seconds
-
+volatile uint32_t countdownDuration = 0;
 static uint32_t cd_deadline = 0;
 
 void ModelHandle_StopCountdown(void)
@@ -376,13 +350,13 @@ static void countdown_tick(void)
     else
     {
         countdownDuration = 0;
-        // motor continues unless user stops manually
+        /* motor stays on unless manually stopped */
     }
 }
 
-/* ============================================================
-   TWIST MODE — FIXED (duration-phase only)
-   ============================================================ */
+/***************************************************************
+ *  ======================== TWIST MODE ========================
+ ***************************************************************/
 
 TwistSettings twistSettings;
 
@@ -422,15 +396,16 @@ void ModelHandle_StopTwist(void)
     stop_motor();
 }
 
-/* Time-bound ON/OFF trigger (HH:MM) */
+/* TIME-BASED ON/OFF START/STOP */
 static void twist_time_logic(void)
 {
-    if (!twistSettings.twistArmed) return;
+    if (!twistSettings.twistArmed)
+        return;
 
-    /* Start twist at on-time */
+    /* Start twist */
     if (!twistActive &&
-        time.hour   == twistSettings.onHour &&
-        time.minutes== twistSettings.onMinute)
+        time.hour == twistSettings.onHour &&
+        time.min  == twistSettings.onMinute)
     {
         twistActive = true;
         twistSettings.twistActive = true;
@@ -441,19 +416,21 @@ static void twist_time_logic(void)
         start_motor();
     }
 
-    /* Stop twist at off-time */
+    /* Stop twist */
     if (twistActive &&
-        time.hour   == twistSettings.offHour &&
-        time.minutes== twistSettings.offMinute)
+        time.hour == twistSettings.offHour &&
+        time.min  == twistSettings.offMinute)
     {
         ModelHandle_StopTwist();
     }
 }
 
-/* Duration cycle handling */
+/* PHASE-BASED DURATION HANDLER */
 static void twist_tick(void)
 {
     if (!twistActive) return;
+
+    uint32_t now = now_ms();
 
     if (isTankFull())
     {
@@ -461,67 +438,63 @@ static void twist_tick(void)
         return;
     }
 
-    uint32_t now = now_ms();
-
     if (now >= twist_deadline)
     {
         if (twist_on_phase)
         {
-            /* switch to OFF phase */
             twist_on_phase = false;
             stop_motor();
             twist_deadline = now + twistSettings.offDurationSeconds * 1000UL;
         }
         else
         {
-            /* switch to ON phase */
             twist_on_phase = true;
             start_motor();
             twist_deadline = now + twistSettings.onDurationSeconds * 1000UL;
         }
     }
 
-    /* safety: ensure motor follows phase */
+    /* safety: enforce relay state */
     if (twist_on_phase) start_motor();
     else                stop_motor();
 }
 
-/* ============================================================
-   TIMER MODE — FIXED tick
-   ============================================================ */
+/***************************************************************
+ *  ========================= TIMER MODE ========================
+ ***************************************************************/
 
 TimerSlot timerSlots[5];
 
 static bool timer_any_slot_should_run(void)
 {
     RTC_GetTimeDate();
-    uint32_t nowS = time.hour * 3600UL + time.minutes * 60UL;
+
+    uint32_t nowS = time.hour * 3600UL + time.min * 60UL;
 
     for (int i = 0; i < 5; i++)
     {
         if (!timerSlots[i].enabled) continue;
 
-        uint32_t onS =
-            timerSlots[i].onHour * 3600UL +
-            timerSlots[i].onMinute * 60UL;
+        uint32_t onS  = timerSlots[i].onHour  * 3600UL +
+                        timerSlots[i].onMinute * 60UL;
 
-        uint32_t offS =
-            timerSlots[i].offHour * 3600UL +
-            timerSlots[i].offMinute * 60UL;
+        uint32_t offS = timerSlots[i].offHour * 3600UL +
+                        timerSlots[i].offMinute * 60UL;
 
-        /* Normal slot */
+        /* Normal window */
         if (onS < offS)
         {
             if (nowS >= onS && nowS < offS)
                 return true;
         }
-        /* Overnight slot */
+        /* Overnight window */
         else
         {
             if (nowS >= onS || nowS < offS)
                 return true;
         }
     }
+
     return false;
 }
 
@@ -558,14 +531,16 @@ static void timer_tick(void)
         return;
     }
 
-    if (timer_any_slot_should_run())
-        start_motor();
-    else
-        stop_motor();
+    if (timer_any_slot_should_run()) start_motor();
+    else                              stop_motor();
 }
+/***************************************************************
+ *  MODEL_HANDLE.C — PART 3 OF 4
+ *  Semi-Auto + Auto mode + Protections + LED System
+ ***************************************************************/
 
 /* ============================================================
-   SEMI-AUTO MODE — FIXED
+   SEMI-AUTO MODE
    ============================================================ */
 void ModelHandle_StartSemiAuto(void)
 {
@@ -582,18 +557,9 @@ void ModelHandle_StopSemiAuto(void)
     stop_motor();
 }
 
-/* ============================================================
-   AUTO MODE — FIXED TRUE WORKFLOW
-   ============================================================ */
-
-/*
-   FIXES:
-   ✔ Removed broken duplicated AUTO block at bottom of your file
-   ✔ Restored your original AUTO FSM
-   ✔ Corrected dry-run logic
-   ✔ Correct gap-wait retry logic
-   ✔ Correct retry limit handling
-*/
+/***************************************************************
+ *  ======================== AUTO MODE =========================
+ ***************************************************************/
 
 static uint16_t auto_gap_s       = 60;
 static uint16_t auto_maxrun_min  = 12;
@@ -643,7 +609,7 @@ static void auto_tick(void)
 
     uint32_t now = now_ms();
 
-    /* Protection exits */
+    /* Global protections */
     if (isTankFull() ||
         senseOverLoad ||
         senseOverUnderVolt ||
@@ -653,7 +619,7 @@ static void auto_tick(void)
         return;
     }
 
-    /* Max-run protection */
+    /* Maximum runtime protection */
     if (now - autoRunStart >= (auto_maxrun_min * 60000UL))
     {
         senseMaxRunReached = true;
@@ -661,7 +627,6 @@ static void auto_tick(void)
         return;
     }
 
-    /* CONTROL FSM */
     switch (autoState)
     {
         case AUTO_ON_WAIT:
@@ -672,12 +637,12 @@ static void auto_tick(void)
         case AUTO_DRY_CHECK:
             ModelHandle_CheckDryRun();
 
-            if (senseDryRun)   // water present
+            if (senseDryRun)   // Water present
             {
                 autoState = AUTO_ON_WAIT;
                 autoDeadline = now + (auto_gap_s * 1000UL);
             }
-            else
+            else               // Dry detected
             {
                 stop_motor();
                 autoState = AUTO_OFF_WAIT;
@@ -709,18 +674,13 @@ static void auto_tick(void)
             break;
     }
 }
-/***************************************************************
- *  MODEL_HANDLE.C — PART 3 OF 3
- *  Protections + LED System + Final Process Loop + EEPROM Save
- ***************************************************************/
 
-/* ============================================================
-   PROTECTIONS — FIXED
-   ============================================================ */
+/***************************************************************
+ *  ======================== PROTECTIONS ========================
+ ***************************************************************/
 
 static void protections_tick(void)
 {
-    /* Overload or voltage fault must stop ALL modes */
     if (senseOverLoad || senseOverUnderVolt)
     {
         ModelHandle_StopAllModesAndMotor();
@@ -728,36 +688,19 @@ static void protections_tick(void)
     }
 }
 
-/* ============================================================
-   LED SYSTEM — Corrected to match your document
-   ============================================================ */
-/*
-    Your LED meanings (document):
-
-    GREEN:
-        solid   → motor ON
-        blink   → dry-run active retry
-
-    RED:
-        solid   → motor OFF due to dry-run
-        blink   → max-run error
-
-    BLUE:
-        blink   → overload / underload
-
-    PURPLE:
-        blink   → over-voltage / under-voltage
-*/
+/***************************************************************
+ *  ======================== LED SYSTEM =========================
+ ***************************************************************/
 
 static void leds_from_model(void)
 {
     LED_ClearAllIntents();
 
-    /* MOTOR ON → GREEN Solid */
+    /* MOTOR ON → GREEN solid */
     if (Motor_GetStatus())
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 0);
 
-    /* DRY-RUN retry → GREEN blinking */
+    /* DRY-RUN retry → GREEN blink */
     if (!senseDryRun && autoActive)
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 350);
 
@@ -769,7 +712,7 @@ static void leds_from_model(void)
     if (senseMaxRunReached)
         LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 300);
 
-    /* Overload / Underload → BLUE blink */
+    /* Overload → BLUE blink */
     if (senseOverLoad)
         LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 350);
 
@@ -779,37 +722,39 @@ static void leds_from_model(void)
 
     LED_ApplyIntents();
 }
+/***************************************************************
+ *  MODEL_HANDLE.C — PART 4 OF 4
+ *  Main Process Loop + Reset + EEPROM Save
+ ***************************************************************/
 
 /* ============================================================
-   MAIN PROCESS LOOP — FIXED COMPLETELY
+   MAIN PROCESS LOOP — MASTER FSM
    ============================================================ */
-
 void ModelHandle_Process(void)
 {
     uint32_t now = now_ms();
 
-    /* Shared safety check */
+    /* First, always evaluate protections */
     protections_tick();
 
-    /* Twist time-bound start/stop */
+    /* Twist schedule (HH:MM) */
     twist_time_logic();
 
-    /* ============================================================
-       AUTO MODE
-       ============================================================ */
+    /***********************************************************
+     * AUTO MODE
+     ***********************************************************/
     if (autoActive)
     {
         auto_tick();
         leds_from_model();
-        return;     // ← VERY IMPORTANT: avoid double-processing
+        return; // IMPORTANT: prevent double processing
     }
 
-    /* ============================================================
-       SEMI-AUTO MODE
-       ============================================================ */
+    /***********************************************************
+     * SEMI-AUTO MODE
+     ***********************************************************/
     if (semiAutoActive)
     {
-        /* semi-auto ignores dry-run */
         senseDryRun = true;
 
         if (!isTankFull())
@@ -820,16 +765,16 @@ void ModelHandle_Process(void)
         else
         {
             stop_motor();
-            semiAutoActive = false; // auto-terminate as per spec
+            semiAutoActive = false; // auto-terminate once tank full
         }
 
         leds_from_model();
         return;
     }
 
-    /* ============================================================
-       TIMER MODE
-       ============================================================ */
+    /***********************************************************
+     * TIMER MODE
+     ***********************************************************/
     if (timerActive)
     {
         timer_tick();
@@ -837,9 +782,9 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /* ============================================================
-       COUNTDOWN MODE
-       ============================================================ */
+    /***********************************************************
+     * COUNTDOWN MODE
+     ***********************************************************/
     if (countdownActive)
     {
         countdown_tick();
@@ -847,9 +792,9 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /* ============================================================
-       TWIST MODE (duration based)
-       ============================================================ */
+    /***********************************************************
+     * TWIST MODE (duration-phase)
+     ***********************************************************/
     if (twistActive)
     {
         twist_tick();
@@ -857,19 +802,18 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /* ============================================================
-       MANUAL MODE
-       ============================================================ */
+    /***********************************************************
+     * MANUAL MODE
+     ***********************************************************/
     if (manualActive)
     {
-        /* manual ignores sensors */
         leds_from_model();
         return;
     }
 
-    /* ============================================================
-       NO MODE ACTIVE → MOTOR OFF
-       ============================================================ */
+    /***********************************************************
+     * NO ACTIVE MODE
+     ***********************************************************/
     stop_motor();
     leds_from_model();
 }
@@ -893,9 +837,11 @@ void ModelHandle_ResetAll(void)
 }
 
 /* ============================================================
-   AUTO SETTINGS — kept as original
+   AUTO SETTINGS UPDATE
    ============================================================ */
-void ModelHandle_SetAutoSettings(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry_count)
+void ModelHandle_SetAutoSettings(uint16_t gap_s,
+                                 uint16_t maxrun_min,
+                                 uint8_t retry_count)
 {
     auto_gap_s       = gap_s;
     auto_maxrun_min  = maxrun_min;
@@ -909,14 +855,14 @@ bool ModelHandle_IsAutoActive(void)
 }
 
 /* ============================================================
-   EEPROM SAVE — unchanged
+   SAVE STATE TO EEPROM
    ============================================================ */
-
 void ModelHandle_SaveCurrentStateToEEPROM(void)
 {
     RTC_PersistState s;
     memset(&s, 0, sizeof(s));
 
+    /* Encode current mode */
     if      (manualActive)    s.mode = 1;
     else if (semiAutoActive)  s.mode = 2;
     else if (timerActive)     s.mode = 3;
@@ -925,7 +871,10 @@ void ModelHandle_SaveCurrentStateToEEPROM(void)
     else if (autoActive)      s.mode = 6;
     else                      s.mode = 0;
 
+    /* Additional fields (expandable) */
+    // s.countdownMin  = countdownDuration / 60;
+    // s.twistOn       = twistSettings.onDurationSeconds;
+    // s.twistOff      = twistSettings.offDurationSeconds;
+
     RTC_SavePersistentState(&s);
 }
-
-
