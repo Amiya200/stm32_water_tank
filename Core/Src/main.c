@@ -174,15 +174,12 @@ int main(void)
     HAL_Delay(20);
 
     /* Set time ONLY ONCE — comment this line after first flash */
-    RTC_SetTimeDate(0, 53, 12, 1, 24, 11, 2025);
+//    RTC_SetTimeDate(0, 17, 15, 2, 25, 11, 2025);
     HAL_Delay(20);
 
     RTC_GetTimeDate();
 
     /* Debug confirmation */
-    sprintf(dbg, "RTC INIT: %02u/%02u/%04u  %02u:%02u:%02u\r\n",
-            time.dom, time.month, time.year, time.hour, time.min, time.sec);
-    Debug_Print(dbg);
 
     /* ========== SECOND: INIT LCD AFTER RTC ========== */
     lcd_init();

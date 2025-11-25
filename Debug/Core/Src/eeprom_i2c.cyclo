@@ -1,0 +1,4 @@
+../Core/Src/eeprom_i2c.c:8:19:EEPROM_WriteByte	1
+../Core/Src/eeprom_i2c.c:15:19:EEPROM_ReadByte	1
+../Core/Src/eeprom_i2c.c:22:19:EEPROM_WriteBuffer	1
+../Core/Src/eeprom_i2c.c:29:19:EEPROM_ReadBuffer	1
