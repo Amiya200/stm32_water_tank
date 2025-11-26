@@ -223,14 +223,17 @@ void LoRa_Task(void)
 
             Debug_Print(msg);
 
-            LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_STEADY, 0);
+            /* ==== BLUE BLINK ON RECEIVED PACKET ==== */
+            LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 120);
         }
         else
         {
-            LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_OFF, 0);
+            /* No packet → LED OFF */
+            LED_SetIntent(LED_COLOR_BLUE, LED_MODE_OFF, 0);
         }
         return;
     }
+
 
     /* ---------------------- TRANSMITTER MODE ---------------------- */
     if (loraMode == LORA_MODE_TRANSMITTER)

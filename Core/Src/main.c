@@ -197,8 +197,8 @@ int main(void)
     Relay_Init();
     LED_Init();
     ACS712_Init(&hadc1);
-//    loraMode = LORA_MODE_RECEIVER; // <<< change per device
-    loraMode = LORA_MODE_TRANSMITTER;
+    loraMode = LORA_MODE_RECEIVER; // <<< change per device
+//    loraMode = LORA_MODE_TRANSMITTER;
     /* ========== Continue with remaining logic... ========== */
 
 
