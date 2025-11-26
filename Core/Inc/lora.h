@@ -4,7 +4,14 @@
 #include "stm32f1xx_hal.h"
 #include <stdint.h>
 
-/* Pin mapping (keep consistent with your main.h wiring) */
+/* ==== LoRa Modes ==== */
+#define LORA_MODE_TRANSMITTER   1
+#define LORA_MODE_RECEIVER      2
+#define LORA_MODE_TRANSCEIVER   3
+
+extern uint8_t loraMode;
+
+/* ==== Pin mapping ==== */
 #define LORA_NSS_PORT    GPIOA
 #define LORA_NSS_PIN     GPIO_PIN_15
 
@@ -17,7 +24,7 @@
 /* External SPI handle */
 extern SPI_HandleTypeDef hspi1;
 
-/* API */
+/* ==== API ==== */
 void LoRa_Reset(void);
 void LoRa_Init(void);
 void LoRa_SetFrequency(uint32_t freqHz);
@@ -29,11 +36,10 @@ void LoRa_WriteBuffer(uint8_t addr, const uint8_t *buffer, uint8_t size);
 void LoRa_ReadBuffer(uint8_t addr, uint8_t *buffer, uint8_t size);
 
 void LoRa_SendPacket(const uint8_t *buffer, uint8_t size);
-uint8_t LoRa_ReceivePacket(uint8_t *buffer);
 
+/* IMPORTANT — UPDATED SIGNATURE */
+uint8_t LoRa_ReceivePacket(uint8_t *buffer, int16_t *rssi);
 
-void LoRa_Init(void);
 void LoRa_Task(void);
-
 
 #endif /* __LORA_H__ */

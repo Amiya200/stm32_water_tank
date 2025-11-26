@@ -75,6 +75,8 @@ UART_HandleTypeDef huart1;
 ADC_Data adcData;
 char receivedUartPacket[UART_RX_BUFFER_SIZE];
 int ak =0;
+extern uint8_t loraMode;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -195,7 +197,8 @@ int main(void)
     Relay_Init();
     LED_Init();
     ACS712_Init(&hadc1);
-
+//    loraMode = LORA_MODE_RECEIVER; // <<< change per device
+    loraMode = LORA_MODE_TRANSMITTER;
     /* ========== Continue with remaining logic... ========== */
 
 
@@ -230,6 +233,9 @@ int main(void)
         ModelHandle_ProcessDryRun();
 
         /* == LED Blink == */
+        /* == LoRa Communication == */
+        LoRa_Task();
+
         LED_Task();
 
         HAL_Delay(10);  // ~50Hz loop
