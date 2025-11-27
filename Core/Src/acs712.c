@@ -1,123 +1,135 @@
 #include "acs712.h"
 #include "math.h"
 
-/* -----------------------------
- * Global Variables (for display / debug)
- * ----------------------------- */
-float g_currentA = 0.0f;   // Latest current in Amps
-float g_voltageV = 0.0f;   // Latest voltage in Volts
+float g_currentA = 0.0f;
+float g_voltageV = 0.0f;
 
-/* -----------------------------
- * Private Variables
- * ----------------------------- */
 static ADC_HandleTypeDef *hAdc;
-static float zeroOffset = 0.0f;     // learned midpoint (V)
-static float lastCurrent = 0.0f;
-static float lastVoltage = 0.0f;
 
-/* ---------------------------------------------------------------
- * Helper: read average ADC voltage for a given channel
- * --------------------------------------------------------------- */
-static float ReadAverageVoltage(uint32_t channel, uint8_t samples)
+/* Offsets and filters */
+static float acs_zero_offset = 0.0f;
+static float zmpt_offset = 1.65f;      // midpoint reference
+static float last_voltage = 0.0f;
+static float last_current = 0.0f;
+
+/* ----------------------------------------------------------
+   GENERIC ADC READER
+----------------------------------------------------------- */
+static float adc_read(uint32_t channel)
 {
-    ADC_ChannelConfTypeDef sConfig = {0};
-    sConfig.Channel = channel;
-    sConfig.Rank = ADC_REGULAR_RANK_1;
-    sConfig.SamplingTime = ADC_SAMPLETIME_41CYCLES_5;
-    HAL_ADC_ConfigChannel(hAdc, &sConfig);
+    ADC_ChannelConfTypeDef cfg = {0};
+    cfg.Channel = channel;
+    cfg.Rank = ADC_REGULAR_RANK_1;
+    cfg.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
 
-    uint32_t sum = 0;
-    for (uint8_t i = 0; i < samples; i++) {
-        HAL_ADC_Start(hAdc);
-        HAL_ADC_PollForConversion(hAdc, HAL_MAX_DELAY);
-        sum += HAL_ADC_GetValue(hAdc);
-        HAL_ADC_Stop(hAdc);
-    }
+    HAL_ADC_ConfigChannel(hAdc, &cfg);
+    HAL_ADC_Start(hAdc);
+    HAL_ADC_PollForConversion(hAdc, HAL_MAX_DELAY);
 
-    float avg = (float)sum / samples;
-    return (avg * ACS712_VREF_ADC) / ACS712_ADC_RESOLUTION;  // in Volts
+    uint16_t raw = HAL_ADC_GetValue(hAdc);
+
+    HAL_ADC_Stop(hAdc);
+
+    return (raw * ADC_VREF) / ADC_RES;
 }
 
-/* ---------------------------------------------------------------
- * Init + zero-offset calibration
- * --------------------------------------------------------------- */
+/* ----------------------------------------------------------
+   VOLTAGE SENSOR OFFSET CALIBRATION (ZMPT101B)
+----------------------------------------------------------- */
+static void zmpt_calibrate_offset(void)
+{
+    float sum = 0;
+    for (int i = 0; i < ZMPT_OFFSET_SAMPLES; i++)
+        sum += adc_read(ZMPT_ADC_CHANNEL);
+
+    zmpt_offset = sum / ZMPT_OFFSET_SAMPLES;
+}
+
+/* ----------------------------------------------------------
+   CURRENT SENSOR OFFSET CALIBRATION (ACS712)
+----------------------------------------------------------- */
+static void acs_calibrate_offset(void)
+{
+    float sum = 0;
+    for (int i = 0; i < ACS712_ZERO_SAMPLES; i++)
+        sum += adc_read(ACS712_ADC_CHANNEL);
+
+    acs_zero_offset = sum / ACS712_ZERO_SAMPLES;
+}
+
+/* ----------------------------------------------------------
+   INITIALIZE BOTH SENSORS
+----------------------------------------------------------- */
 void ACS712_Init(ADC_HandleTypeDef *hadc)
 {
     hAdc = hadc;
-    HAL_Delay(500);   // let voltage settle (~0.5 s)
-    ACS712_CalibrateZero();
+
+    HAL_Delay(300);
+
+    zmpt_calibrate_offset();
+    acs_calibrate_offset();
 }
 
-/* ---------------------------------------------------------------
- * Calibrate sensor at 0 A (no load)
- * --------------------------------------------------------------- */
-void ACS712_CalibrateZero(void)
+/* ----------------------------------------------------------
+   TRUE RMS VOLTAGE READING (ZMPT101B)
+----------------------------------------------------------- */
+float ZMPT_ReadVoltageRMS(void)
 {
-    const uint16_t samples = 500;
-    float sum = 0;
-    for (uint16_t i = 0; i < samples; i++) {
-        sum += ReadAverageVoltage(ACS712_ADC_CHANNEL, 1);
+    float sum_sq = 0.0f;
+    float sum_dc = 0.0f;
+
+    for (int i = 0; i < ZMPT_RMS_SAMPLES; i++)
+    {
+        float v = adc_read(ZMPT_ADC_CHANNEL);
+        sum_dc += v;
+
+        float ac = v - zmpt_offset;    // remove DC level
+        sum_sq += ac * ac;
     }
-    zeroOffset = sum / samples;   // midpoint voltage (≈ 2.5 V typical)
+
+    /* Slow tracking of offset */
+    float new_offset = sum_dc / ZMPT_RMS_SAMPLES;
+    zmpt_offset = (zmpt_offset * 0.90f) + (new_offset * 0.10f);
+
+    /* RMS */
+    float adc_rms = sqrtf(sum_sq / ZMPT_RMS_SAMPLES);
+
+    /* Convert to real AC voltage */
+    float Vrms = adc_rms * ZMPT_CALIBRATION;
+
+    /* Low-pass filter for stable reading */
+    last_voltage =
+        last_voltage * (1.0f - ZMPT_FILTER_ALPHA) +
+        (Vrms * ZMPT_FILTER_ALPHA);
+
+    g_voltageV = last_voltage;
+    return g_voltageV;
 }
 
-/* ---------------------------------------------------------------
- * Read current in Amperes (smoothed)
- * --------------------------------------------------------------- */
-//float ACS712_ReadCurrent(void)
-//{
-//    float v_meas = ReadAverageVoltage(ACS712_ADC_CHANNEL, ACS712_NUM_SAMPLES);
-//    float dv = v_meas - zeroOffset;
-//
-//    // remove divider effect, then convert to Amps
-//    float current = (dv / VOLT_DIVIDER_RATIO) / ACS712_SENSITIVITY_RAW;
-//
-//    if (fabsf(current) < ACS712_NOISE_DEADZONE)
-//        current = 0.0f;
-//
-//    lastCurrent = (1.0f - ACS712_FILTER_ALPHA) * lastCurrent + ACS712_FILTER_ALPHA * current;
-//    g_currentA = lastCurrent;
-//    return lastCurrent;
-//}
-
+/* ----------------------------------------------------------
+   CURRENT READING (ACS712)
+----------------------------------------------------------- */
 float ACS712_ReadCurrent(void)
 {
-    float voltage = ReadAverageVoltage(ACS712_ADC_CHANNEL, ACS712_NUM_SAMPLES);
-    float current = (voltage - zeroOffset) / ACS712_SENSITIVITY_RAW;
+    float v = adc_read(ACS712_ADC_CHANNEL);
 
-    // Dead-zone filter
-    if (fabsf(current) < ACS712_NOISE_DEADZONE)
-        current = 0.0f;
+    float diff = v - acs_zero_offset;
 
-    // Low-pass filter
-    lastCurrent = (1.0f - ACS712_FILTER_ALPHA) * lastCurrent +
-                  ACS712_FILTER_ALPHA * current;
+    float amp = diff / ACS712_SENS_30A;
 
-    g_currentA = lastCurrent;    // ✅ store globally for external access
-    return lastCurrent;
+    last_current =
+        last_current * (1.0f - ACS712_FILTER_ALPHA) +
+        (amp * ACS712_FILTER_ALPHA);
+
+    g_currentA = last_current;
+    return g_currentA;
 }
 
-/* ---------------------------------------------------------------
- * Read input voltage (from divider) in Volts
- * --------------------------------------------------------------- */
-float Voltage_ReadInput(void)
-{
-    float vAdc = ReadAverageVoltage(VOLTAGE_ADC_CHANNEL, 5);   // read scaled ADC voltage
-    float vInput = vAdc / VOLT_DIVIDER_RATIO;                  // undo divider (R2/(R1+R2))
-
-    // Optional low-pass filter for stability
-    lastVoltage = (1.0f - ACS712_FILTER_ALPHA) * lastVoltage +
-                  ACS712_FILTER_ALPHA * vInput;
-
-    g_voltageV = lastVoltage;
-    return lastVoltage;
-}
-
-/* ---------------------------------------------------------------
- * Combined update (for periodic tasks)
- * --------------------------------------------------------------- */
+/* ----------------------------------------------------------
+   UPDATE BOTH SENSORS (CALL IN MAIN LOOP)
+----------------------------------------------------------- */
 void ACS712_Update(void)
 {
-    g_currentA = ACS712_ReadCurrent();
-    g_voltageV = Voltage_ReadInput();
+    ACS712_ReadCurrent();
+    ZMPT_ReadVoltageRMS();
 }

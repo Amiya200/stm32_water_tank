@@ -103,20 +103,20 @@ bool g_screenUpdatePending = false;
 /* USER CODE BEGIN 0 */
 
 
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    if (hadc->Instance == ADC1)
-    {
-        for (int i = 0; i < ADC_CHANNEL_COUNT; i++)
-        {
-            float v = (adcBuffer[i] * ACS712_VREF_ADC) / ACS712_ADC_RESOLUTION;
-            g_adcAvg[i] = 0.9f * g_adcAvg[i] + 0.1f * v;
-        }
-
-        // CH7 is last (index 6 if ranks = 0–5 + 7)
-        g_vADC_ACS = g_adcAvg[6];
-    }
-}
+//void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+//{
+//    if (hadc->Instance == ADC1)
+//    {
+//        for (int i = 0; i < ADC_CHANNEL_COUNT; i++)
+//        {
+//            float v = (adcBuffer[i] * ACS712_VREF_ADC) / ACS712_ADC_RESOLUTION;
+//            g_adcAvg[i] = 0.9f * g_adcAvg[i] + 0.1f * v;
+//        }
+//
+//        // CH7 is last (index 6 if ranks = 0–5 + 7)
+//        g_vADC_ACS = g_adcAvg[6];
+//    }
+//}
 
 
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
