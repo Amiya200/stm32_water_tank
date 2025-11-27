@@ -101,25 +101,6 @@ bool g_screenUpdatePending = false;
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void DisplayDummyData(void)
-{
-
-	  char line1[17];
-	  char line2[17];
-	  float acCurrent = 2;  // dummy
-	  float acVoltage = 26; // dummy
-
-	  // Format strings with fixed width to overwrite old values
-	  snprintf(line1, sizeof(line1), "I:%6.2f A", acCurrent);
-	  snprintf(line2, sizeof(line2), "V:%6.1f V", acVoltage);
-
-	  // Display without clearing
-	  lcd_put_cur(0, 0);
-	  lcd_send_string(line1);
-
-	  lcd_put_cur(1, 0);
-	  lcd_send_string(line2);
-}
 
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
@@ -171,13 +152,9 @@ int main(void)
     MX_TIM3_Init();
 
     /* ========== FIRST: INIT RTC BEFORE LCD ========== */
-    HAL_Delay(20);
     RTC_Init();
-    HAL_Delay(20);
-
     /* Set time ONLY ONCE — comment this line after first flash */
 //    RTC_SetTimeDate(0, 17, 15, 2, 25, 11, 2025);
-    HAL_Delay(20);
 
     RTC_GetTimeDate();
 
@@ -185,10 +162,9 @@ int main(void)
 
     /* ========== SECOND: INIT LCD AFTER RTC ========== */
     lcd_init();
-    HAL_Delay(50);
 
     /* ========== Then all other modules ========== */
-    RF_Init();
+//    RF_Init();
     ADC_Init(&hadc1);
     LoRa_Init();
     Screen_Init();

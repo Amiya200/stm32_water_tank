@@ -387,23 +387,30 @@ static void show_twist_off_m(void){
 
 /* ---------------- COUNTDOWN DISPLAY ---------------- */
 
-static void show_countdown(void){
-    char l0[17], l1[17];
+static void show_countdown(void)
+{
+    char l0[17];
+    char l1[17];
 
-    if (countdownActive){
+    if (countdownActive)
+    {
         uint32_t sec = countdownDuration;
-        uint32_t min = sec/60;
-        uint32_t s   = sec%60;
-        snprintf(l0,sizeof(l0),"CD %02u:%02u RUN",min,s);
-        snprintf(l1,sizeof(l1),"Press to STOP");
+        uint32_t min = sec / 60;
+        uint32_t ss  = sec % 60;
+
+        snprintf(l0, sizeof(l0), "CD %02u:%02u RUN", min, ss);
+        snprintf(l1, sizeof(l1), "Press STOP");
     }
-    else{
-        snprintf(l0,sizeof(l0),"CD Set:%3u min",edit_countdown_min);
-        snprintf(l1,sizeof(l1),"Press to START");
+    else
+    {
+        snprintf(l0, sizeof(l0), "CD Set:%3u min", edit_countdown_min);
+        snprintf(l1, sizeof(l1), "Press START");
     }
+
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 
 static void show_countdown_edit_min(void){
     lcd_line0("SET MINUTES");
@@ -627,102 +634,114 @@ static void goto_menu_top(void){
     menu_view_top = 0;
 }
 
-static void menu_select(void){
+/* ================================================================
+   MENU ENTER HANDLER (FINAL VERSION)
+   ================================================================ */
+/* ================================================================
+   MENU ENTER HANDLER (FINAL — BUG FREE)
+   ================================================================ */
+static void menu_select(void)
+{
     refreshInactivityTimer();
 
-    switch(ui)
+    switch (ui)
     {
+        /* ==========================
+           WELCOME → DASHBOARD
+           ========================== */
         case UI_WELCOME:
             ui = UI_DASH;
             screenNeedsRefresh = true;
             return;
 
+        /* ==========================
+           DASHBOARD → MAIN MENU
+           ========================== */
         case UI_DASH:
             ui = UI_MENU;
             goto_menu_top();
             screenNeedsRefresh = true;
             return;
 
+        /* ==========================
+           MAIN MENU
+           ========================== */
         case UI_MENU:
-            switch(menu_idx){
+            switch(menu_idx)
+            {
                 case 0: ui = UI_TIMER; currentSlot = 0; break;
                 case 1: ui = UI_AUTO_MENU; break;
                 case 2: ui = UI_TWIST; break;
-                case 3: ui = UI_DASH; break;      /* SETTINGS → no submenu */
-                case 4: ui = UI_DASH; break;      /* BACK */
+//                case 3: ui = UI_SETTINGS; break;
+                case 3: ui = UI_DASH; break;  /* Back */
             }
             screenNeedsRefresh = true;
             return;
 
-        /* TIMER FLOW */
+        /* ==========================
+           TIMER EDIT FLOW
+           ========================== */
         case UI_TIMER:
             ui = UI_TIMER_EDIT_SLOT_ON_H; screenNeedsRefresh = true; return;
-
         case UI_TIMER_EDIT_SLOT_ON_H:
             ui = UI_TIMER_EDIT_SLOT_ON_M; screenNeedsRefresh = true; return;
-
         case UI_TIMER_EDIT_SLOT_ON_M:
             ui = UI_TIMER_EDIT_SLOT_OFF_H; screenNeedsRefresh = true; return;
-
         case UI_TIMER_EDIT_SLOT_OFF_H:
             ui = UI_TIMER_EDIT_SLOT_OFF_M; screenNeedsRefresh = true; return;
-
         case UI_TIMER_EDIT_SLOT_OFF_M:
             apply_timer_settings();
             ui = UI_TIMER;
             screenNeedsRefresh = true;
             return;
 
-        /* AUTO FLOW */
+        /* ==========================
+           AUTO SETTINGS
+           ========================== */
         case UI_AUTO_MENU:
             ui = UI_AUTO_EDIT_GAP; screenNeedsRefresh = true; return;
-
         case UI_AUTO_EDIT_GAP:
             ui = UI_AUTO_EDIT_MAXRUN; screenNeedsRefresh = true; return;
-
         case UI_AUTO_EDIT_MAXRUN:
             ui = UI_AUTO_EDIT_RETRY; screenNeedsRefresh = true; return;
-
         case UI_AUTO_EDIT_RETRY:
             apply_auto_settings();
             ui = UI_AUTO_MENU;
             screenNeedsRefresh = true;
             return;
 
-        /* TWIST FLOW */
+        /* ==========================
+           TWIST SETTINGS
+           ========================== */
         case UI_TWIST:
             ui = UI_TWIST_EDIT_ON; screenNeedsRefresh = true; return;
-
         case UI_TWIST_EDIT_ON:
             ui = UI_TWIST_EDIT_OFF; screenNeedsRefresh = true; return;
-
         case UI_TWIST_EDIT_OFF:
             ui = UI_TWIST_EDIT_ON_H; screenNeedsRefresh = true; return;
-
         case UI_TWIST_EDIT_ON_H:
             ui = UI_TWIST_EDIT_ON_M; screenNeedsRefresh = true; return;
-
         case UI_TWIST_EDIT_ON_M:
             ui = UI_TWIST_EDIT_OFF_H; screenNeedsRefresh = true; return;
-
         case UI_TWIST_EDIT_OFF_H:
             ui = UI_TWIST_EDIT_OFF_M; screenNeedsRefresh = true; return;
-
         case UI_TWIST_EDIT_OFF_M:
             apply_twist_settings();
             ui = UI_TWIST;
             screenNeedsRefresh = true;
             return;
 
-        /* COUNTDOWN FLOW */
+        /* ==========================
+           COUNTDOWN SETTINGS
+           ========================== */
         case UI_COUNTDOWN:
-            if (countdownActive){
+            if (countdownActive)
                 ModelHandle_StopCountdown();
-                screenNeedsRefresh = true;
-            } else {
-                ui = UI_COUNTDOWN_EDIT_MIN;
-                screenNeedsRefresh = true;
+            else {
+                apply_countdown_settings();
+                ModelHandle_StartCountdown(edit_countdown_min * 60UL);
             }
+            screenNeedsRefresh = true;
             return;
 
         case UI_COUNTDOWN_EDIT_MIN:
@@ -739,7 +758,6 @@ static void menu_select(void){
 /* ================================================================
    HANDLE BUTTONS (MAIN FLOW)
    ================================================================ */
-
 void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
@@ -747,7 +765,7 @@ void Screen_HandleSwitches(void)
 
     refreshInactivityTimer();
 
-    bool inMenu =
+    bool insideMenu =
         (ui == UI_MENU ||
          ui == UI_TIMER ||
          ui == UI_TIMER_EDIT_SLOT_ON_H ||
@@ -765,141 +783,191 @@ void Screen_HandleSwitches(void)
          ui == UI_TWIST_EDIT_ON_M ||
          ui == UI_TWIST_EDIT_OFF_H ||
          ui == UI_TWIST_EDIT_OFF_M ||
-         ui == UI_COUNTDOWN_EDIT_MIN ||
-         ui == UI_MANUAL ||
-         ui == UI_SEMI_AUTO);
+         ui == UI_COUNTDOWN_EDIT_MIN);
 
-    bool dashboardMode = (ui == UI_DASH || ui == UI_COUNTDOWN);
 
     /* ============================================================
-       NORMAL MODE BUTTON FLOW
+       OUTSIDE MENU — MAIN USER ACTIONS
        ============================================================ */
-    if (!inMenu)
+    if (!insideMenu)
     {
-        switch(b)
+        switch (b)
         {
-            /* SW1 SHORT → Restart motor */
+            /* ----------------------------------------------------
+               SW1 SHORT → Restart pump immediately
+               ---------------------------------------------------- */
             case BTN_RESET:
                 ModelHandle_SetMotor(true);
+                ui = UI_DASH;
                 screenNeedsRefresh = true;
                 return;
 
-            /* SW1 LONG → Toggle MANUAL mode */
+            /* ----------------------------------------------------
+               SW1 LONG → Toggle Manual Mode
+               ---------------------------------------------------- */
             case BTN_RESET_LONG:
                 ModelHandle_ToggleManual();
-                ui = UI_MANUAL;
+                ui = manualActive ? UI_MANUAL : UI_DASH;
                 screenNeedsRefresh = true;
                 return;
 
-            /* SW2 SHORT → Auto mode toggle */
+            /* ----------------------------------------------------
+               SW2 SHORT → AUTO toggle
+               ---------------------------------------------------- */
             case BTN_SELECT:
-                if (autoActive){
-                    autoActive = false;
+                if (autoActive)
                     ModelHandle_StopAllModesAndMotor();
-                } else {
+                else
                     autoActive = true;
-                }
+
+                ui = UI_DASH;
                 screenNeedsRefresh = true;
                 return;
 
-            /* SW2 LONG → Open main menu */
+            /* ----------------------------------------------------
+               SW2 LONG → Enter Main Menu
+               ---------------------------------------------------- */
             case BTN_SELECT_LONG:
                 ui = UI_MENU;
                 goto_menu_top();
                 screenNeedsRefresh = true;
                 return;
 
-            /* SW3 SHORT → Start Timer Mode */
+            /* ----------------------------------------------------
+               SW3 SHORT → TIMER MODE: toggle ON/OFF
+               ---------------------------------------------------- */
             case BTN_UP:
-                ModelHandle_StartTimer();
+                if (timerActive)
+                {
+                    ModelHandle_StopTimer();
+                }
+                else
+                {
+                    ModelHandle_StartTimer();
+                }
                 ui = UI_TIMER;
                 screenNeedsRefresh = true;
                 return;
 
-            /* SW3 LONG → Toggle Semi Auto */
+            /* ----------------------------------------------------
+               SW3 LONG → Semi-auto toggle
+               ---------------------------------------------------- */
             case BTN_UP_LONG:
                 if (semiAutoActive)
                     ModelHandle_StopSemiAuto();
                 else
                     ModelHandle_StartSemiAuto();
+
                 ui = UI_SEMI_AUTO;
                 screenNeedsRefresh = true;
                 return;
 
-            /* SW4 SHORT → Countdown start/stop */
+
+            /* ====================================================
+               COUNTDOWN MODE BEHAVIOR (your requirement)
+               ==================================================== */
+
+            /* ----------------------------------------------------
+               SW4 SHORT:
+               - If OFF → start 1-minute countdown
+               - If ON  → stop countdown
+               ---------------------------------------------------- */
             case BTN_DOWN:
                 if (!countdownActive)
-                    ModelHandle_StartCountdown(edit_countdown_min * 60);
+                {
+                    edit_countdown_min = 1;  // default 1 minute
+                    ModelHandle_StartCountdown(1 * 60UL);
+                }
                 else
+                {
                     ModelHandle_StopCountdown();
+                }
+
                 ui = UI_COUNTDOWN;
                 screenNeedsRefresh = true;
                 return;
 
-            /* SW4 LONG → Edit countdown */
+            /* ----------------------------------------------------
+               SW4 LONG:
+               - Increase countdown minutes every 1 second
+               ---------------------------------------------------- */
             case BTN_DOWN_LONG:
+            {
                 ui = UI_COUNTDOWN_EDIT_MIN;
-                if (HAL_GetTick() - last_repeat_time > COUNTDOWN_INC_MS){
-                    last_repeat_time = HAL_GetTick();
-                    edit_countdown_min = (edit_countdown_min + 1) % 999;
+
+                static uint32_t lastInc = 0;
+                uint32_t now = HAL_GetTick();
+
+                if (now - lastInc >= 1000)  // 1 second repeat
+                {
+                    lastInc = now;
+
+                    edit_countdown_min++;
+                    if (edit_countdown_min > 999)
+                        edit_countdown_min = 999;
+
+                    ModelHandle_StartCountdown(edit_countdown_min * 60UL);
                     screenNeedsRefresh = true;
                 }
                 return;
+            }
 
             default:
                 break;
         }
     }
 
-    /* ============================================================
-       MENU MODE BUTTON FLOW
-       ============================================================ */
 
+    /* ============================================================
+       INSIDE MENU — Navigation and Edit
+       ============================================================ */
     switch(b)
     {
-        /* BACK */
         case BTN_RESET:
             ui = UI_DASH;
             screenNeedsRefresh = true;
             return;
 
-        /* ENTER */
         case BTN_SELECT:
             menu_select();
             return;
 
-        /* UP */
         case BTN_UP:
-            if (ui == UI_MENU){
+            if (ui == UI_MENU)
+            {
                 if (menu_idx > 0) menu_idx--;
-                screenNeedsRefresh = true;
-            } else {
-                increase_edit_value();
-                screenNeedsRefresh = true;
             }
+            else
+            {
+                increase_edit_value();
+            }
+            screenNeedsRefresh = true;
             return;
 
         case BTN_UP_LONG:
-            if (HAL_GetTick() - last_repeat_time > CONTINUOUS_STEP_MS){
+            if (HAL_GetTick() - last_repeat_time > CONTINUOUS_STEP_MS)
+            {
                 last_repeat_time = HAL_GetTick();
                 increase_edit_value();
                 screenNeedsRefresh = true;
             }
             return;
 
-        /* DOWN */
         case BTN_DOWN:
-            if (ui == UI_MENU){
+            if (ui == UI_MENU)
+            {
                 if (menu_idx < MAIN_MENU_COUNT - 1) menu_idx++;
-                screenNeedsRefresh = true;
-            } else {
-                decrease_edit_value();
-                screenNeedsRefresh = true;
             }
+            else
+            {
+                decrease_edit_value();
+            }
+            screenNeedsRefresh = true;
             return;
 
         case BTN_DOWN_LONG:
-            if (HAL_GetTick() - last_repeat_time > CONTINUOUS_STEP_MS){
+            if (HAL_GetTick() - last_repeat_time > CONTINUOUS_STEP_MS)
+            {
                 last_repeat_time = HAL_GetTick();
                 decrease_edit_value();
                 screenNeedsRefresh = true;

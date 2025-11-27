@@ -9,10 +9,12 @@
    TIMER SLOT
    ============================================================ */
 typedef struct {
-    uint8_t enabled;
-    uint8_t onHour, onMinute;
-    uint8_t offHour, offMinute;
-    uint8_t dayMask;     // bit0=Mon ... bit6=Sun
+    bool enabled;
+    uint8_t dayMask;      // bit0 = Monday ... bit6 = Sunday
+    uint8_t onHour;
+    uint8_t onMinute;
+    uint8_t offHour;
+    uint8_t offMinute;
 } TimerSlot;
 
 /* ============================================================
@@ -80,6 +82,8 @@ void ModelHandle_ManualLongPress(void);
 void ModelHandle_SetMotor(bool on);
 void ModelHandle_ClearManualOverride(void);
 
+void ModelHandle_ProcessDryRun(void);
+void ModelHandle_TimerRecalculateNow(void);
 /* ===== SEMI AUTO ===== */
 void ModelHandle_StartSemiAuto(void);
 

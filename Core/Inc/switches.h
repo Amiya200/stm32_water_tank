@@ -9,10 +9,10 @@ typedef enum {
     SWITCH_EVT_LONG     // long threshold crossed (fires once while held)
 } SwitchEvent;
 
-void     Switches_Init(void);
 /* Optional: change long press threshold (default 700 ms) */
 void     Switches_SetLongPressMs(uint16_t ms);
 
+void Switches_Init(void);
 /* Polling API (call each loop or from a 5–10ms tick) */
 bool        Switch_IsPressed(uint8_t idx);   // debounced level (active-low)
 bool        Switch_WasPressed(uint8_t idx);  // edge (kept for backward-compat)

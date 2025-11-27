@@ -297,14 +297,15 @@ void ModelHandle_ProcessDryRun(void)
 {
     ModelHandle_SoftDryRunHandler();
 }
-
 /***************************************************************
- *  ==================== COUNTDOWN MODE =======================
+ *  ==================== COUNTDOWN MODE (FINAL) ====================
  ***************************************************************/
 
-volatile uint32_t countdownDuration = 0;
-static uint32_t cd_deadline = 0;
+volatile uint32_t countdownDuration = 0;     // live remaining seconds
+volatile uint32_t countdownSetMinutes = 1;   // user-set minutes
+static uint32_t cd_deadline_ms = 0;
 
+/* Stop Countdown */
 void ModelHandle_StopCountdown(void)
 {
     countdownActive = false;
@@ -312,24 +313,36 @@ void ModelHandle_StopCountdown(void)
     stop_motor();
 }
 
-void ModelHandle_StartCountdown(uint32_t seconds)
+/* Start Countdown with LAST SET VALUE */
+void ModelHandle_StartCountdown(uint32_t minutes)
 {
     clear_all_modes();
 
-    if (seconds == 0)
-    {
-        countdownActive = false;
-        countdownDuration = 0;
-        return;
-    }
+    if (minutes == 0)
+        minutes = 1;
 
     countdownActive = true;
-    countdownDuration = seconds;
-    cd_deadline = now_ms() + (seconds * 1000UL);
+    countdownSetMinutes = minutes;
+
+    countdownDuration = minutes * 60;     // convert to seconds
+    cd_deadline_ms = now_ms() + (countdownDuration * 1000UL);
 
     start_motor();
 }
 
+/* Called when user LONG-PRESS DOWN BUTTON */
+void ModelHandle_IncrementCountdown_LongPress(void)
+{
+    countdownSetMinutes++;   // Increase minutes
+    if (countdownSetMinutes > 999)
+        countdownSetMinutes = 999;
+
+    // Update duration and restart engine
+    countdownDuration = countdownSetMinutes * 60;
+    cd_deadline_ms = now_ms() + (countdownDuration * 1000UL);
+}
+
+/* Countdown Engine - Call inside main loop */
 static void countdown_tick(void)
 {
     if (!countdownActive)
@@ -337,21 +350,28 @@ static void countdown_tick(void)
 
     uint32_t now = now_ms();
 
-    if (isTankFull())
+    // SAFETY EXIT CONDITIONS
+    if (isTankFull() ||
+        senseOverLoad ||
+        senseOverUnderVolt ||
+        senseMaxRunReached)
     {
         ModelHandle_StopCountdown();
         return;
     }
 
-    if (now < cd_deadline)
+    // TIME COMPLETED
+    if (now >= cd_deadline_ms)
     {
-        countdownDuration = (cd_deadline - now) / 1000UL;
+        ModelHandle_StopCountdown();
+        return;
     }
-    else
-    {
-        countdownDuration = 0;
-        /* motor stays on unless manually stopped */
-    }
+
+    // LIVE TIME LEFT
+    countdownDuration = (cd_deadline_ms - now) / 1000UL;
+
+    // enforce motor ON
+    start_motor();
 }
 
 /***************************************************************
@@ -458,22 +478,28 @@ static void twist_tick(void)
     if (twist_on_phase) start_motor();
     else                stop_motor();
 }
-
 /***************************************************************
  *  ========================= TIMER MODE ========================
  ***************************************************************/
 
 TimerSlot timerSlots[5];
 
+/* Check if ANY timer slot is active right now */
 static bool timer_any_slot_should_run(void)
 {
     RTC_GetTimeDate();
 
-    uint32_t nowS = time.hour * 3600UL + time.min * 60UL;
+    uint32_t nowS = (time.hour * 3600UL) + (time.min * 60UL);
+    uint8_t todayBit = 1 << (time.dow - 1); // dow: 1=Mon ... 7=Sun
 
     for (int i = 0; i < 5; i++)
     {
-        if (!timerSlots[i].enabled) continue;
+        if (!timerSlots[i].enabled)
+            continue;
+
+        // Check day
+        if (!(timerSlots[i].dayMask & todayBit))
+            continue;
 
         uint32_t onS  = timerSlots[i].onHour  * 3600UL +
                         timerSlots[i].onMinute * 60UL;
@@ -481,13 +507,13 @@ static bool timer_any_slot_should_run(void)
         uint32_t offS = timerSlots[i].offHour * 3600UL +
                         timerSlots[i].offMinute * 60UL;
 
-        /* Normal window */
+        // Normal window
         if (onS < offS)
         {
             if (nowS >= onS && nowS < offS)
                 return true;
         }
-        /* Overnight window */
+        // Overnight window (crosses midnight)
         else
         {
             if (nowS >= onS || nowS < offS)
@@ -498,42 +524,58 @@ static bool timer_any_slot_should_run(void)
     return false;
 }
 
+/* Re-run timer check after modifying slots */
 void ModelHandle_TimerRecalculateNow(void)
 {
-    if (!timerActive) return;
+    if (!timerActive)
+        return;
 
-    if (timer_any_slot_should_run()) start_motor();
-    else                              stop_motor();
+    if (timer_any_slot_should_run())
+        start_motor();
+    else
+        stop_motor();
 }
 
+/* Start Timer Mode */
 void ModelHandle_StartTimer(void)
 {
     clear_all_modes();
     timerActive = true;
 
-    if (timer_any_slot_should_run()) start_motor();
-    else                              stop_motor();
+    if (timer_any_slot_should_run())
+        start_motor();
+    else
+        stop_motor();
 }
 
+/* Stop Timer Mode */
 void ModelHandle_StopTimer(void)
 {
     timerActive = false;
     stop_motor();
 }
 
+/* TIMER ENGINE */
 static void timer_tick(void)
 {
-    if (!timerActive) return;
+    if (!timerActive)
+        return;
 
+    // Tank full → immediate stop
     if (isTankFull())
     {
         stop_motor();
         return;
     }
 
-    if (timer_any_slot_should_run()) start_motor();
-    else                              stop_motor();
+    if (timer_any_slot_should_run())
+        start_motor();
+    else
+        stop_motor();
 }
+
+
+
 /***************************************************************
  *  MODEL_HANDLE.C — PART 3 OF 4
  *  Semi-Auto + Auto mode + Protections + LED System
@@ -730,92 +772,79 @@ static void leds_from_model(void)
 /* ============================================================
    MAIN PROCESS LOOP — MASTER FSM
    ============================================================ */
+/***************************************************************
+ *  MAIN MODE PROCESSOR (FINAL)
+ ***************************************************************/
 void ModelHandle_Process(void)
 {
-    uint32_t now = now_ms();
+    /* ========== GLOBAL PROTECTION CHECKS ========== */
 
-    /* First, always evaluate protections */
-    protections_tick();
-
-    /* Twist schedule (HH:MM) */
-    twist_time_logic();
-
-    /***********************************************************
-     * AUTO MODE
-     ***********************************************************/
-    if (autoActive)
+    if (senseOverLoad || senseOverUnderVolt || senseMaxRunReached)
     {
-        auto_tick();
-        leds_from_model();
-        return; // IMPORTANT: prevent double processing
+        // Hard shutdown of everything
+        stop_motor();
+        return;
     }
 
-    /***********************************************************
-     * SEMI-AUTO MODE
-     ***********************************************************/
+    /* ========== MODE PRIORITY ENGINE ========== */
+
+    // 1. MANUAL MODE (top priority)
+    if (manualActive)
+    {
+        // Manual ignores dry run, but NOT heavy protections
+        if (!senseOverLoad && !senseOverUnderVolt && !senseMaxRunReached)
+        {
+            if (manualOverride)
+                start_motor();
+        }
+        return;
+    }
+
+    // 2. SEMI-AUTO
     if (semiAutoActive)
     {
-        senseDryRun = true;
-
-        if (!isTankFull())
+        if (isTankFull())
         {
-            if (!Motor_GetStatus())
-                start_motor();
+            stop_motor();
         }
         else
         {
-            stop_motor();
-            semiAutoActive = false; // auto-terminate once tank full
+            start_motor();
         }
-
-        leds_from_model();
         return;
     }
 
-    /***********************************************************
-     * TIMER MODE
-     ***********************************************************/
+    // 3. COUNTDOWN MODE
+    if (countdownActive)
+    {
+        countdown_tick();   // <<<< NECESSARY
+        return;
+    }
+
+    // 4. TWIST MODE
+    if (twistActive || twistSettings.twistArmed)
+    {
+        twist_time_logic();
+        twist_tick();
+        return;
+    }
+
+    // 5. TIMER MODE
     if (timerActive)
     {
         timer_tick();
-        leds_from_model();
         return;
     }
 
-    /***********************************************************
-     * COUNTDOWN MODE
-     ***********************************************************/
-    if (countdownActive)
+    // 6. AUTO MODE (default automation)
+    if (autoActive)
     {
-        countdown_tick();
-        leds_from_model();
+        auto_tick();
         return;
     }
 
-    /***********************************************************
-     * TWIST MODE (duration-phase)
-     ***********************************************************/
-    if (twistActive)
-    {
-        twist_tick();
-        leds_from_model();
-        return;
-    }
-
-    /***********************************************************
-     * MANUAL MODE
-     ***********************************************************/
-    if (manualActive)
-    {
-        leds_from_model();
-        return;
-    }
-
-    /***********************************************************
-     * NO ACTIVE MODE
-     ***********************************************************/
+    /* If no mode active → ensure motor stays off */
     stop_motor();
-    leds_from_model();
 }
 
 /* ============================================================
