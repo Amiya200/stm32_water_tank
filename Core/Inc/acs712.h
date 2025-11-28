@@ -4,8 +4,11 @@
 #include "stm32f1xx_hal.h"
 #include <stdint.h>
 
-extern float g_currentA;
-extern float g_voltageV;
+/* -------------------------------
+ *  Global values (for display)
+ * ------------------------------- */
+extern float g_currentA;   // Amperes
+extern float g_voltageV;   // Volts
 
 /* -------------------- ADC CONFIG -------------------- */
 #define ADC_VREF   3.3f
@@ -13,9 +16,9 @@ extern float g_voltageV;
 
 /* ------------------ ACS712 CURRENT ------------------ */
 #define ACS712_ADC_CHANNEL     ADC_CHANNEL_7
-#define ACS712_ZERO_SAMPLES    100
+#define ACS712_ZERO_SAMPLES    10
 #define ACS712_FILTER_ALPHA    0.05f
-#define ACS712_SENS_30A        0.066f
+#define ACS712_SENS_30A        0.066f   // 66mV per Ampere for ACS712-30A
 
 /* ---------------- ZMPT101B VOLTAGE ------------------ */
 #define ZMPT_ADC_CHANNEL       ADC_CHANNEL_6
@@ -25,7 +28,6 @@ extern float g_voltageV;
 
 /* -----------------------------------------------------
    CALIBRATION CONSTANT (YOU WILL UPDATE THIS)
-
    AFTER YOU SEND ME:
        1) Your ADC_RMS
        2) Your Multimeter RMS
@@ -37,10 +39,13 @@ extern float g_voltageV;
 ------------------------------------------------------ */
 #define ZMPT_CALIBRATION       250.0f   // temporary placeholder
 
+/* -------------------------------
+ *  Function Prototypes
+ * ------------------------------- */
 void ACS712_Init(ADC_HandleTypeDef *hadc);
 void ACS712_Update(void);
 
 float ACS712_ReadCurrent(void);
 float ZMPT_ReadVoltageRMS(void);
 
-#endif
+#endif /* __ACS712_H__ */
