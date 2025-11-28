@@ -5,16 +5,15 @@ float g_currentA = 0.0f;
 float g_voltageV = 0.0f;
 
 static ADC_HandleTypeDef *hAdc;
-
-/* Offsets and filters */
+float adc_rms;
 static float acs_zero_offset = 0.0f;
-static float zmpt_offset = 1.65f;      // midpoint reference
+static float zmpt_offset = 1.65f;
 static float last_voltage = 0.0f;
 static float last_current = 0.0f;
 
-/* ----------------------------------------------------------
-   GENERIC ADC READER
------------------------------------------------------------ */
+/* -------------------------------------------------------
+   ADC READER
+-------------------------------------------------------- */
 static float adc_read(uint32_t channel)
 {
     ADC_ChannelConfTypeDef cfg = {0};
@@ -23,19 +22,19 @@ static float adc_read(uint32_t channel)
     cfg.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
 
     HAL_ADC_ConfigChannel(hAdc, &cfg);
+
     HAL_ADC_Start(hAdc);
     HAL_ADC_PollForConversion(hAdc, HAL_MAX_DELAY);
 
     uint16_t raw = HAL_ADC_GetValue(hAdc);
-
     HAL_ADC_Stop(hAdc);
 
     return (raw * ADC_VREF) / ADC_RES;
 }
 
-/* ----------------------------------------------------------
-   VOLTAGE SENSOR OFFSET CALIBRATION (ZMPT101B)
------------------------------------------------------------ */
+/* -------------------------------------------------------
+   OFFSET CALIBRATION (Voltage)
+-------------------------------------------------------- */
 static void zmpt_calibrate_offset(void)
 {
     float sum = 0;
@@ -45,9 +44,9 @@ static void zmpt_calibrate_offset(void)
     zmpt_offset = sum / ZMPT_OFFSET_SAMPLES;
 }
 
-/* ----------------------------------------------------------
-   CURRENT SENSOR OFFSET CALIBRATION (ACS712)
------------------------------------------------------------ */
+/* -------------------------------------------------------
+   OFFSET CALIBRATION (Current)
+-------------------------------------------------------- */
 static void acs_calibrate_offset(void)
 {
     float sum = 0;
@@ -57,9 +56,9 @@ static void acs_calibrate_offset(void)
     acs_zero_offset = sum / ACS712_ZERO_SAMPLES;
 }
 
-/* ----------------------------------------------------------
-   INITIALIZE BOTH SENSORS
------------------------------------------------------------ */
+/* -------------------------------------------------------
+   INITIALIZATION
+-------------------------------------------------------- */
 void ACS712_Init(ADC_HandleTypeDef *hadc)
 {
     hAdc = hadc;
@@ -70,34 +69,41 @@ void ACS712_Init(ADC_HandleTypeDef *hadc)
     acs_calibrate_offset();
 }
 
-/* ----------------------------------------------------------
-   TRUE RMS VOLTAGE READING (ZMPT101B)
------------------------------------------------------------ */
+/* -------------------------------------------------------
+   TRUE RMS VOLTAGE READ (ZMPT101B)
+-------------------------------------------------------- */
 float ZMPT_ReadVoltageRMS(void)
 {
-    float sum_sq = 0.0f;
     float sum_dc = 0.0f;
+    float sum_sq = 0.0f;
 
     for (int i = 0; i < ZMPT_RMS_SAMPLES; i++)
     {
         float v = adc_read(ZMPT_ADC_CHANNEL);
+
         sum_dc += v;
 
-        float ac = v - zmpt_offset;    // remove DC level
+        float ac = v - zmpt_offset;
         sum_sq += ac * ac;
     }
 
-    /* Slow tracking of offset */
     float new_offset = sum_dc / ZMPT_RMS_SAMPLES;
+
     zmpt_offset = (zmpt_offset * 0.90f) + (new_offset * 0.10f);
 
-    /* RMS */
-    float adc_rms = sqrtf(sum_sq / ZMPT_RMS_SAMPLES);
+    adc_rms = sqrtf(sum_sq / ZMPT_RMS_SAMPLES);
 
-    /* Convert to real AC voltage */
+    /* --------------------------
+       DEBUG FOR PERFECT CALIB
+       (DO NOT REMOVE NOW)
+    --------------------------- */
+    printf("ADC_RMS = %.6f\n", adc_rms);
+
+    /* New calculation using multimeter voltage */
+    #define ZMPT_CALIBRATION 239.5f  // Updated calibration factor (Multimeter RMS = 5.0 V)
+
     float Vrms = adc_rms * ZMPT_CALIBRATION;
 
-    /* Low-pass filter for stable reading */
     last_voltage =
         last_voltage * (1.0f - ZMPT_FILTER_ALPHA) +
         (Vrms * ZMPT_FILTER_ALPHA);
@@ -106,13 +112,12 @@ float ZMPT_ReadVoltageRMS(void)
     return g_voltageV;
 }
 
-/* ----------------------------------------------------------
+/* -------------------------------------------------------
    CURRENT READING (ACS712)
------------------------------------------------------------ */
+-------------------------------------------------------- */
 float ACS712_ReadCurrent(void)
 {
     float v = adc_read(ACS712_ADC_CHANNEL);
-
     float diff = v - acs_zero_offset;
 
     float amp = diff / ACS712_SENS_30A;
@@ -125,9 +130,9 @@ float ACS712_ReadCurrent(void)
     return g_currentA;
 }
 
-/* ----------------------------------------------------------
-   UPDATE BOTH SENSORS (CALL IN MAIN LOOP)
------------------------------------------------------------ */
+/* -------------------------------------------------------
+   UPDATE BOTH SENSOR VALUES
+-------------------------------------------------------- */
 void ACS712_Update(void)
 {
     ACS712_ReadCurrent();

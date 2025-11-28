@@ -7,36 +7,35 @@
 extern float g_currentA;
 extern float g_voltageV;
 
-/* -----------------------------------------
-   ADC CONFIG
------------------------------------------- */
+/* -------------------- ADC CONFIG -------------------- */
 #define ADC_VREF   3.3f
 #define ADC_RES    4095.0f
 
-/* -----------------------------------------
-   ACS712 CURRENT SENSOR
------------------------------------------- */
+/* ------------------ ACS712 CURRENT ------------------ */
 #define ACS712_ADC_CHANNEL     ADC_CHANNEL_7
-#define ACS712_ZERO_SAMPLES    300
+#define ACS712_ZERO_SAMPLES    100
 #define ACS712_FILTER_ALPHA    0.05f
-#define ACS712_SENS_30A        0.066f      // 30A version
+#define ACS712_SENS_30A        0.066f
 
-/* -----------------------------------------
-   ZMPT101B VOLTAGE SENSOR
------------------------------------------- */
+/* ---------------- ZMPT101B VOLTAGE ------------------ */
 #define ZMPT_ADC_CHANNEL       ADC_CHANNEL_6
 #define ZMPT_OFFSET_SAMPLES    300
 #define ZMPT_RMS_SAMPLES       800
-#define ZMPT_FILTER_ALPHA      0.12f
+#define ZMPT_FILTER_ALPHA      0.15f
 
-/* --------------------------------------------------
-   CALIBRATION FACTOR
-   Change this value so that:
-   g_voltageV == Your Multimeter Voltage
+/* -----------------------------------------------------
+   CALIBRATION CONSTANT (YOU WILL UPDATE THIS)
 
-   NEW_FACTOR = Multimeter_Voltage / ADC_RMS
---------------------------------------------------- */
-#define ZMPT_CALIBRATION       245.0f      // <-- CHANGE THIS ONLY
+   AFTER YOU SEND ME:
+       1) Your ADC_RMS
+       2) Your Multimeter RMS
+
+   I will compute PERFECT factor.
+
+   Formula:
+       NEW = Multimeter_Voltage / ADC_RMS
+------------------------------------------------------ */
+#define ZMPT_CALIBRATION       250.0f   // temporary placeholder
 
 void ACS712_Init(ADC_HandleTypeDef *hadc);
 void ACS712_Update(void);

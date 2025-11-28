@@ -75,6 +75,7 @@ UART_HandleTypeDef huart1;
 ADC_Data adcData;
 char receivedUartPacket[UART_RX_BUFFER_SIZE];
 int ak =0;
+bool g_screenUpdatePending = false;
 extern uint8_t loraMode;
 
 /* USER CODE END PV */
@@ -95,28 +96,11 @@ void Debug_Print(char *msg) {
     UART_TransmitString(&huart1, msg);
 }
 
-bool g_screenUpdatePending = false;
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-
-//void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-//{
-//    if (hadc->Instance == ADC1)
-//    {
-//        for (int i = 0; i < ADC_CHANNEL_COUNT; i++)
-//        {
-//            float v = (adcBuffer[i] * ACS712_VREF_ADC) / ACS712_ADC_RESOLUTION;
-//            g_adcAvg[i] = 0.9f * g_adcAvg[i] + 0.1f * v;
-//        }
-//
-//        // CH7 is last (index 6 if ranks = 0–5 + 7)
-//        g_vADC_ACS = g_adcAvg[6];
-//    }
-//}
 
 
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
@@ -417,7 +401,6 @@ static void MX_I2C2_Init(void)
   */
 static void MX_RTC_Init(void)
 {
-
   /* USER CODE BEGIN RTC_Init 0 */
 //
   /* USER CODE END RTC_Init 0 */
