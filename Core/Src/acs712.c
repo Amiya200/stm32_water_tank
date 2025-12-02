@@ -97,7 +97,6 @@ float ZMPT_ReadVoltageRMS(void)
        DEBUG FOR PERFECT CALIB
        (DO NOT REMOVE NOW)
     --------------------------- */
-    printf("ADC_RMS = %.6f\n", adc_rms);
 
     /* New calculation using multimeter voltage */
     #define ZMPT_CALIBRATION 239.5f  // Updated calibration factor (Multimeter RMS = 5.0 V)

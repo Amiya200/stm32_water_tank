@@ -3,5 +3,5 @@
 ../Core/Src/acs712.c:50:13:acs_calibrate_offset	2
 ../Core/Src/acs712.c:62:6:ACS712_Init	1
 ../Core/Src/acs712.c:75:7:ZMPT_ReadVoltageRMS	2
-../Core/Src/acs712.c:118:7:ACS712_ReadCurrent	1
-../Core/Src/acs712.c:136:6:ACS712_Update	1
+../Core/Src/acs712.c:117:7:ACS712_ReadCurrent	1
+../Core/Src/acs712.c:135:6:ACS712_Update	1

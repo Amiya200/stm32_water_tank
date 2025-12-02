@@ -91,7 +91,7 @@ static inline void stop_motor(void)  { motor_apply(false); }
 
 bool Motor_GetStatus(void)
 {
-    return (motorStatus == 1);
+    return (motorStatus);
 }
 
 /* ============================================================
@@ -106,7 +106,21 @@ void ModelHandle_SetMotor(bool on)
     if (on) start_motor();
     else    stop_motor();
 }
-
+void reset(void){
+	if (Motor_GetStatus())  // If motor is ON
+	  {
+	    // Turn OFF motor for 2-3 seconds, then turn ON again
+	    stop_motor();     // Turn OFF motor
+	    HAL_Delay(2000);  // Wait for 2 seconds
+	    start_motor();    // Turn ON motor
+	  } else              // If motor is OFF
+	  {
+	    // Turn ON motor for 2-3 seconds, then turn OFF again
+	    start_motor();    // Turn ON motor
+	    HAL_Delay(2000);  // Wait for 2 seconds
+	    stop_motor();     // Turn OFF motor
+	  }
+}
 /* ============================================================
    TANK FULL DETECTION
    ============================================================ */
@@ -188,10 +202,6 @@ void ModelHandle_StopAllModesAndMotor(void)
     clear_all_modes();
     stop_motor();
 }
-/***************************************************************
- *  MODEL_HANDLE.C — PART 2 OF 4
- *  Countdown + Twist (time & duration) + Timer Mode
- ***************************************************************/
 
 /* ============================================================
    DRY RUN SOFT PROBE HANDLER
@@ -598,9 +608,9 @@ void ModelHandle_StopSemiAuto(void)
     semiAutoActive = false;
     stop_motor();
 }
-
 /***************************************************************
- *  ======================== AUTO MODE =========================
+ *  ======================== AUTO MODE (PROBE FIRST) ========================
+ *  Motor ON → probe duration → check dry → decide
  ***************************************************************/
 
 static uint16_t auto_gap_s       = 60;
@@ -608,11 +618,15 @@ static uint16_t auto_maxrun_min  = 12;
 static uint16_t auto_retry_limit = 5;
 static uint8_t  auto_retry_count = 0;
 
+/* PROBE duration for water detect */
+#define AUTO_PROBE_MS 5000   // 5 sec ON before checking dry
+
 typedef enum {
     AUTO_IDLE = 0,
-    AUTO_ON_WAIT,
-    AUTO_DRY_CHECK,
-    AUTO_OFF_WAIT
+    AUTO_PROBE_ON,    // motor ON for probe duration
+    AUTO_RUN,         // water OK → continue normal auto
+    AUTO_DRY_WAIT,    // no water → wait then retry
+    AUTO_GAP_WAIT     // normal cycle gap
 } AutoState;
 
 static AutoState autoState = AUTO_IDLE;
@@ -629,18 +643,19 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
     auto_retry_limit = retry;
     auto_retry_count = 0;
 
-    autoState = AUTO_ON_WAIT;
-
+    /* Start in probe state */
+    autoState = AUTO_PROBE_ON;
     start_motor();
+
     autoRunStart = now_ms();
-    autoDeadline = now_ms() + (auto_gap_s * 1000UL);
+    autoDeadline = now_ms() + AUTO_PROBE_MS;   // probe for 5s
 }
 
 void ModelHandle_StopAuto(void)
 {
     autoActive = false;
-    autoState = AUTO_IDLE;
     auto_retry_count = 0;
+    autoState = AUTO_IDLE;
     stop_motor();
 }
 
@@ -651,69 +666,116 @@ static void auto_tick(void)
 
     uint32_t now = now_ms();
 
-    /* Global protections */
+    /* ============================
+       Global Protection Check
+       ============================ */
     if (isTankFull() ||
         senseOverLoad ||
-        senseOverUnderVolt ||
-        senseMaxRunReached)
+        senseOverUnderVolt)
     {
-        ModelHandle_StopAuto();
-        return;
-    }
-
-    /* Maximum runtime protection */
-    if (now - autoRunStart >= (auto_maxrun_min * 60000UL))
-    {
-        senseMaxRunReached = true;
-        ModelHandle_StopAuto();
+        stop_motor();
+        autoState = AUTO_GAP_WAIT;
+        autoDeadline = now + auto_gap_s * 1000UL;
         return;
     }
 
     switch (autoState)
     {
-        case AUTO_ON_WAIT:
-            if (now >= autoDeadline)
-                autoState = AUTO_DRY_CHECK;
-            break;
-
-        case AUTO_DRY_CHECK:
-            ModelHandle_CheckDryRun();
-
-            if (senseDryRun)   // Water present
-            {
-                autoState = AUTO_ON_WAIT;
-                autoDeadline = now + (auto_gap_s * 1000UL);
-            }
-            else               // Dry detected
+    /* ====================================================
+       FIRST PHASE: MOTOR MUST TURN ON BEFORE DRY CHECK
+       ==================================================== */
+    case AUTO_PROBE_ON:
+        if (now >= autoDeadline)
+        {
+            /* After probe time → NOW check dry */
+            if (!senseDryRun)   // NO WATER
             {
                 stop_motor();
-                autoState = AUTO_OFF_WAIT;
-                autoDeadline = now + (auto_gap_s * 1000UL);
-            }
-            break;
-
-        case AUTO_OFF_WAIT:
-            if (now >= autoDeadline)
-            {
                 auto_retry_count++;
 
-                if (auto_retry_limit != 0 &&
-                    auto_retry_count > auto_retry_limit)
+                if (auto_retry_count >= auto_retry_limit)
                 {
-                    ModelHandle_StopAuto();
+                    autoState = AUTO_IDLE;   // stop permanently
                     return;
                 }
 
-                start_motor();
-                autoRunStart = now;
-
-                autoState = AUTO_ON_WAIT;
-                autoDeadline = now + (auto_gap_s * 1000UL);
+                autoState = AUTO_DRY_WAIT;
+                autoDeadline = now + auto_gap_s * 1000UL;
+                return;
             }
-            break;
 
-        default:
-            break;
+            /* Water present → go to RUN mode */
+            autoRunStart = now;
+            autoState = AUTO_RUN;
+        }
+        break;
+
+    /* ====================================================
+       NORMAL RUNNING MODE (water present)
+       ==================================================== */
+    case AUTO_RUN:
+    {
+        uint32_t elapsed_min = (now - autoRunStart) / 60000UL;
+
+        /* Max Run reached → off + gap */
+        if (elapsed_min >= auto_maxrun_min)
+        {
+            stop_motor();
+            autoState = AUTO_GAP_WAIT;
+            autoDeadline = now + auto_gap_s * 1000UL;
+            return;
+        }
+
+        /* Dry detected during running */
+        if (!senseDryRun)
+        {
+            stop_motor();
+            auto_retry_count++;
+
+            if (auto_retry_count >= auto_retry_limit)
+            {
+                autoState = AUTO_IDLE;
+                return;
+            }
+
+            autoState = AUTO_DRY_WAIT;
+            autoDeadline = now + auto_gap_s * 1000UL;
+            return;
+        }
+
+        /* Motor MUST remain ON */
+        start_motor();
+    }
+    break;
+
+    /* ====================================================
+       DRY → Wait GAP → retry
+       ==================================================== */
+    case AUTO_DRY_WAIT:
+        if (now >= autoDeadline)
+        {
+            start_motor();
+            autoState = AUTO_PROBE_ON; // next cycle again probes
+            autoDeadline = now + AUTO_PROBE_MS;
+        }
+        break;
+
+    /* ====================================================
+       NORMAL GAP → restart next cycle
+       ==================================================== */
+    case AUTO_GAP_WAIT:
+        if (now >= autoDeadline)
+        {
+            start_motor();
+            autoState = AUTO_PROBE_ON;  // first probe each cycle
+            autoDeadline = now + AUTO_PROBE_MS;
+        }
+        break;
+
+    case AUTO_IDLE:
+    default:
+        stop_motor();
+        break;
     }
 }
 

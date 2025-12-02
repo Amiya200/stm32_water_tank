@@ -24,17 +24,6 @@
 // === AC / Current sensing config ===
 #define VREF                      3.3f
 #define ADC_RES                   4095.0f
-//#define VOLTAGE_DIV_RATIO         66.67f   // ⚠️ adjust for your divider (e.g. 220V -> 3.3V)
-//#define ACS712_SENSITIVITY        0.066f   // V/A for ACS712-30A (185mV/A=5A, 100mV/A=20A, 66mV/A=30A)
-//#define ACS712_ZERO_OFFSET        (VREF / 2.0f)  // ~1.65V at 0A
-//
-//#define AC_OVERLOAD_CURRENT       5.0f     // Ampere threshold (adjust to motor rating)
-//#define AC_OVERVOLTAGE            260.0f   // Volt threshold (adjust as needed)
-//
-//// === Averaging and smoothing ===
-//#define AC_AVG_SAMPLES            20      // number of samples to average
-//#define AC_EMA_ALPHA              0.2f    // smoothing factor for EMA
-
 // === Exported for monitoring (Live Expressions) ===
 float g_adcVoltages[ADC_CHANNEL_COUNT] = {0};
 
@@ -116,10 +105,6 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
     {
         float v = readChannelVoltage(hadc, adcChannels[i]);
 
-        /* =====================================================
-           CHANNEL 0 — DRY RUN SENSOR ONLY
-           DO NOT USE FOR WATER LEVEL OR THRESHOLD LOGIC
-           ===================================================== */
         if (i == 0)
         {
             // Keep filtering so ModelHandle_CheckDryRun() works
@@ -137,10 +122,6 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
 
             continue; // 🔥 IMPORTANT: skip water-level logic
         }
-
-        /* =====================================================
-           CHANNELS 1–5 — WATER LEVEL PROCESSING
-           ===================================================== */
         if (s_filtered[i] == 0.0f)
             s_filtered[i] = v;
         else
@@ -161,10 +142,6 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
             changed = true;
             s_prev_volt[i] = v;
         }
-
-        // -------------------------
-        // Water level threshold logic
-        // -------------------------
         if (!s_level_flags[i] && v >= THR)
         {
             s_level_flags[i] = 1;
@@ -209,7 +186,6 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
         LoRa_SendPacket((uint8_t*)loraPacket, strlen(loraPacket));
     }
 }
-
 
 uint8_t ADC_CheckMaxVoltage(ADC_Data* data, float threshold)
 {

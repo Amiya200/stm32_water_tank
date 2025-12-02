@@ -38,4 +38,4 @@
 ../Core/Src/screen.c:632:13:goto_menu_top	1
 ../Core/Src/screen.c:643:13:menu_select	27
 ../Core/Src/screen.c:761:6:Screen_HandleSwitches	48
-../Core/Src/screen.c:986:6:Screen_Update	51
+../Core/Src/screen.c:994:6:Screen_Update	51

@@ -796,11 +796,19 @@ void Screen_HandleSwitches(void)
             /* ----------------------------------------------------
                SW1 SHORT → Restart pump immediately
                ---------------------------------------------------- */
-            case BTN_RESET:
-                ModelHandle_SetMotor(true);
-                ui = UI_DASH;
-                screenNeedsRefresh = true;
-                return;
+        case BTN_RESET:
+            reset();
+            lcd_clear();
+                lcd_put_cur(0, 0);
+                lcd_send_string(" Resetting...");
+                lcd_put_cur(1, 0);
+                lcd_send_string(" Please wait   ");
+                HAL_Delay(500);
+            ui = UI_DASH;
+            last_ui = UI_MAX_;     // <<< Force full LCD refresh
+            screenNeedsRefresh = true;
+            return;
+
 
             /* ----------------------------------------------------
                SW1 LONG → Toggle Manual Mode

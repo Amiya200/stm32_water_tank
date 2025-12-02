@@ -122,10 +122,8 @@ int main(void)
 {
     /* USER CODE BEGIN 1 */
     /* USER CODE END 1 */
-
       HAL_Init();
     SystemClock_Config();
-
     /* Initialize HAL peripherals */
     /* Initialize all configured peripherals */
     MX_GPIO_Init();
@@ -138,7 +136,7 @@ int main(void)
     /* ========== FIRST: INIT RTC BEFORE LCD ========== */
     RTC_Init();
     /* Set time ONLY ONCE — comment this line after first flash */
-//    RTC_SetTimeDate(0, 17, 15, 2, 25, 11, 2025);
+//    RTC_SetTimeDate(0, 34, 15, 4, 28, 11, 2025);
 
     RTC_GetTimeDate();
 
@@ -159,9 +157,6 @@ int main(void)
     ACS712_Init(&hadc1);
     loraMode = LORA_MODE_RECEIVER; // <<< change per device
 //    loraMode = LORA_MODE_TRANSMITTER;
-    /* ========== Continue with remaining logic... ========== */
-
-
     /* USER CODE END 2 */
 
     /* Infinite loop */
@@ -170,29 +165,22 @@ int main(void)
         /* == Sensor Updates == */
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
-
         /* == UI Buttons + Screen == */
         Screen_HandleSwitches();
         Screen_Update();
-
         /* == Update RTC time == */
         RTC_GetTimeDate();
-
         /* == Recalculate timer engine == */
         ModelHandle_TimerRecalculateNow();
-
         /* == UART Commands == */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
-
         /* == Core Motor Logic == */
         ModelHandle_Process();
         ModelHandle_ProcessDryRun();
-
-        /* == LED Blink == */
         /* == LoRa Communication == */
         LoRa_Task();
 
