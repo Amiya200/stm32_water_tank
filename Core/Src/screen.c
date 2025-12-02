@@ -329,21 +329,7 @@ static void show_manual(void){
 /* ================================================================
    TIMER MODE — OPTION A (5 Slots)
    ================================================================ */
-/*
-   Display Layout:
 
-   PAGE 1:
-   >S1 S2
-    S3 S4
-
-   PAGE 2:
-   >S3 S4
-    S5 Back
-
-   PAGE 3:
-   >S5
-    Back
-*/
 
 static int timer_page = 0;  // 0,1,2 depending on scroll
 
@@ -352,13 +338,6 @@ static void show_timer_slot_select(void){
 
     char l0[17] = {0};
     char l1[17] = {0};
-
-    /*
-       Timer Page Layouts
-       Page 0: S1 S2 / S3 S4
-       Page 1: S3 S4 / S5 Back
-       Page 2: S5 / Back
-    */
 
     if (timer_page == 0){
         snprintf(l0, sizeof(l0),
@@ -803,14 +782,28 @@ static void menu_select(void){
         return;
     }
 
-    /* COUNTDOWN SETTINGS */
-    if (ui == UI_COUNTDOWN_EDIT_MIN){
-        apply_countdown_settings();
-        ui = UI_COUNTDOWN;
-        screenNeedsRefresh = true;
-        return;
-    }
-}
+    /* ---------------- COUNTDOWN MODE FLOW ---------------- */
+
+       if(ui == UI_COUNTDOWN){
+           if(countdownActive){
+               ModelHandle_StopCountdown();
+               screenNeedsRefresh = true;
+           }
+           else{
+               ui = UI_COUNTDOWN_EDIT_MIN;
+               screenNeedsRefresh = true;
+           }
+           return;
+       }
+
+       if(ui == UI_COUNTDOWN_EDIT_MIN){
+           apply_countdown_settings();
+           ui = UI_COUNTDOWN;
+           screenNeedsRefresh = true;
+           return;
+       }
+   }
+
 
 /* ================================================================
    EDIT VALUE ENGINE
@@ -891,6 +884,10 @@ void Screen_HandleSwitches(void)
             if (ui == UI_MENU){
                 if (menu_idx > 0) menu_idx--;
             }
+            else if (ui != UI_COUNTDOWN) {
+                            increase_edit_value();
+                        }
+
             else if (ui == UI_TIMER_SLOT_SELECT){
                 /* scroll UP among 0..5 */
                 if (currentSlot > 0) currentSlot--;
@@ -905,25 +902,58 @@ void Screen_HandleSwitches(void)
         }
     }
 
+    /* ============================================================
+       COMMON LONG-PRESS HANDLER (sw4 + long press)
+       ============================================================ */
     if (sw4 && sw_long_issued[3]) {
+
+        /* ------------------------------------------
+           SPECIAL CASE: COUNTDOWN LONG-PRESS INCREMENT
+           ------------------------------------------ */
+        if (ui == UI_DASH || ui == UI_COUNTDOWN) {
+
+            static uint32_t cd_last_inc = 0;
+
+            if (ui == UI_DASH) {
+                ui = UI_COUNTDOWN;
+                screenNeedsRefresh = true;
+            }
+
+            show_countdown();   // live view
+
+            if (now - cd_last_inc >= COUNTDOWN_INC_MS) {
+                cd_last_inc = now;
+                edit_countdown_min++;
+                countdownDuration = edit_countdown_min * 60;
+                show_countdown();   // refresh again
+            }
+
+            return;   // IMPORTANT: skip all other long-press logic
+        }
+
+        /* ------------------------------------------
+           NORMAL LONG-PRESS REPEAT HANDLING
+           ------------------------------------------ */
         if (now - last_repeat_time >= CONTINUOUS_STEP_MS) {
             last_repeat_time = now;
 
-            if (ui == UI_MENU){
-                if (menu_idx < MAIN_MENU_COUNT-1) menu_idx++;
+            if (ui == UI_MENU) {
+                if (menu_idx < MAIN_MENU_COUNT - 1) menu_idx++;
             }
-            else if (ui == UI_TIMER_SLOT_SELECT){
+            else if (ui == UI_TIMER_SLOT_SELECT) {
                 if (currentSlot < 5) currentSlot++;
-                if (currentSlot < 2) timer_page = 0;
+                if (currentSlot < 2)      timer_page = 0;
                 else if (currentSlot < 5) timer_page = 1;
-                else timer_page = 2;
+                else                      timer_page = 2;
             }
             else {
                 decrease_edit_value();
             }
+
             screenNeedsRefresh = true;
         }
     }
+
 
     /* NO BUTTON EVENT */
     if (b == BTN_NONE)

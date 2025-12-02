@@ -2,4 +2,4 @@
 ../Core/Src/uart_commands.c:13:20:err	16	static
 ../Core/Src/uart_commands.c:27:14:next_token	24	static
 ../Core/Src/uart_commands.c:39:6:UART_SendStatusPacket	112	static
-../Core/Src/uart_commands.c:84:6:UART_HandleCommand	184	static
+../Core/Src/uart_commands.c:84:6:UART_HandleCommand	192	static

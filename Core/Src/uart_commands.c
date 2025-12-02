@@ -110,6 +110,31 @@ void UART_HandleCommand(const char *pkt)
         else { err("FORMAT"); return; }
         ack("MANUAL_OK");
     }
+    /* ---- AUTO ---- */
+    else if (!strcmp(cmd, "AUTO"))
+    {
+        char *state = next_token(&ctx);
+        if (!state) { err("PARAM"); return; }
+
+        if (!strcmp(state, "ON"))
+        {
+//            clear_all_modes();
+            autoActive = true;
+//            start_motor();      // Auto mode immediately runs dry-run FSM
+            ack("AUTO_ON");
+        }
+        else if (!strcmp(state, "OFF"))
+        {
+            autoActive = false;
+//            stop_motor();
+            ack("AUTO_OFF");
+        }
+        else
+        {
+            err("FORMAT");
+        }
+    }
+
 
     /* ---- TWIST ---- */
     else if (!strcmp(cmd, "TWIST"))
