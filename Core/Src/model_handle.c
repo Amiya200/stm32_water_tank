@@ -106,8 +106,20 @@ void ModelHandle_SetMotor(bool on)
     if (on) start_motor();
     else    stop_motor();
 }
-void Reset(void){
-
+void reset(void){
+	if (Motor_GetStatus())  // If motor is ON
+	  {
+	    // Turn OFF motor for 2-3 seconds, then turn ON again
+	    stop_motor();     // Turn OFF motor
+	    HAL_Delay(2000);  // Wait for 2 seconds
+	    start_motor();    // Turn ON motor
+	  } else              // If motor is OFF
+	  {
+	    // Turn ON motor for 2-3 seconds, then turn OFF again
+	    start_motor();    // Turn ON motor
+	    HAL_Delay(2000);  // Wait for 2 seconds
+	    stop_motor();     // Turn OFF motor
+	  }
 }
 /* ============================================================
    TANK FULL DETECTION

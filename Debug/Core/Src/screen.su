@@ -38,4 +38,4 @@
 ../Core/Src/screen.c:625:13:goto_menu_top	4	static
 ../Core/Src/screen.c:630:13:menu_select	8	static
 ../Core/Src/screen.c:743:6:Screen_HandleSwitches	16	static
-../Core/Src/screen.c:918:6:Screen_Update	16	static
+../Core/Src/screen.c:928:6:Screen_Update	16	static

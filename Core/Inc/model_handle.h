@@ -9,13 +9,16 @@
    TIMER SLOT
    ============================================================ */
 typedef struct {
-    bool enabled;
-    uint8_t dayMask;      // bit0 = Monday ... bit6 = Sunday
-    uint8_t onHour;
+    bool enabled;               // slot enabled/disabled
+    uint8_t onHour;             // ON time
     uint8_t onMinute;
-    uint8_t offHour;
+    uint8_t offHour;            // OFF time
     uint8_t offMinute;
+
+    uint8_t dayMask;            // NEW: bitmask Mon–Sun (Mon=1<<0)
 } TimerSlot;
+
+extern TimerSlot timerSlots[5];
 
 /* ============================================================
    TWIST MODE SETTINGS
