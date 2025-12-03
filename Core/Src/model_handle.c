@@ -1148,15 +1148,24 @@ void ModelHandle_ResetAll(void)
 /***************************************************************
  * ===================== AUTO SETTINGS API ======================
  ***************************************************************/
-void ModelHandle_SetAutoSettings(uint16_t gap_s,
-                                 uint16_t maxrun_min,
-                                 uint8_t retry_count)
+void ModelHandle_SetAutoSettings(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry)
 {
     auto_gap_s       = gap_s;
     auto_maxrun_min  = maxrun_min;
-    auto_retry_limit = retry_count;
-    auto_retry_count = 0;
+    auto_retry_limit = retry;
+
+    // Optional: save to EEPROM
+    EEPROM_WriteBuffer(0x0300, (uint8_t*)&auto_gap_s, sizeof(auto_gap_s));
+    EEPROM_WriteBuffer(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
+    EEPROM_WriteBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
 }
+void ModelHandle_LoadAutoSettings()
+{
+    EEPROM_ReadBuffer(0x0300, (uint8_t*)&auto_gap_s, sizeof(auto_gap_s));
+    EEPROM_ReadBuffer(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
+    EEPROM_ReadBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
+}
+
 
 bool ModelHandle_IsAutoActive(void)
 {

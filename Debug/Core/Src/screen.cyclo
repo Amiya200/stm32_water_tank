@@ -49,8 +49,8 @@
 ../Core/Src/screen.c:675:13:advance_settings_flow	9
 ../Core/Src/screen.c:723:13:goto_menu_top	1
 ../Core/Src/screen.c:728:13:menu_select	33
-../Core/Src/screen.c:931:17:decode_button_press	18
-../Core/Src/screen.c:979:6:increase_edit_value	36
-../Core/Src/screen.c:1045:6:decrease_edit_value	44
-../Core/Src/screen.c:1115:6:Screen_HandleSwitches	124
-../Core/Src/screen.c:1495:6:Screen_Update	46
+../Core/Src/screen.c:934:17:decode_button_press	18
+../Core/Src/screen.c:982:6:increase_edit_value	36
+../Core/Src/screen.c:1048:6:decrease_edit_value	44
+../Core/Src/screen.c:1118:6:Screen_HandleSwitches	130
+../Core/Src/screen.c:1510:6:Screen_Update	46

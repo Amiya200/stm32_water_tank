@@ -53,6 +53,7 @@
 ../Core/Src/model_handle.c:1046:6:ModelHandle_Process	8	static
 ../Core/Src/model_handle.c:1133:6:ModelHandle_ResetAll	8	static
 ../Core/Src/model_handle.c:1151:6:ModelHandle_SetAutoSettings	16	static
-../Core/Src/model_handle.c:1161:6:ModelHandle_IsAutoActive	4	static
-../Core/Src/model_handle.c:1169:6:ModelHandle_SaveCurrentStateToEEPROM	24	static
-../Core/Src/model_handle.c:1189:6:ModelHandle_SetTimerSlot	16	static
+../Core/Src/model_handle.c:1162:6:ModelHandle_LoadAutoSettings	8	static
+../Core/Src/model_handle.c:1170:6:ModelHandle_IsAutoActive	4	static
+../Core/Src/model_handle.c:1178:6:ModelHandle_SaveCurrentStateToEEPROM	24	static
+../Core/Src/model_handle.c:1198:6:ModelHandle_SetTimerSlot	16	static
