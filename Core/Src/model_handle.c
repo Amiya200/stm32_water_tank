@@ -52,6 +52,25 @@ volatile bool senseDryRun         = false;   // TRUE = WATER PRESENT
 volatile bool senseOverLoad       = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
+// USER CONFIGURABLE SETTINGS (persistent)
+static uint16_t user_gap_s        = 10;     // Default
+static uint8_t  user_retry_count  = 3;
+static uint16_t user_uv_limit     = 180;
+static uint16_t user_ov_limit     = 260;
+static float    user_overload     = 6.5f;
+static float    user_underload    = 0.5f;
+static uint16_t user_maxrun_min   = 120;
+
+uint16_t sys_gap_time_s;
+uint8_t  sys_retry_count;
+
+uint16_t sys_uv_limit;
+uint16_t sys_ov_limit;
+
+float sys_overload_limit;
+float sys_underload_limit;
+
+uint16_t sys_maxrun_min;
 
 /***************************************************************
  *  MANUAL OVERRIDE FLAG
@@ -64,6 +83,64 @@ volatile bool manualOverride = false;
 static inline uint32_t now_ms(void)
 {
     return HAL_GetTick();
+}
+uint16_t ModelHandle_GetGapTime(void) {
+    return user_gap_s;
+}
+
+uint8_t ModelHandle_GetRetryCount(void) {
+    return user_retry_count;
+}
+
+uint16_t ModelHandle_GetUnderVolt(void) {
+    return user_uv_limit;
+}
+
+uint16_t ModelHandle_GetOverVolt(void) {
+    return user_ov_limit;
+}
+
+float ModelHandle_GetOverloadLimit(void) {
+    return user_overload;
+}
+
+float ModelHandle_GetUnderloadLimit(void) {
+    return user_underload;
+}
+
+uint16_t ModelHandle_GetMaxRunTime(void) {
+    return user_maxrun_min;
+}
+void ModelHandle_SetUserSettings(
+    uint16_t gap_s,
+    uint8_t retry,
+    uint16_t uv,
+    uint16_t ov,
+    float overload,
+    float underload,
+    uint16_t maxrun_min
+){
+    user_gap_s = gap_s;
+    user_retry_count = retry;
+    user_uv_limit = uv;
+    user_ov_limit = ov;
+    user_overload = overload;
+    user_underload = underload;
+    user_maxrun_min = maxrun_min;
+
+    // Optional: Save to EEPROM here later
+}
+void ModelHandle_FactoryReset(void)
+{
+    user_gap_s       = 10;
+    user_retry_count = 3;
+    user_uv_limit    = 180;
+    user_ov_limit    = 260;
+    user_overload    = 6.5f;
+    user_underload   = 0.5f;
+    user_maxrun_min  = 120;
+
+    // Optional: EEPROM_SaveDefaults();
 }
 
 static inline void clear_all_modes(void)

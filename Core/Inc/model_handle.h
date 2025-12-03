@@ -17,6 +17,17 @@ typedef struct {
 
     uint8_t dayMask;            // NEW: bitmask Mon–Sun (Mon=1<<0)
 } TimerSlot;
+typedef struct {
+    uint16_t gap_time_s;
+    uint8_t  retry_count;
+    uint16_t uv_limit;
+    uint16_t ov_limit;
+    float overload;
+    float underload;
+    uint16_t maxrun_min;
+} SystemSettings;
+
+extern SystemSettings sys;
 
 extern TimerSlot timerSlots[5];
 
