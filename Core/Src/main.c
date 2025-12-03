@@ -122,10 +122,11 @@ int main(void)
 {
     /* USER CODE BEGIN 1 */
     /* USER CODE END 1 */
-      HAL_Init();
+
+    HAL_Init();
     SystemClock_Config();
+
     /* Initialize HAL peripherals */
-    /* Initialize all configured peripherals */
     MX_GPIO_Init();
     MX_ADC1_Init();
     MX_SPI1_Init();
@@ -136,17 +137,14 @@ int main(void)
     /* ========== FIRST: INIT RTC BEFORE LCD ========== */
     RTC_Init();
     /* Set time ONLY ONCE — comment this line after first flash */
-//    RTC_SetTimeDate(0, 34, 15, 4, 28, 11, 2025);
+    // RTC_SetTimeDate(0, 22, 11, 3, 3, 12, 2025);
 
     RTC_GetTimeDate();
-
-    /* Debug confirmation */
 
     /* ========== SECOND: INIT LCD AFTER RTC ========== */
     lcd_init();
 
-    /* ========== Then all other modules ========== */
-//    RF_Init();
+    /* ========== Then other modules ========== */
     ADC_Init(&hadc1);
     LoRa_Init();
     Screen_Init();
@@ -155,8 +153,9 @@ int main(void)
     Relay_Init();
     LED_Init();
     ACS712_Init(&hadc1);
-    loraMode = LORA_MODE_RECEIVER; // <<< change per device
-//    loraMode = LORA_MODE_TRANSMITTER;
+
+    loraMode = LORA_MODE_RECEIVER;
+
     /* USER CODE END 2 */
 
     /* Infinite loop */
@@ -165,25 +164,35 @@ int main(void)
         /* == Sensor Updates == */
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
+
         /* == UI Buttons + Screen == */
         Screen_HandleSwitches();
         Screen_Update();
+
         /* == Update RTC time == */
         RTC_GetTimeDate();
+
         /* == Recalculate timer engine == */
         ModelHandle_TimerRecalculateNow();
+
+        /* == NEW LOGIC — AUTO TIMER ACTIVATION == */
+        ModelHandle_CheckAutoTimerActivation();
+
         /* == UART Commands == */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
+
         /* == Core Motor Logic == */
         ModelHandle_Process();
         ModelHandle_ProcessDryRun();
+
         /* == LoRa Communication == */
         LoRa_Task();
 
+        /* == LED Updates == */
         LED_Task();
 
         HAL_Delay(10);  // ~50Hz loop
@@ -191,6 +200,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 }
+
 /**
   * @brief System Clock Configuration
   * @retval None

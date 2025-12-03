@@ -356,45 +356,46 @@ void ModelHandle_ProcessDryRun(void)
 {
     ModelHandle_SoftDryRunHandler();
 }
-
 /***************************************************************
  * ======================== TIMER MODE =========================
- *  DS1307 dow: 1=Mon … 7=Sun
- *  dayMask: bit0=Mon … bit6=Sun
+ * DS1307 dow: 1=Mon to 7=Sun
+ * dayMask: bit0=Mon to bit6=Sun
  ***************************************************************/
 
-/* Convert RTC DOW into mask bit */
+/* Convert RTC DOW into bit mask */
 static inline uint8_t get_today_mask(void)
 {
-    uint8_t dow = time.dow;       // DS1307: 1..7
+    uint8_t dow = time.dow;  /* valid range 1..7 */
     if (dow < 1 || dow > 7)
         dow = 1;
-    return (1u << (dow - 1));     // Mon=bit0 ... Sun=bit6
+    return (1u << (dow - 1)); /* Mon->bit0 ... Sun->bit6 */
 }
 
-/* Check if slot should run now (enabled + day + time window) */
-static bool timer_slot_should_run(const TimerSlot *t)
+/* Check if slot active at current HH:MM */
+static bool slot_is_active_now(const TimerSlot *t)
 {
     if (!t->enabled)
         return false;
 
-    /* Day check */
-    uint8_t maskToday = get_today_mask();
-    if ((t->dayMask & maskToday) == 0)
+    /* Day match */
+    uint8_t todayMask = get_today_mask();
+    if ((t->dayMask & todayMask) == 0)
         return false;
 
-    /* Time-of-day check */
-    uint32_t nowS = (uint32_t)time.hour * 3600UL + (uint32_t)time.min * 60UL;
+    /* Time compare HH:MM only */
+    uint16_t nowHM = time.hour * 60 + time.min;
+    uint16_t onHM  = t->onHour * 60 + t->onMinute;
+    uint16_t offHM = t->offHour * 60 + t->offMinute;
 
-    uint32_t onS  = ((uint32_t)t->onHour  * 3600UL) + (t->onMinute  * 60UL);
-    uint32_t offS = ((uint32_t)t->offHour * 3600UL) + (t->offMinute * 60UL);
-
-    /* Normal window (on < off) */
-    if (onS < offS)
-        return (nowS >= onS && nowS < offS);
-
-    /* Overnight window (on > off) */
-    return (nowS >= onS || nowS < offS);
+    if (onHM < offHM)
+    {
+        return (nowHM >= onHM && nowHM < offHM);
+    }
+    else
+    {
+        /* Overnight slot */
+        return (nowHM >= onHM || nowHM < offHM);
+    }
 }
 
 /* Check if ANY slot is active */
@@ -402,65 +403,38 @@ static bool timer_any_active_slot(void)
 {
     for (int i = 0; i < 5; i++)
     {
-        if (timer_slot_should_run(&timerSlots[i]))
+        if (slot_is_active_now(&timerSlots[i]))
             return true;
     }
     return false;
 }
-static bool slot_is_active_now(TimerSlot *t)
-{
-    if (!t->enabled)
-        return false;
-
-    uint8_t today = time.dow;     // 1=Mon ... 7=Sun
-    uint8_t mask = (1 << (today - 1));
-
-    if (!(t->dayMask & mask))
-        return false;
-
-    uint32_t now = time.hour * 3600 + time.min * 60;
-    uint32_t on  = t->onHour  * 3600 + t->onMinute  * 60;
-    uint32_t off = t->offHour * 3600 + t->offMinute * 60;
-
-    if (on < off)
-        return (now >= on && now < off);
-
-    // OVERNIGHT SLOT (ex: 22:00 → 06:00)
-    return (now >= on || now < off);
-}
 
 /***************************************************************
- *  Start nearest timer slot (from UI SW3 short press)
+ * Start nearest timer slot (SW3 short press)
  ***************************************************************/
 void ModelHandle_StartTimerNearestSlot(void)
 {
-    clear_all_modes();
+    clear_all_modes(); /* original must NOT clear timerActive */
     timerActive = true;
 
-    /* Force latest RTC time */
     RTC_GetTimeDate();
 
-    uint32_t nowS = time.hour * 3600UL + time.min * 60UL;
+    uint16_t nowHM = time.hour * 60 + time.min;
 
+    uint16_t bestDiff = 20000;
     int best = -1;
-    uint32_t bestDiff = 86400UL;
 
     for (int i = 0; i < 5; i++)
     {
         TimerSlot *t = &timerSlots[i];
+        if (!t->enabled) continue;
 
-        if (!t->enabled)
-            continue;
+        uint8_t todayMask = get_today_mask();
+        if (!(t->dayMask & todayMask)) continue;
 
-        uint8_t maskToday = get_today_mask();
-        if ((t->dayMask & maskToday) == 0)
-            continue;
-
-        uint32_t onS = t->onHour * 3600UL + t->onMinute * 60UL;
-
-        uint32_t diff = (onS >= nowS)
-                      ? (onS - nowS)
-                      : (86400UL - (nowS - onS));
+        uint16_t onHM = t->onHour * 60 + t->onMinute;
+        uint16_t diff = (onHM >= nowHM) ? (onHM - nowHM)
+                                        : (1440 - (nowHM - onHM));
 
         if (diff < bestDiff)
         {
@@ -469,92 +443,52 @@ void ModelHandle_StartTimerNearestSlot(void)
         }
     }
 
-    /* If we found a valid slot → recalc normally */
-    if (best >= 0)
-    {
-        ModelHandle_TimerRecalculateNow();
-    }
-    else
-    {
-        /* No slot today → motor must remain OFF */
-        stop_motor();
-    }
+    /* Apply */
+    ModelHandle_ProcessTimerSlots();
 }
+
+/***************************************************************
+ * MAIN TIMER PROCESSOR (called every loop)
+ ***************************************************************/
 void ModelHandle_ProcessTimerSlots(void)
 {
     if (!timerActive)
         return;
 
-    bool active = false;
+    senseDryRun = true; /* ignore dry run */
 
-    for (int i = 0; i < 5; i++)
-    {
-        if (slot_is_active_now(&timerSlots[i]))
-        {
-            active = true;
-            break;
-        }
-    }
-
-    if (active)
-    {
-        // IGNORE DRY RUN IN TIMER MODE (your requirement)
-        senseDryRun = true;
-
+    if (timer_any_active_slot())
         start_motor();
-    }
     else
-    {
         stop_motor();
-    }
 }
 
 /***************************************************************
- *  Force timer evaluation (called after editing slots)
+ * Force timer recalculation
  ***************************************************************/
 void ModelHandle_TimerRecalculateNow(void)
 {
     if (!timerActive)
         return;
 
-    bool active = timer_any_active_slot();
+    senseDryRun = true;
 
-    if (active)
-    {
+    if (timer_any_active_slot())
         start_motor();
-        ModelHandle_CheckDryRun();
-
-        if (senseDryRun)
-            stop_motor();   // water needed but dry
-    }
     else
-    {
         stop_motor();
-    }
 }
 
 /***************************************************************
- *  Start/Stop Timer Mode
+ * Start / Stop Timer Mode
  ***************************************************************/
 void ModelHandle_StartTimer(void)
 {
     clear_all_modes();
     timerActive = true;
+    senseDryRun = true;
 
-    bool active = timer_any_active_slot();
-
-    if (active)
-    {
-        start_motor();
-        ModelHandle_CheckDryRun();
-
-        if (senseDryRun)
-            stop_motor();
-    }
-    else
-    {
-        stop_motor();
-    }
+    ModelHandle_TimerRecalculateNow();
 }
 
 void ModelHandle_StopTimer(void)
@@ -564,35 +498,22 @@ void ModelHandle_StopTimer(void)
 }
 
 /***************************************************************
- *  TIMER TICK — called every loop
+ * Legacy timer tick (kept minimal)
  ***************************************************************/
 static void timer_tick(void)
 {
-    if (!timerActive)
+    ModelHandle_ProcessTimerSlots();
+}
+void ModelHandle_CheckAutoTimerActivation(void)
+{
+    if (timerActive)
         return;
 
-    /* Tank full overrides everything */
-    if (isTankFull())
+    if (timer_any_active_slot())
     {
-        stop_motor();
-        return;
-    }
-
-    bool run = timer_any_active_slot();
-
-    if (run)
-    {
+        timerActive = true;
+        senseDryRun = true;
         start_motor();
-
-        /* Dry-run valid in TIMER mode */
-        ModelHandle_CheckDryRun();
-
-        if (senseDryRun)
-            stop_motor();
-    }
-    else
-    {
-        stop_motor();
     }
 }
 
