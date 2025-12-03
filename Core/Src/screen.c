@@ -42,6 +42,8 @@ typedef enum {
     UI_TIMER_EDIT_SLOT_ON_M,
     UI_TIMER_EDIT_SLOT_OFF_H,
     UI_TIMER_EDIT_SLOT_OFF_M,
+    UI_TIMER_EDIT_SLOT_DAYS,
+    UI_TIMER_EDIT_SLOT_ENABLE,
 
     UI_AUTO_MENU,
     UI_AUTO_EDIT_GAP,
@@ -125,6 +127,9 @@ extern volatile uint32_t countdownDuration;
 
 static uint8_t  edit_timer_on_h  = 0,  edit_timer_on_m  = 0;
 static uint8_t  edit_timer_off_h = 0, edit_timer_off_m = 0;
+static uint8_t  edit_timer_dayMask   = 0x7F;   // bit0=Mon ... bit6=Sun
+static uint8_t  edit_timer_dayIndex  = 0;      // which day we are editing
+static bool     edit_timer_enabled   = true;
 
 static uint16_t edit_auto_gap_s      = 60;
 static uint16_t edit_auto_maxrun_min = 120;
@@ -282,6 +287,10 @@ static inline void lcd_val_next(uint16_t v){
     snprintf(buf, sizeof(buf), "val:%03u   Next>", v);
     lcd_line1(buf);
 }
+
+/* ================================================================
+   INIT
+   ================================================================ */
 void Screen_Init(void)
 {
     lcd_init();                   // Initialize I2C LCD
@@ -307,8 +316,6 @@ void Screen_Init(void)
     menu_idx = 0;
     menu_view_top = 0;
 
-    /* Timer slot UI state */
-
     /* Initial welcome screen */
     lcd_put_cur(0, 0);
     lcd_send_string("   HELONIX");
@@ -330,42 +337,49 @@ static void show_manual(void){
    TIMER MODE — OPTION A (5 Slots)
    ================================================================ */
 
-
 static int timer_page = 0;  // 0,1,2 depending on scroll
 
-static void show_timer_slot_select(void){
+static void show_timer_slot_select(void)
+{
     lcd_clear();
 
     char l0[17] = {0};
     char l1[17] = {0};
 
-    if (timer_page == 0){
+    if (timer_page == 0)      // S1, S2, S3, S4
+    {
         snprintf(l0, sizeof(l0),
-                 "%cS1  S2",
-                 (currentSlot == 0 || currentSlot == 1) ? '>' : ' ');
+                 "%cS1   %cS2",
+                 (currentSlot == 0 ? '>' : ' '),
+                 (currentSlot == 1 ? '>' : ' '));
 
         snprintf(l1, sizeof(l1),
-                 "%cS3  S4",
-                 (currentSlot == 2 || currentSlot == 3) ? '>' : ' ');
+                 "%cS3   %cS4",
+                 (currentSlot == 2 ? '>' : ' '),
+                 (currentSlot == 3 ? '>' : ' '));
     }
-    else if (timer_page == 1){
+    else if (timer_page == 1) // S3, S4, S5, Back
+    {
         snprintf(l0, sizeof(l0),
-                 "%cS3  S4",
-                 (currentSlot == 2 || currentSlot == 3) ? '>' : ' ');
+                 "%cS3   %cS4",
+                 (currentSlot == 2 ? '>' : ' '),
+                 (currentSlot == 3 ? '>' : ' '));
 
         snprintf(l1, sizeof(l1),
-                 "%cS5  Back",
-                 (currentSlot == 4) ? '>' :
-                 (currentSlot == 5) ? '>' : ' ');
+                 "%cS5   %cBack",
+                 (currentSlot == 4 ? '>' :
+                  currentSlot == 5 ? '>' : ' '),
+                 (currentSlot == 5 ? '>' : ' '));
     }
-    else if (timer_page == 2){
+    else                      // timer_page == 2 → S5 + Back
+    {
         snprintf(l0, sizeof(l0),
                  "%cS5",
-                 (currentSlot == 4) ? '>' : ' ');
+                 (currentSlot == 4 ? '>' : ' '));
 
         snprintf(l1, sizeof(l1),
                  "%cBack",
-                 (currentSlot == 5) ? '>' : ' ');
+                 (currentSlot == 5 ? '>' : ' '));
     }
 
     lcd_line0(l0);
@@ -404,6 +418,27 @@ static void show_timer_off_h(void){
 static void show_timer_off_m(void){
     lcd_line0("TIMER OFF MIN");
     lcd_val_next(edit_timer_off_m);
+}
+
+/* Timer days selection (per-slot, Mon..Sun) */
+static void show_timer_days(void){
+    char pattern[8];
+    const char names[7] = {'M','T','W','T','F','S','S'};
+    for (int i = 0; i < 7; i++){
+        pattern[i] = (edit_timer_dayMask & (1u << i)) ? names[i] : '-';
+    }
+    pattern[7] = '\0';
+
+    char l0[17];
+    snprintf(l0, sizeof(l0), "Days:%-7s", pattern);
+    lcd_line0(l0);
+    lcd_line1("U:Next D:Toggle");
+}
+
+/* Per-slot enable / disable */
+static void show_timer_enable(void){
+    lcd_line0("SLOT ENABLED?");
+    lcd_line1(edit_timer_enabled ? "val:YES   Next>" : "val:NO    Next>");
 }
 
 /* ================================================================
@@ -520,11 +555,16 @@ static void show_countdown_edit_min(void){
 
 static void apply_timer_settings(void){
     TimerSlot *t = &timerSlots[currentSlot];
-    t->enabled  = true;
-    t->onHour   = edit_timer_on_h;
-    t->onMinute = edit_timer_on_m;
-    t->offHour  = edit_timer_off_h;
-    t->offMinute= edit_timer_off_m;
+
+    /* Copy edited time window */
+    t->onHour    = edit_timer_on_h;
+    t->onMinute  = edit_timer_on_m;
+    t->offHour   = edit_timer_off_h;
+    t->offMinute = edit_timer_off_m;
+
+    /* Copy days + enabled flag */
+    t->dayMask   = edit_timer_dayMask;
+    t->enabled   = edit_timer_enabled;
 
     extern void ModelHandle_TimerRecalculateNow(void);
     ModelHandle_TimerRecalculateNow();
@@ -555,6 +595,7 @@ static void apply_countdown_settings(void){
 
     countdownDuration = (uint32_t)edit_countdown_min * 60u;
 }
+
 /***************************************************************
  *  SCREEN.C — PART 3 / 4 (UPDATED FINAL VERSION)
  *  BUTTON DECODER + MENU LOCK + TIMER SLOT ENGINE (OPTION-A)
@@ -688,10 +729,13 @@ static void menu_select(void){
         }
 
         /* Load slot into edit buffer */
-        edit_timer_on_h  = timerSlots[currentSlot].onHour;
-        edit_timer_on_m  = timerSlots[currentSlot].onMinute;
-        edit_timer_off_h = timerSlots[currentSlot].offHour;
-        edit_timer_off_m = timerSlots[currentSlot].offMinute;
+        edit_timer_on_h   = timerSlots[currentSlot].onHour;
+        edit_timer_on_m   = timerSlots[currentSlot].onMinute;
+        edit_timer_off_h  = timerSlots[currentSlot].offHour;
+        edit_timer_off_m  = timerSlots[currentSlot].offMinute;
+        edit_timer_dayMask= timerSlots[currentSlot].dayMask;
+        edit_timer_enabled= timerSlots[currentSlot].enabled;
+        edit_timer_dayIndex = 0;   /* start from Monday */
 
         ui = UI_TIMER_EDIT_SLOT_ON_H;
         screenNeedsRefresh = true;
@@ -715,6 +759,19 @@ static void menu_select(void){
         return;
     }
     if (ui == UI_TIMER_EDIT_SLOT_OFF_M){
+        /* After OFF minute → go to day selection */
+        ui = UI_TIMER_EDIT_SLOT_DAYS;
+        screenNeedsRefresh = true;
+        return;
+    }
+    if (ui == UI_TIMER_EDIT_SLOT_DAYS){
+        /* After days → go to enable/disable */
+        ui = UI_TIMER_EDIT_SLOT_ENABLE;
+        screenNeedsRefresh = true;
+        return;
+    }
+    if (ui == UI_TIMER_EDIT_SLOT_ENABLE){
+        /* Final step → apply everything */
         apply_timer_settings();
         ui = UI_TIMER_SLOT_SELECT;
         screenNeedsRefresh = true;
@@ -784,26 +841,25 @@ static void menu_select(void){
 
     /* ---------------- COUNTDOWN MODE FLOW ---------------- */
 
-       if(ui == UI_COUNTDOWN){
-           if(countdownActive){
-               ModelHandle_StopCountdown();
-               screenNeedsRefresh = true;
-           }
-           else{
-               ui = UI_COUNTDOWN_EDIT_MIN;
-               screenNeedsRefresh = true;
-           }
-           return;
-       }
+    if(ui == UI_COUNTDOWN){
+        if(countdownActive){
+            ModelHandle_StopCountdown();
+            screenNeedsRefresh = true;
+        }
+        else{
+            ui = UI_COUNTDOWN_EDIT_MIN;
+            screenNeedsRefresh = true;
+        }
+        return;
+    }
 
-       if(ui == UI_COUNTDOWN_EDIT_MIN){
-           apply_countdown_settings();
-           ui = UI_COUNTDOWN;
-           screenNeedsRefresh = true;
-           return;
-       }
-   }
-
+    if(ui == UI_COUNTDOWN_EDIT_MIN){
+        apply_countdown_settings();
+        ui = UI_COUNTDOWN;
+        screenNeedsRefresh = true;
+        return;
+    }
+}
 
 /* ================================================================
    EDIT VALUE ENGINE
@@ -876,7 +932,13 @@ void Screen_HandleSwitches(void)
     /* ==========================================
        CONTINUOUS HOLD FOR MENU + EDIT ONLY
        ========================================== */
-
+    if (b == BTN_RESET_LONG)
+    {
+        ModelHandle_ToggleManual();
+        ui = UI_DASH;
+        screenNeedsRefresh = true;
+        return;
+    }
     if (sw3 && sw_long_issued[2]) {
         if (now - last_repeat_time >= CONTINUOUS_STEP_MS) {
             last_repeat_time = now;
@@ -885,8 +947,8 @@ void Screen_HandleSwitches(void)
                 if (menu_idx > 0) menu_idx--;
             }
             else if (ui != UI_COUNTDOWN) {
-                            increase_edit_value();
-                        }
+                increase_edit_value();
+            }
 
             else if (ui == UI_TIMER_SLOT_SELECT){
                 /* scroll UP among 0..5 */
@@ -954,7 +1016,6 @@ void Screen_HandleSwitches(void)
         }
     }
 
-
     /* NO BUTTON EVENT */
     if (b == BTN_NONE)
         return;
@@ -973,6 +1034,8 @@ void Screen_HandleSwitches(void)
          ui == UI_TIMER_EDIT_SLOT_ON_M ||
          ui == UI_TIMER_EDIT_SLOT_OFF_H ||
          ui == UI_TIMER_EDIT_SLOT_OFF_M ||
+         ui == UI_TIMER_EDIT_SLOT_DAYS ||
+         ui == UI_TIMER_EDIT_SLOT_ENABLE ||
          ui == UI_AUTO_MENU ||
          ui == UI_AUTO_EDIT_GAP ||
          ui == UI_AUTO_EDIT_MAXRUN ||
@@ -1049,6 +1112,67 @@ void Screen_HandleSwitches(void)
                     ui = UI_MENU; break;
 
                 default: break;
+            }
+            screenNeedsRefresh = true;
+            return;
+        }
+
+        /* -------- TIMER DAYS SELECTION -------- */
+        if (ui == UI_TIMER_EDIT_SLOT_DAYS){
+            switch(b){
+                case BTN_UP:
+                case BTN_UP_LONG:
+                    /* Move to next day (0..6 circular) */
+                    edit_timer_dayIndex = (edit_timer_dayIndex + 1) % 7;
+                    break;
+
+                case BTN_DOWN:
+                case BTN_DOWN_LONG:
+                    /* Toggle current day bit */
+                    edit_timer_dayMask ^= (1u << edit_timer_dayIndex);
+                    break;
+
+                case BTN_SELECT:
+                    /* Advance to enable/disable step */
+                    menu_select();
+                    break;
+
+                case BTN_RESET:
+                    /* Cancel edit, go back to slot select */
+                    ui = UI_TIMER_SLOT_SELECT;
+                    break;
+
+                default:
+                    break;
+            }
+            screenNeedsRefresh = true;
+            return;
+        }
+
+        /* -------- TIMER SLOT ENABLE/DISABLE -------- */
+        if (ui == UI_TIMER_EDIT_SLOT_ENABLE){
+            switch(b){
+                case BTN_UP:
+                case BTN_UP_LONG:
+                case BTN_DOWN:
+                case BTN_DOWN_LONG:
+                    /* Toggle enabled flag */
+                    edit_timer_enabled = !edit_timer_enabled;
+                    break;
+
+                case BTN_SELECT:
+                    /* Apply settings and return to slot list */
+                    apply_timer_settings();
+                    ui = UI_TIMER_SLOT_SELECT;
+                    break;
+
+                case BTN_RESET:
+                    /* Discard changes to enable flag only, go back */
+                    ui = UI_TIMER_SLOT_SELECT;
+                    break;
+
+                default:
+                    break;
             }
             screenNeedsRefresh = true;
             return;
@@ -1172,6 +1296,7 @@ void Screen_HandleSwitches(void)
             return;
     }
 }
+
 /***************************************************************
  *  SCREEN.C — PART 4 / 4
  *  LCD Update Engine + Final UI Dispatcher
@@ -1284,6 +1409,14 @@ void Screen_Update(void)
                 show_timer_off_m();
                 break;
 
+            case UI_TIMER_EDIT_SLOT_DAYS:
+                show_timer_days();
+                break;
+
+            case UI_TIMER_EDIT_SLOT_ENABLE:
+                show_timer_enable();
+                break;
+
             /* ------------------
                AUTO MODE
                ------------------ */
@@ -1301,17 +1434,6 @@ void Screen_Update(void)
 
             case UI_AUTO_EDIT_RETRY:
                 show_auto_retry();
-                break;
-
-            /* ------------------
-               COUNTDOWN
-               ------------------ */
-            case UI_COUNTDOWN:
-                show_countdown();
-                break;
-
-            case UI_COUNTDOWN_EDIT_MIN:
-                show_countdown_edit_min();
                 break;
 
             /* ------------------
@@ -1346,20 +1468,19 @@ void Screen_Update(void)
                 break;
 
             /* ------------------
-               DEFAULT
+               COUNTDOWN
                ------------------ */
+            case UI_COUNTDOWN:
+                show_countdown();
+                break;
+
+            case UI_COUNTDOWN_EDIT_MIN:
+                show_countdown_edit_min();
+                break;
+
+            /* Fallback */
             default:
-                lcd_line0("Not Implemented");
-                lcd_line1(" ");
                 break;
         }
-
-        /* Draw cursor again AFTER rendering if inside menu */
-        if (ui == UI_MENU)
-            draw_menu_cursor();
     }
 }
-
-/***************************************************************
- *  END OF FINAL SCREEN.C
- ***************************************************************/
