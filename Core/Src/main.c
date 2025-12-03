@@ -147,7 +147,13 @@ int main(void)
     /* ========== Then other modules ========== */
     ADC_Init(&hadc1);
     LoRa_Init();
+    ModelHandle_LoadSettingsFromEEPROM();
+    HAL_Delay(70);
+    ModelHandle_LoadModeState();
+    HAL_Delay(70);
+
     Screen_Init();
+
     UART_Init();
     Switches_Init();
     Relay_Init();

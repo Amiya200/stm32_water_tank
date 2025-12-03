@@ -16,7 +16,7 @@
 #include "rtc_i2c.h"
 #include "uart_commands.h"
 #include "stm32f1xx_hal.h"
-
+#include "eeprom_i2c.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -60,6 +60,29 @@ static uint16_t user_ov_limit     = 260;
 static float    user_overload     = 6.5f;
 static float    user_underload    = 0.5f;
 static uint16_t user_maxrun_min   = 120;
+typedef struct {
+    bool manual_on;
+    bool semi_on;
+    bool timer_on;
+    bool countdown_on;
+    bool twist_on;
+    bool auto_on;
+    bool motor_on;
+} ModeState;
+ModeState modeState;
+
+SystemSettings sys = {
+    .gap_time_s = 10,
+    .retry_count = 3,
+    .uv_limit = 180,
+    .ov_limit = 260,
+    .overload = 6.5f,
+    .underload = 0.5f,
+    .maxrun_min = 120
+};
+
+extern HAL_StatusTypeDef EEPROM_WriteBytes(uint16_t addr, uint8_t *data, uint16_t len);
+extern HAL_StatusTypeDef EEPROM_ReadBytes(uint16_t addr, uint8_t *data, uint16_t len);
 
 uint16_t sys_gap_time_s;
 uint8_t  sys_retry_count;
@@ -71,6 +94,66 @@ float sys_overload_limit;
 float sys_underload_limit;
 
 uint16_t sys_maxrun_min;
+void ModelHandle_SaveSettingsToEEPROM(void)
+{
+    EEPROM_WriteBuffer(EE_ADDR_GAP_TIME,       (uint8_t*)&sys.gap_time_s,    sizeof(sys.gap_time_s));
+    EEPROM_WriteBuffer(EE_ADDR_RETRY_COUNT,    (uint8_t*)&sys.retry_count,   sizeof(sys.retry_count));
+    EEPROM_WriteBuffer(EE_ADDR_UV_LIMIT,       (uint8_t*)&sys.uv_limit,      sizeof(sys.uv_limit));
+    EEPROM_WriteBuffer(EE_ADDR_OV_LIMIT,       (uint8_t*)&sys.ov_limit,      sizeof(sys.ov_limit));
+    EEPROM_WriteBuffer(EE_ADDR_OVERLOAD,       (uint8_t*)&sys.overload,      sizeof(sys.overload));
+    EEPROM_WriteBuffer(EE_ADDR_UNDERLOAD,      (uint8_t*)&sys.underload,     sizeof(sys.underload));
+    EEPROM_WriteBuffer(EE_ADDR_MAXRUN,         (uint8_t*)&sys.maxrun_min,    sizeof(sys.maxrun_min));
+
+    uint16_t sig = SETTINGS_SIGNATURE;
+    EEPROM_WriteBuffer(EE_ADDR_SIGNATURE, (uint8_t*)&sig, sizeof(sig));
+}
+void ModelHandle_LoadModeState(void)
+{
+    EEPROM_ReadBuffer(0x0200, (uint8_t*)&modeState, sizeof(modeState));
+
+    manualActive    = modeState.manual_on;
+    semiAutoActive  = modeState.semi_on;
+    timerActive     = modeState.timer_on;
+    countdownActive = modeState.countdown_on;
+    twistActive     = modeState.twist_on;
+    autoActive      = modeState.auto_on;
+
+    if (modeState.motor_on)
+        ModelHandle_SetMotor(true);
+}
+
+void ModelHandle_LoadSettingsFromEEPROM(void)
+{
+    uint16_t sig = 0;
+    EEPROM_ReadBuffer(EE_ADDR_SIGNATURE, (uint8_t*)&sig, sizeof(sig));
+
+    if (sig != SETTINGS_SIGNATURE)
+    {
+        // First boot → save defaults
+        ModelHandle_SaveSettingsToEEPROM();
+        return;
+    }
+
+    EEPROM_ReadBuffer(EE_ADDR_GAP_TIME,    (uint8_t*)&sys.gap_time_s,    sizeof(sys.gap_time_s));
+    EEPROM_ReadBuffer(EE_ADDR_RETRY_COUNT, (uint8_t*)&sys.retry_count,   sizeof(sys.retry_count));
+    EEPROM_ReadBuffer(EE_ADDR_UV_LIMIT,    (uint8_t*)&sys.uv_limit,      sizeof(sys.uv_limit));
+    EEPROM_ReadBuffer(EE_ADDR_OV_LIMIT,    (uint8_t*)&sys.ov_limit,      sizeof(sys.ov_limit));
+    EEPROM_ReadBuffer(EE_ADDR_OVERLOAD,    (uint8_t*)&sys.overload,      sizeof(sys.overload));
+    EEPROM_ReadBuffer(EE_ADDR_UNDERLOAD,   (uint8_t*)&sys.underload,     sizeof(sys.underload));
+    EEPROM_ReadBuffer(EE_ADDR_MAXRUN,      (uint8_t*)&sys.maxrun_min,    sizeof(sys.maxrun_min));
+}
+void ModelHandle_SaveModeState(void)
+{
+    modeState.manual_on    = manualActive;
+    modeState.semi_on      = semiAutoActive;
+    modeState.timer_on     = timerActive;
+    modeState.countdown_on = countdownActive;
+    modeState.twist_on     = twistActive;
+    modeState.auto_on      = autoActive;
+    modeState.motor_on     = Motor_GetStatus();
+
+    EEPROM_WriteBuffer(0x0200, (uint8_t*)&modeState, sizeof(modeState));
+}
 
 /***************************************************************
  *  MANUAL OVERRIDE FLAG
@@ -120,16 +203,17 @@ void ModelHandle_SetUserSettings(
     float underload,
     uint16_t maxrun_min
 ){
-    user_gap_s = gap_s;
-    user_retry_count = retry;
-    user_uv_limit = uv;
-    user_ov_limit = ov;
-    user_overload = overload;
-    user_underload = underload;
-    user_maxrun_min = maxrun_min;
+    sys.gap_time_s = gap_s;
+    sys.retry_count = retry;
+    sys.uv_limit = uv;
+    sys.ov_limit = ov;
+    sys.overload = overload;
+    sys.underload = underload;
+    sys.maxrun_min = maxrun_min;
 
-    // Optional: Save to EEPROM here later
+    ModelHandle_SaveSettingsToEEPROM();
 }
+
 void ModelHandle_FactoryReset(void)
 {
     user_gap_s       = 10;
@@ -221,7 +305,7 @@ void ModelHandle_StopAllModesAndMotor(void)
     countdownActive  = false;
     twistActive      = false;
     autoActive       = false;
-
+    ModelHandle_SaveModeState();
     ModelHandle_SetMotor(false);   // turn OFF motor safely
 }
 
@@ -293,7 +377,7 @@ void ModelHandle_ToggleManual(void)
     autoActive      = false;
 
     manualActive = !manualActive;
-
+    ModelHandle_SaveModeState();
     if (manualActive)
     {
         manualOverride = true;
@@ -521,6 +605,7 @@ void ModelHandle_StartTimerNearestSlot(void)
     }
 
     /* Apply */
+    ModelHandle_SaveModeState();
     ModelHandle_ProcessTimerSlots();
 }
 
@@ -601,7 +686,7 @@ void ModelHandle_StartSemiAuto(void)
 {
     clear_all_modes();
     semiAutoActive = true;
-
+    ModelHandle_SaveModeState();
     /* Semi-auto ignores dry-run completely */
     senseDryRun = false;
 
@@ -642,6 +727,7 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
     clear_all_modes();
 
     autoActive = true;
+    ModelHandle_SaveModeState();
     auto_gap_s = gap_s;
     auto_maxrun_min = maxrun_min;
     auto_retry_limit = retry;
@@ -768,7 +854,7 @@ void ModelHandle_StartCountdown(uint32_t seconds)
 
     countdownActive = true;
     countdownDuration = seconds;
-
+    ModelHandle_SaveModeState();
     cd_deadline = now_ms() + seconds * 1000UL;
 
     start_motor();   // countdown ALWAYS forces motor ON
