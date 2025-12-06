@@ -55,11 +55,13 @@ volatile bool senseMaxRunReached  = false;
 // USER CONFIGURABLE SETTINGS (persistent)
 static uint16_t user_gap_s        = 10;     // Default
 static uint8_t  user_retry_count  = 3;
-static uint16_t user_uv_limit     = 180;
+static uint16_t user_uv_limit     = 0;
 static uint16_t user_ov_limit     = 260;
-static float    user_overload     = 6.5f;
-static float    user_underload    = 0.5f;
+static float    user_overload     = 20.5f;
+static float    user_underload    = 0.0f;
 static uint16_t user_maxrun_min   = 120;
+volatile bool senseUnderLoad = false;
+
 typedef struct {
     bool manual_on;
     bool semi_on;
@@ -319,7 +321,7 @@ static bool faultLocked = false;
 
 #define LOAD_FAULT_CONFIRM_MS     3000   // confirm overload/underload for 3 seconds
 #define LOAD_RETRY_RUN_MS         3000   // run motor for 3 seconds during retry
-#define LOAD_LOCK_DURATION_MS     (30UL * 60UL * 1000UL)   // 30 minutes
+#define LOAD_LOCK_DURATION_MS     (1UL * 60UL * 1000UL)   // 30 minutes
 
 typedef enum {
     LOAD_NORMAL = 0,
@@ -865,6 +867,7 @@ void ModelHandle_StopAuto(void)
     autoState = AUTO_IDLE;
     auto_retry_count = 0;
 
+    ModelHandle_SaveModeState();
     stop_motor();
 }
 
@@ -878,21 +881,30 @@ static void auto_tick(void)
 
     uint32_t now = now_ms();
 
-    /* Protection events → immediate shutdown */
-    if (senseOverLoad || senseOverUnderVolt)
+    /*************************************************
+     * 1) Handle Overload/Underload/Voltage Fault FSM
+     *************************************************/
+    ModelHandle_CheckLoadFault();
+
+    /* If motor is OFF due to protection lock, auto should stop */
+    if (!Motor_GetStatus() && (loadState == LOAD_FAULT_LOCK))
     {
         ModelHandle_StopAuto();
         return;
     }
 
-    /* Tank full → normal stop */
+    /*************************************************
+     * 2) Tank full → stop Auto mode
+     *************************************************/
     if (isTankFull())
     {
         ModelHandle_StopAuto();
         return;
     }
 
-    /* Max runtime protection */
+    /*************************************************
+     * 3) Max Run Time protection
+     *************************************************/
     if (now - autoRunStart >= (auto_maxrun_min * 60000UL))
     {
         senseMaxRunReached = true;
@@ -900,52 +912,56 @@ static void auto_tick(void)
         return;
     }
 
+    /*************************************************
+     * 4) Auto State Machine (DRY RUN ONLY)
+     *************************************************/
     switch (autoState)
     {
-    case AUTO_ON_WAIT:
-        if (now >= autoDeadline)
-            autoState = AUTO_DRY_CHECK;
-        break;
+        case AUTO_ON_WAIT:
+            if (now >= autoDeadline)
+                autoState = AUTO_DRY_CHECK;
+            break;
 
-    case AUTO_DRY_CHECK:
-        ModelHandle_CheckDryRun();
+        case AUTO_DRY_CHECK:
+            ModelHandle_CheckDryRun();
 
-        if (!senseDryRun)     // DRY condition
-        {
-            stop_motor();
-            autoState = AUTO_OFF_WAIT;
-            autoDeadline = now + (auto_gap_s * 1000UL);
-        }
-        else                  // water present
-        {
-            autoState = AUTO_ON_WAIT;
-            autoDeadline = now + (auto_gap_s * 1000UL);
-        }
-        break;
-
-    case AUTO_OFF_WAIT:
-        if (now >= autoDeadline)
-        {
-            auto_retry_count++;
-
-            if (auto_retry_limit != 0 &&
-                auto_retry_count > auto_retry_limit)
+            if (!senseDryRun)   // DRY → stop → gap wait
             {
-                ModelHandle_StopAuto();
-                return;
+                stop_motor();
+                autoState = AUTO_OFF_WAIT;
+                autoDeadline = now + (auto_gap_s * 1000UL);
             }
+            else                // Water available → continue
+            {
+                autoState = AUTO_ON_WAIT;
+                autoDeadline = now + (auto_gap_s * 1000UL);
+            }
+            break;
 
-            start_motor();
-            autoRunStart = now;
-            autoState = AUTO_ON_WAIT;
-            autoDeadline = now + (auto_gap_s * 1000UL);
-        }
-        break;
+        case AUTO_OFF_WAIT:
+            if (now >= autoDeadline)
+            {
+                auto_retry_count++;
 
-    default:
-        break;
+                if (auto_retry_limit != 0 &&
+                    auto_retry_count > auto_retry_limit)
+                {
+                    ModelHandle_StopAuto();
+                    return;
+                }
+
+                start_motor();
+                autoRunStart = now;
+                autoState = AUTO_ON_WAIT;
+                autoDeadline = now + (auto_gap_s * 1000UL);
+            }
+            break;
+
+        default:
+            break;
     }
 }
+
 /***************************************************************
  * ======================== COUNTDOWN MODE ======================
  ***************************************************************/
@@ -1119,7 +1135,8 @@ static void protections_tick(void)
 {
     if (senseOverLoad || senseOverUnderVolt)
     {
-        ModelHandle_StopAllModesAndMotor();
+//        ModelHandle_StopAllModesAndMotor();
+    	stop_motor();
         return;
     }
 }
@@ -1163,21 +1180,54 @@ static void leds_from_model(void)
  ***************************************************************/
 void ModelHandle_Process(void)
 {
-    protections_tick();
-    twist_time_logic();
+    /*****************************************************
+     * 0. FIRST UPDATE ALL FAULTS (MUST RUN EVERY LOOP)
+     *****************************************************/
+    ModelHandle_CheckLoadFault();     // Updates: senseOverLoad, senseUnderLoad, senseOverUnderVolt
+    protections_tick();               // Global fault killer for all modes
+    twist_time_logic();               // Time-based twist ON/OFF control
 
-    /*********************** AUTO *************************/
-    if (autoActive)
+    /*****************************************************
+     * 1. MANUAL MODE (Highest Priority)
+     *****************************************************/
+    if (manualActive)
     {
-        auto_tick();
+        /* Stop motor immediately on ANY critical fault */
+        if (senseOverLoad || senseUnderLoad || senseOverUnderVolt)
+        {
+            stop_motor();
+            manualActive   = false;
+            manualOverride = false;
+
+            ModelHandle_SaveModeState();
+            leds_from_model();
+            return;
+        }
+
+        /* Manual ignores dry-run & tank full */
+        if (!Motor_GetStatus())
+            start_motor();
+
         leds_from_model();
         return;
     }
 
-    /********************* SEMI-AUTO ***********************/
+    /*****************************************************
+     * 2. AUTO MODE
+     *****************************************************/
+    if (autoActive)
+    {
+        auto_tick();         // Auto FSM
+        leds_from_model();   // Update LEDs after state change
+        return;
+    }
+
+    /*****************************************************
+     * 3. SEMI-AUTO MODE
+     *****************************************************/
     if (semiAutoActive)
     {
-        senseDryRun = false;   // ignored in semi-auto
+        senseDryRun = false;   // semi-auto ignores dry-run
 
         if (!isTankFull())
         {
@@ -1187,29 +1237,30 @@ void ModelHandle_Process(void)
         else
         {
             stop_motor();
-            semiAutoActive = false;   // auto-finish
+            semiAutoActive = false;   // stop semi-auto when tank full
         }
 
         leds_from_model();
         return;
     }
 
-    /*********************** TIMER *************************/
+    /*****************************************************
+     * 4. TIMER MODE
+     *****************************************************/
     if (timerActive)
     {
-        timer_tick();
+        timer_tick();         // Timer ON/OFF based on slots
         leds_from_model();
         return;
     }
 
-
-
-    /********************* COUNTDOWN ***********************/
+    /*****************************************************
+     * 5. COUNTDOWN MODE
+     *****************************************************/
     if (countdownActive)
     {
         countdown_tick();
 
-        /* Tank full cancels countdown */
         if (isTankFull())
         {
             ModelHandle_StopCountdown();
@@ -1217,15 +1268,16 @@ void ModelHandle_Process(void)
             return;
         }
 
-        /* ALWAYS keep motor ON */
         if (!Motor_GetStatus())
-            start_motor();
+            start_motor();     // countdown always forces ON
 
         leds_from_model();
         return;
     }
 
-    /************************ TWIST ************************/
+    /*****************************************************
+     * 6. TWIST MODE
+     *****************************************************/
     if (twistActive)
     {
         twist_tick();
@@ -1233,14 +1285,9 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /************************ MANUAL ***********************/
-    if (manualActive)
-    {
-        leds_from_model();
-        return;
-    }
-
-    /********************** IDLE ***************************/
+    /*****************************************************
+     * 7. IDLE STATE
+     *****************************************************/
     stop_motor();
     leds_from_model();
 }
