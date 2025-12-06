@@ -1,7 +1,7 @@
 /***************************************************************
  *  HELONIX Water Pump Controller
  *  SCREEN.C — FINAL VERSION WITH SETTINGS (OPTION-B)
- *  PART A/6
+ *  PART A/6  — UPDATED MENU (Auto & Twist removed)
  ***************************************************************/
 
 #include "screen.h"
@@ -37,6 +37,7 @@ typedef enum {
     UI_TIMER_EDIT_SLOT_DAYS,
     UI_TIMER_EDIT_SLOT_ENABLE,
 
+    /* Auto mode screens still exist but removed from menu access */
     UI_AUTO_MENU,
     UI_AUTO_EDIT_GAP,
     UI_AUTO_EDIT_MAXRUN,
@@ -45,6 +46,7 @@ typedef enum {
     UI_COUNTDOWN,
     UI_COUNTDOWN_EDIT_MIN,
 
+    /* Twist screens still exist but not accessible from menu */
     UI_TWIST,
     UI_TWIST_EDIT_ON,
     UI_TWIST_EDIT_OFF,
@@ -52,7 +54,9 @@ typedef enum {
     UI_TWIST_EDIT_ON_M,
     UI_TWIST_EDIT_OFF_H,
     UI_TWIST_EDIT_OFF_M,
+
 	UI_NONE,
+
     /* NEW: SETTINGS LINEAR FLOW (Option-B) */
     UI_SETTINGS_GAP,
     UI_SETTINGS_RETRY,
@@ -166,13 +170,11 @@ static uint16_t edit_settings_maxrun = 120;
 static bool     edit_settings_factory_yes = false;
 
 /* ================================================================
-   MENU ITEMS
+   MENU ITEMS (UPDATED — Auto & Twist removed)
    ================================================================ */
 
 static const char* const main_menu[] = {
     "Timer Mode",
-    "Auto Mode",
-    "Twist Mode",
     "Settings",
     "Back"
 };
@@ -183,7 +185,7 @@ static int menu_idx = 0;
 static int menu_view_top = 0;
 
 /* ================================================================
-   LCD BASIC HELPERS
+   LCD HELPERS
    ================================================================ */
 
 static inline void refreshInactivityTimer(void) {
@@ -201,7 +203,7 @@ static inline void lcd_line0(const char* s){ lcd_line(0, s); }
 static inline void lcd_line1(const char* s){ lcd_line(1, s); }
 
 /* ================================================================
-   MENU CURSOR DRAW FUNCTION (SMOOTH BLINK)
+   MENU CURSOR (unchanged)
    ================================================================ */
 
 static void draw_menu_cursor(void)
@@ -233,8 +235,16 @@ static void show_welcome(void)
 }
 
 /* ================================================================
-   DASHBOARD DISPLAY
+   DASHBOARD
    ================================================================ */
+void Screen_Init(void)
+{
+    lcd_init();
+    lcd_clear();
+    ui = UI_WELCOME;
+    last_ui = UI_NONE;
+    lastLcdUpdateTime = HAL_GetTick();
+}
 
 static void show_dash(void)
 {
@@ -272,16 +282,8 @@ static void show_dash(void)
 }
 
 /* ================================================================
-   UPDATED MENU RENDERER
+   MAIN MENU — UPDATED
    ================================================================ */
-void Screen_Init(void)
-{
-    lcd_init();
-    lcd_clear();
-    ui = UI_WELCOME;
-    last_ui = UI_NONE;
-    lastLcdUpdateTime = HAL_GetTick();
-}
 
 static void show_menu(void)
 {
@@ -342,7 +344,7 @@ static void show_timer_slot_select(void)
     char l0[17] = {0};
     char l1[17] = {0};
 
-    if (timer_page == 0)      // S1, S2, S3, S4
+    if (timer_page == 0)      // S1, S2
     {
         snprintf(l0, sizeof(l0),
                  "%cS1   %cS2",
@@ -367,7 +369,7 @@ static void show_timer_slot_select(void)
                   currentSlot == 5 ? '>' : ' '),
                  (currentSlot == 5 ? '>' : ' '));
     }
-    else                      // timer_page == 2
+    else                      // timer_page == 2 → S5 + Back
     {
         snprintf(l0, sizeof(l0),
                  "%cS5",
@@ -437,7 +439,7 @@ static void show_timer_enable(void){
 }
 
 /* ================================================================
-   AUTO MODE SETTINGS
+   AUTO MODE SETTINGS (still available internally)
    ================================================================ */
 
 static void show_auto_menu(void){
@@ -471,7 +473,7 @@ static void show_semi_auto(void){
 }
 
 /* ================================================================
-   TWIST MODE UI
+   TWIST MODE UI (still exists internally)
    ================================================================ */
 
 static void show_twist(void){
@@ -545,7 +547,7 @@ static void show_countdown_edit_min(void){
 }
 
 /* ================================================================
-   NEW SETTINGS UI (OPTION-B)
+   NEW SETTINGS UI (OPTION-B LINEAR FLOW)
    ================================================================ */
 
 static void show_settings_gap(void){
@@ -653,11 +655,11 @@ static void apply_settings_all(void){
 }
 
 /* ================================================================
-   SETTINGS FLOW (OPTION-B)
+   SETTINGS FLOW (OPTION-B LINEAR FLOW)
    ================================================================ */
 
 static void start_settings_edit_flow(void){
-    /* Load existing values */
+    /* Load existing values from model */
     edit_settings_gap_s   = ModelHandle_GetGapTime();
     edit_settings_retry   = ModelHandle_GetRetryCount();
     edit_settings_uv      = ModelHandle_GetUnderVolt();
@@ -667,7 +669,7 @@ static void start_settings_edit_flow(void){
     edit_settings_maxrun  = ModelHandle_GetMaxRunTime();
     edit_settings_factory_yes = 0;
 
-    /* Start flow */
+    /* Begin first screen */
     ui = UI_SETTINGS_GAP;
     screenNeedsRefresh = true;
 }
@@ -717,7 +719,7 @@ static void advance_settings_flow(void){
 }
 
 /* ================================================================
-   MENU SELECT HANDLER — Updated For Settings
+   MENU SELECT HANDLER — UPDATED (Auto & Twist removed)
    ================================================================ */
 
 static void goto_menu_top(void){
@@ -728,14 +730,14 @@ static void goto_menu_top(void){
 static void menu_select(void){
     refreshInactivityTimer();
 
-    /* WELCOME → DASH */
+    /* ----------- WELCOME → DASH ----------- */
     if (ui == UI_WELCOME){
         ui = UI_DASH;
         screenNeedsRefresh = true;
         return;
     }
 
-    /* DASH → MENU */
+    /* ----------- DASH → MENU ----------- */
     if (ui == UI_DASH){
         ui = UI_MENU;
         goto_menu_top();
@@ -743,7 +745,12 @@ static void menu_select(void){
         return;
     }
 
-    /* MAIN MENU SELECT */
+    /* ============================
+       UPDATED MAIN MENU (3 items)
+       0 → Timer
+       1 → Settings
+       2 → Back
+       ============================ */
     if (ui == UI_MENU){
         switch(menu_idx)
         {
@@ -753,19 +760,11 @@ static void menu_select(void){
                 currentSlot = 0;
                 break;
 
-            case 1: // AUTO
-                ui = UI_AUTO_MENU;
-                break;
-
-            case 2: // TWIST
-                ui = UI_TWIST;
-                break;
-
-            case 3: // SETTINGS (Option-B linear)
+            case 1: // SETTINGS
                 start_settings_edit_flow();
                 return;
 
-            case 4: // BACK
+            case 2: // BACK
                 ui = UI_DASH;
                 break;
         }
@@ -774,7 +773,9 @@ static void menu_select(void){
         return;
     }
 
-    /* ---------------- TIMER FLOW ---------------- */
+    /* ============================================================
+       ---------------- TIMER FLOW ----------------
+       ============================================================ */
 
     if (ui == UI_TIMER_SLOT_SELECT){
         if (currentSlot == 5){     // BACK
@@ -783,7 +784,7 @@ static void menu_select(void){
             return;
         }
 
-        /* Load slot into edit buffer */
+        /* Load slot values into editors */
         edit_timer_on_h   = timerSlots[currentSlot].onHour;
         edit_timer_on_m   = timerSlots[currentSlot].onMinute;
         edit_timer_off_h  = timerSlots[currentSlot].offHour;
@@ -797,7 +798,7 @@ static void menu_select(void){
         return;
     }
 
-    /* TIMER EDIT CHAIN */
+    /* TIMER EDITING CHAIN */
     switch(ui)
     {
         case UI_TIMER_EDIT_SLOT_ON_H:
@@ -829,11 +830,13 @@ static void menu_select(void){
             break;
     }
 
-    /* ---------------- AUTO MODE FLOW ---------------- */
+    /* ============================================================
+       AUTO MODE FLOW (unchanged internally)
+       ============================================================ */
 
     if (ui == UI_AUTO_MENU) {
-        autoActive = false;      // 🔥 IMPORTANT FIX
-        ModelHandle_StopAuto();  // Ensure motor also stops
+        autoActive = false;
+        ModelHandle_StopAuto();
         ui = UI_AUTO_EDIT_GAP;
         screenNeedsRefresh = true;
         return;
@@ -856,7 +859,9 @@ static void menu_select(void){
         return;
     }
 
-    /* ---------------- TWIST FLOW ---------------- */
+    /* ============================================================
+       TWIST FLOW (unchanged internally)
+       ============================================================ */
 
     if (ui == UI_TWIST){
         ui = UI_TWIST_EDIT_ON;
@@ -895,7 +900,9 @@ static void menu_select(void){
         return;
     }
 
-    /* ---------------- COUNTDOWN FLOW ---------------- */
+    /* ============================================================
+       COUNTDOWN FLOW
+       ============================================================ */
 
     if (ui == UI_COUNTDOWN){
         if(countdownActive){
@@ -915,7 +922,9 @@ static void menu_select(void){
         return;
     }
 
-    /* ---------------- SETTINGS FLOW (OPTION-B) ---------------- */
+    /* ============================================================
+       SETTINGS LINEAR FLOW
+       ============================================================ */
 
     if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY){
         advance_settings_flow();
@@ -972,6 +981,7 @@ static UiButton decode_button_press(void){
             }
         }
     }
+
     return out;
 }
 
@@ -982,54 +992,41 @@ static UiButton decode_button_press(void){
 void increase_edit_value(void){
     switch(ui)
     {
-        /* ---------------- TIMER ---------------- */
+        /* TIMER EDITING */
         case UI_TIMER_EDIT_SLOT_ON_H:  if(edit_timer_on_h < 23) edit_timer_on_h++; break;
         case UI_TIMER_EDIT_SLOT_ON_M:  if(edit_timer_on_m < 59) edit_timer_on_m++; break;
         case UI_TIMER_EDIT_SLOT_OFF_H: if(edit_timer_off_h < 23) edit_timer_off_h++; break;
         case UI_TIMER_EDIT_SLOT_OFF_M: if(edit_timer_off_m < 59) edit_timer_off_m++; break;
 
-        /* ---------------- AUTO ---------------- */
+        /* AUTO (internal only — menu removed) */
         case UI_AUTO_EDIT_GAP:         edit_auto_gap_s++; break;
         case UI_AUTO_EDIT_MAXRUN:      edit_auto_maxrun_min++; break;
         case UI_AUTO_EDIT_RETRY:       edit_auto_retry++; break;
 
-        /* ---------------- TWIST ---------------- */
+        /* TWIST (internal only — menu removed) */
         case UI_TWIST_EDIT_ON:         edit_twist_on_s++; break;
         case UI_TWIST_EDIT_OFF:        edit_twist_off_s++; break;
-
         case UI_TWIST_EDIT_ON_H:       if(edit_twist_on_hh < 23) edit_twist_on_hh++; break;
         case UI_TWIST_EDIT_ON_M:       if(edit_twist_on_mm < 59) edit_twist_on_mm++; break;
         case UI_TWIST_EDIT_OFF_H:      if(edit_twist_off_hh < 23) edit_twist_off_hh++; break;
         case UI_TWIST_EDIT_OFF_M:      if(edit_twist_off_mm < 59) edit_twist_off_mm++; break;
 
-        /* ---------------- COUNTDOWN ---------------- */
+        /* COUNTDOWN */
         case UI_COUNTDOWN_EDIT_MIN:    if(edit_countdown_min < 999) edit_countdown_min++; break;
 
-        /* ---------------- SETTINGS (Option-B) ---------------- */
-        case UI_SETTINGS_GAP:
-            edit_settings_gap_s++;
-            break;
-
-        case UI_SETTINGS_RETRY:
-            edit_settings_retry++;
-            break;
-
-        case UI_SETTINGS_UV:
-            if (edit_settings_uv < 500) edit_settings_uv++;
-            break;
-
-        case UI_SETTINGS_OV:
-            if (edit_settings_ov < 500) edit_settings_ov++;
-            break;
-
+        /* SETTINGS FLOW (Option-B) */
+        case UI_SETTINGS_GAP:          edit_settings_gap_s++; break;
+        case UI_SETTINGS_RETRY:        edit_settings_retry++; break;
+        case UI_SETTINGS_UV:           if(edit_settings_uv < 500) edit_settings_uv++; break;
+        case UI_SETTINGS_OV:           if(edit_settings_ov < 500) edit_settings_ov++; break;
         case UI_SETTINGS_OL:
             edit_settings_ol += 0.1f;
-            if (edit_settings_ol > 50.0f) edit_settings_ol = 50.0f;
+            if(edit_settings_ol > 50.0f) edit_settings_ol = 50.0f;
             break;
 
         case UI_SETTINGS_UL:
             edit_settings_ul += 0.1f;
-            if (edit_settings_ul > 50.0f) edit_settings_ul = 50.0f;
+            if(edit_settings_ul > 50.0f) edit_settings_ul = 50.0f;
             break;
 
         case UI_SETTINGS_MAXRUN:
@@ -1040,79 +1037,61 @@ void increase_edit_value(void){
             edit_settings_factory_yes ^= 1;
             break;
 
-        default:
-            break;
+        default: break;
     }
 }
 
 void decrease_edit_value(void){
     switch(ui)
     {
-        /* ---------------- TIMER ---------------- */
+        /* TIMER EDITING */
         case UI_TIMER_EDIT_SLOT_ON_H:  if(edit_timer_on_h > 0) edit_timer_on_h--; break;
         case UI_TIMER_EDIT_SLOT_ON_M:  if(edit_timer_on_m > 0) edit_timer_on_m--; break;
         case UI_TIMER_EDIT_SLOT_OFF_H: if(edit_timer_off_h > 0) edit_timer_off_h--; break;
         case UI_TIMER_EDIT_SLOT_OFF_M: if(edit_timer_off_m > 0) edit_timer_off_m--; break;
 
-        /* ---------------- AUTO ---------------- */
+        /* AUTO (internal) */
         case UI_AUTO_EDIT_GAP:         if(edit_auto_gap_s > 0) edit_auto_gap_s--; break;
         case UI_AUTO_EDIT_MAXRUN:      if(edit_auto_maxrun_min > 0) edit_auto_maxrun_min--; break;
         case UI_AUTO_EDIT_RETRY:       if(edit_auto_retry > 0) edit_auto_retry--; break;
 
-        /* ---------------- TWIST ---------------- */
+        /* TWIST (internal) */
         case UI_TWIST_EDIT_ON:         if(edit_twist_on_s > 0) edit_twist_on_s--; break;
         case UI_TWIST_EDIT_OFF:        if(edit_twist_off_s > 0) edit_twist_off_s--; break;
-
         case UI_TWIST_EDIT_ON_H:       if(edit_twist_on_hh > 0) edit_twist_on_hh--; break;
         case UI_TWIST_EDIT_ON_M:       if(edit_twist_on_mm > 0) edit_twist_on_mm--; break;
         case UI_TWIST_EDIT_OFF_H:      if(edit_twist_off_hh > 0) edit_twist_off_hh--; break;
         case UI_TWIST_EDIT_OFF_M:      if(edit_twist_off_mm > 0) edit_twist_off_mm--; break;
 
-        /* ---------------- COUNTDOWN ---------------- */
+        /* COUNTDOWN */
         case UI_COUNTDOWN_EDIT_MIN:    if(edit_countdown_min > 1) edit_countdown_min--; break;
 
-        /* ---------------- SETTINGS (Option-B) ---------------- */
-        case UI_SETTINGS_GAP:
-            if (edit_settings_gap_s > 0) edit_settings_gap_s--;
-            break;
-
-        case UI_SETTINGS_RETRY:
-            if (edit_settings_retry > 0) edit_settings_retry--;
-            break;
-
-        case UI_SETTINGS_UV:
-            if (edit_settings_uv > 50) edit_settings_uv--;
-            break;
-
-        case UI_SETTINGS_OV:
-            if (edit_settings_ov > 50) edit_settings_ov--;
-            break;
+        /* SETTINGS FLOW */
+        case UI_SETTINGS_GAP:          if(edit_settings_gap_s > 0) edit_settings_gap_s--; break;
+        case UI_SETTINGS_RETRY:        if(edit_settings_retry > 0) edit_settings_retry--; break;
+        case UI_SETTINGS_UV:           if(edit_settings_uv > 50) edit_settings_uv--; break;
+        case UI_SETTINGS_OV:           if(edit_settings_ov > 50) edit_settings_ov--; break;
 
         case UI_SETTINGS_OL:
             edit_settings_ol -= 0.1f;
-            if (edit_settings_ol < 0.1f) edit_settings_ol = 0.1f;
+            if(edit_settings_ol < 0.1f) edit_settings_ol = 0.1f;
             break;
 
         case UI_SETTINGS_UL:
             edit_settings_ul -= 0.1f;
-            if (edit_settings_ul < 0.1f) edit_settings_ul = 0.1f;
+            if(edit_settings_ul < 0.1f) edit_settings_ul = 0.1f;
             break;
 
-        case UI_SETTINGS_MAXRUN:
-            if (edit_settings_maxrun > 1) edit_settings_maxrun--;
-            break;
+        case UI_SETTINGS_MAXRUN:       if(edit_settings_maxrun > 1) edit_settings_maxrun--; break;
 
-        case UI_SETTINGS_FACTORY:
-            edit_settings_factory_yes ^= 1;
-            break;
+        case UI_SETTINGS_FACTORY:      edit_settings_factory_yes ^= 1; break;
 
-        default:
-            break;
+        default: break;
     }
 }
 
 /* ================================================================
-   MAIN SWITCH HANDLER — with updated SETTINGS logic
+   MAIN SWITCH HANDLER
    ================================================================ */
 
 void Screen_HandleSwitches(void)
@@ -1123,10 +1102,7 @@ void Screen_HandleSwitches(void)
     bool sw3 = Switch_IsPressed(2);
     bool sw4 = Switch_IsPressed(3);
 
-    /* =====================================================================
-       LONG PRESS SPECIALS
-       ===================================================================== */
-
+    /* ---------------- LONG PRESS RESET (Manual Toggle) ---------------- */
     if (b == BTN_RESET_LONG)
     {
         ModelHandle_ToggleManual();
@@ -1135,7 +1111,7 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* Continuous UP (SW3) */
+    /* ---------------- HOLD-UP (Continuous increment) ---------------- */
     if (sw3 && sw_long_issued[2]) {
         if (now - last_repeat_time >= CONTINUOUS_STEP_MS) {
             last_repeat_time = now;
@@ -1145,40 +1121,40 @@ void Screen_HandleSwitches(void)
             }
             else if (ui == UI_TIMER_SLOT_SELECT){
                 if (currentSlot > 0) currentSlot--;
-                timer_page = (currentSlot < 2 ? 0 : (currentSlot < 5 ? 1 : 2));
+                timer_page = (currentSlot < 2 ? 0 :
+                             (currentSlot < 5 ? 1 : 2));
             }
             else {
                 increase_edit_value();
             }
-
             screenNeedsRefresh = true;
         }
     }
 
-    /* Continuous DOWN (SW4) */
+    /* ---------------- HOLD-DOWN (Continuous decrease) ---------------- */
     if (sw4 && sw_long_issued[3]) {
 
-        /* Countdown shortcut from DASH */
+        /* Countdown quick-set */
         if (ui == UI_DASH || ui == UI_COUNTDOWN){
             static uint32_t cd_last_inc = 0;
 
-            if (ui == UI_DASH) {
+            if (ui == UI_DASH){
                 ui = UI_COUNTDOWN;
                 screenNeedsRefresh = true;
             }
 
-            show_countdown();
-
-            if (now - cd_last_inc >= COUNTDOWN_INC_MS) {
+            if (now - cd_last_inc >= COUNTDOWN_INC_MS){
                 cd_last_inc = now;
                 edit_countdown_min++;
                 countdownDuration = edit_countdown_min * 60;
-                show_countdown();
             }
+
+            show_countdown();
             return;
         }
 
-        if (now - last_repeat_time >= CONTINUOUS_STEP_MS) {
+        /* Normal menu/decrement cases */
+        if (now - last_repeat_time >= CONTINUOUS_STEP_MS){
             last_repeat_time = now;
 
             if (ui == UI_MENU){
@@ -1186,7 +1162,8 @@ void Screen_HandleSwitches(void)
             }
             else if (ui == UI_TIMER_SLOT_SELECT){
                 if (currentSlot < 5) currentSlot++;
-                timer_page = (currentSlot < 2 ? 0 : (currentSlot < 5 ? 1 : 2));
+                timer_page = (currentSlot < 2 ? 0 :
+                             (currentSlot < 5 ? 1 : 2));
             }
             else {
                 decrease_edit_value();
@@ -1196,14 +1173,13 @@ void Screen_HandleSwitches(void)
         }
     }
 
+    /* If no button press resolved => stop here */
     if (b == BTN_NONE)
         return;
 
     refreshInactivityTimer();
 
-    /* =====================================================================
-       DETECT IF MENU IS OPEN OR EDITING IS ACTIVE
-       ===================================================================== */
+    /* ---------------- BEGIN MAIN BUTTON LOGIC ---------------- */
 
     bool menu_open =
         (ui == UI_MENU ||
@@ -1245,9 +1221,9 @@ void Screen_HandleSwitches(void)
          ui == UI_COUNTDOWN_EDIT_MIN ||
          (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY));
 
-    /* =====================================================================
-       EDIT MODE BEHAVIOR
-       ===================================================================== */
+    /* ============================================================
+       EDIT MODE BUTTON HANDLING
+       ============================================================ */
 
     if (menu_open && editing)
     {
@@ -1259,6 +1235,7 @@ void Screen_HandleSwitches(void)
             case BTN_DOWN_LONG: last_repeat_time = now; decrease_edit_value(); break;
 
             case BTN_SELECT:    menu_select(); break;
+
             case BTN_RESET:     ui = UI_MENU; break;
 
             default: break;
@@ -1268,9 +1245,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* =====================================================================
-       MENU NAVIGATION
-       ===================================================================== */
+    /* ============================================================
+       MENU NAVIGATION (UPDATED MENU SIZE)
+       ============================================================ */
 
     if (menu_open && ui == UI_MENU){
         switch(b){
@@ -1295,20 +1272,22 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* =====================================================================
+    /* ============================================================
        TIMER SLOT SELECT NAVIGATION
-       ===================================================================== */
+       ============================================================ */
 
     if (menu_open && ui == UI_TIMER_SLOT_SELECT){
         switch(b){
             case BTN_UP:
                 if (currentSlot > 0) currentSlot--;
-                timer_page = (currentSlot < 2 ? 0 : (currentSlot < 5 ? 1 : 2));
+                timer_page = (currentSlot < 2 ? 0 :
+                             (currentSlot < 5 ? 1 : 2));
                 break;
 
             case BTN_DOWN:
                 if (currentSlot < 5) currentSlot++;
-                timer_page = (currentSlot < 2 ? 0 : (currentSlot < 5 ? 1 : 2));
+                timer_page = (currentSlot < 2 ? 0 :
+                             (currentSlot < 5 ? 1 : 2));
                 break;
 
             case BTN_SELECT:
@@ -1324,9 +1303,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* =====================================================================
+    /* ============================================================
        DAYS EDIT MODE
-       ===================================================================== */
+       ============================================================ */
 
     if (menu_open && ui == UI_TIMER_EDIT_SLOT_DAYS){
         switch(b){
@@ -1353,9 +1332,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* =====================================================================
+    /* ============================================================
        SLOT ENABLE / DISABLE
-       ===================================================================== */
+       ============================================================ */
 
     if (menu_open && ui == UI_TIMER_EDIT_SLOT_ENABLE){
         switch(b){
@@ -1380,9 +1359,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* =====================================================================
-       SETTINGS FLOW (OPTION B)
-       ===================================================================== */
+    /* ============================================================
+       SETTINGS FLOW (Option-B)
+       ============================================================ */
 
     if (menu_open && (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY))
     {
@@ -1393,7 +1372,6 @@ void Screen_HandleSwitches(void)
             case BTN_DOWN_LONG: last_repeat_time = now; decrease_edit_value(); break;
 
             case BTN_SELECT:    advance_settings_flow(); break;
-
             case BTN_RESET:     ui = UI_MENU; break;
         }
 
@@ -1401,9 +1379,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* =====================================================================
-       AUTO MODE — BLOCK STARTING AUTO WHILE INSIDE AUTO MENU
-       ===================================================================== */
+    /* ============================================================
+       AUTO MODE BLOCK (unchanged)
+       ============================================================ */
 
     if (ui == UI_AUTO_MENU ||
         ui == UI_AUTO_EDIT_GAP ||
@@ -1411,7 +1389,7 @@ void Screen_HandleSwitches(void)
         ui == UI_AUTO_EDIT_RETRY)
     {
         if (b == BTN_SELECT){
-            menu_select();     // continue editing
+            menu_select();
             screenNeedsRefresh = true;
         }
         else if (b == BTN_RESET){
@@ -1421,9 +1399,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* =====================================================================
-       BELOW: NORMAL MODE — DASHBOARD ONLY
-       ===================================================================== */
+    /* ============================================================
+       DASHBOARD BUTTON BEHAVIOR (DEFAULT)
+       ============================================================ */
 
     switch(b)
     {
@@ -1439,7 +1417,7 @@ void Screen_HandleSwitches(void)
             screenNeedsRefresh = true;
             return;
 
-        /* SELECT → Start / Stop AUTO (ONLY ON DASHBOARD) */
+        /* START/STOP AUTO ONLY FROM DASH */
         case BTN_SELECT:
             if (ui != UI_DASH)
                 return;
@@ -1453,34 +1431,34 @@ void Screen_HandleSwitches(void)
             screenNeedsRefresh = true;
             return;
 
+        /* LONG SELECT → MENU */
         case BTN_SELECT_LONG:
             ui = UI_MENU;
             goto_menu_top();
             screenNeedsRefresh = true;
             return;
 
-        /* UP → Timer toggle */
+        /* UP → Timer ON/OFF */
         case BTN_UP:
             if(!timerActive)
                 ModelHandle_StartTimerNearestSlot();
             else
                 ModelHandle_StopTimer();
-
             ui = UI_DASH;
             screenNeedsRefresh = true;
             return;
 
+        /* UP LONG → Semi-Auto toggle */
         case BTN_UP_LONG:
             if(!semiAutoActive)
                 ModelHandle_StartSemiAuto();
             else
                 ModelHandle_StopSemiAuto();
-
             ui = UI_DASH;
             screenNeedsRefresh = true;
             return;
 
-        /* DOWN → Countdown toggle */
+        /* DOWN → Countdown */
         case BTN_DOWN:
             if(!countdownActive){
                 ModelHandle_StartCountdown(edit_countdown_min * 60);
@@ -1500,8 +1478,6 @@ void Screen_HandleSwitches(void)
             return;
     }
 }
-
-
 /***************************************************************
  *  SCREEN.C — PART E / 6
  *  LCD Update Engine + UI Dispatcher + Cursor Blink
@@ -1520,7 +1496,7 @@ void Screen_Update(void)
     {
         cursorVisible = !cursorVisible;
         lastCursorToggle = now;
-        draw_menu_cursor();   // Only draw the '>' cursor, no flicker
+        draw_menu_cursor();   // Draw cursor only (prevent full screen flicker)
     }
 
     /* ============================================================
@@ -1534,7 +1510,7 @@ void Screen_Update(void)
     }
 
     /* ============================================================
-       AUTO-RETURN TO DASH AFTER 60 SECONDS INACTIVITY
+       AUTO-RETURN TO DASH AFTER inactivity timeout
        ============================================================ */
     if (ui != UI_WELCOME &&
         ui != UI_DASH &&
@@ -1546,6 +1522,7 @@ void Screen_Update(void)
 
     /* ============================================================
        DASHBOARD AUTO-REFRESH EVERY 1 SECOND
+       COUNTDOWN also refreshes each second
        ============================================================ */
     if ((ui == UI_DASH || ui == UI_COUNTDOWN) &&
         now - lastLcdUpdateTime >= 1000)
@@ -1555,7 +1532,9 @@ void Screen_Update(void)
     }
 
     /* ============================================================
-       IF UI CHANGED OR REFRESH FLAG SET → REDRAW LCD
+       REDRAW LCD IF:
+       - UI changed
+       - OR refresh flag is set
        ============================================================ */
     if (screenNeedsRefresh || ui != last_ui)
     {
@@ -1580,7 +1559,7 @@ void Screen_Update(void)
                 show_dash();
                 break;
 
-            /* ======== MAIN MENU ======== */
+            /* ======== MAIN MENU (Updated: only 3 items) ======== */
             case UI_MENU:
                 show_menu();
                 break;
@@ -1618,7 +1597,7 @@ void Screen_Update(void)
                 show_timer_enable();
                 break;
 
-            /* ======== AUTO MODE UI ======== */
+            /* ======== AUTO MODE UI (still exists internally) ======== */
             case UI_AUTO_MENU:
                 show_auto_menu();
                 break;
@@ -1635,7 +1614,7 @@ void Screen_Update(void)
                 show_auto_retry();
                 break;
 
-            /* ======== TWIST MODE UI ======== */
+            /* ======== TWIST MODE UI (still active internally) ======== */
             case UI_TWIST:
                 show_twist();
                 break;
@@ -1673,7 +1652,7 @@ void Screen_Update(void)
                 show_countdown_edit_min();
                 break;
 
-            /* ======== SETTINGS UI (OPTION-B LINEAR FLOW) ======== */
+            /* ======== SETTINGS FLOW ======== */
             case UI_SETTINGS_GAP:
                 show_settings_gap();
                 break;
@@ -1706,7 +1685,7 @@ void Screen_Update(void)
                 show_settings_factory();
                 break;
 
-            /* ======== DEFAULT (FALLBACK) ======== */
+            /* ======== SAFETY DEFAULT ======== */
             default:
                 break;
         }
@@ -1726,7 +1705,7 @@ extern void ModelHandle_StartTimerNearestSlot(void);
 extern void ModelHandle_StopTimer(void);
 extern void ModelHandle_StopSemiAuto(void);
 
-/* Factory Reset (if available) */
+/* Factory Reset */
 extern void ModelHandle_FactoryReset(void);
 
 /* ================================================================
@@ -1734,3 +1713,4 @@ extern void ModelHandle_FactoryReset(void);
    (static uint16_t edit_settings_gap_s ... etc)
    ================================================================ */
 
+/* END OF SCREEN.C */
