@@ -89,6 +89,8 @@ uint8_t  sys_retry_count;
 
 uint16_t sys_uv_limit;
 uint16_t sys_ov_limit;
+extern float g_currentA;
+extern float g_voltageV;
 
 float sys_overload_limit;
 float sys_underload_limit;
@@ -241,6 +243,7 @@ static inline void clear_all_modes(void)
 /***************************************************************
  *  MOTOR CONTROL (ANTI-CHATTER)
  ***************************************************************/
+
 static inline void motor_apply(bool on)
 {
     if (on == Motor_GetStatus())
@@ -291,6 +294,137 @@ void reset(void)
         stop_motor();
     }
 }
+static uint32_t dryDeadline     = 0;
+static uint32_t dryConfirmStart = 0;
+
+#define DRY_PROBE_ON_MS      5000UL
+#define DRY_PROBE_OFF_MS    10000UL
+#define DRY_CONFIRM_MS       1500UL
+
+static inline bool isAnyModeActive(void)
+{
+    return (manualActive ||
+            semiAutoActive ||
+            countdownActive ||
+            twistActive ||
+            timerActive ||
+            autoActive);
+}
+
+/***************************************************************
+ *  OVERLOAD + UNDERLOAD CHECK FUNCTION (Modes stay active)
+ ***************************************************************/
+static uint32_t faultLockTimestamp = 0;
+static bool faultLocked = false;
+
+#define LOAD_FAULT_CONFIRM_MS     3000   // confirm overload/underload for 3 seconds
+#define LOAD_RETRY_RUN_MS         3000   // run motor for 3 seconds during retry
+#define LOAD_LOCK_DURATION_MS     (30UL * 60UL * 1000UL)   // 30 minutes
+
+typedef enum {
+    LOAD_NORMAL = 0,
+    LOAD_FAULT_WAIT,
+    LOAD_FAULT_LOCK,
+    LOAD_RETRY_RUN
+} LoadFaultState;
+
+static LoadFaultState loadState = LOAD_NORMAL;
+static uint32_t loadTimer = 0;
+
+
+void ModelHandle_CheckLoadFault(void)
+{
+    float I = g_currentA;
+    float V = g_voltageV;
+
+    float ol = ModelHandle_GetOverloadLimit();
+    float ul = ModelHandle_GetUnderloadLimit();
+    uint16_t uv = ModelHandle_GetUnderVolt();
+    uint16_t ov = ModelHandle_GetOverVolt();
+
+    uint32_t now = HAL_GetTick();
+
+    bool overload  = (I > ol);
+    bool underload = (I < ul);
+    bool voltFault = (V < uv || V > ov);
+    bool loadFault = (overload || underload);
+
+    /***********************************************************
+     * LED INDICATION PRIORITY LOGIC
+     ***********************************************************/
+    if (voltFault)
+    {
+        LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_BLINK, 250);
+    }
+    else if (loadFault)
+    {
+        LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 250);
+    }
+    else
+    {
+        LED_SetIntent(LED_COLOR_BLUE, LED_MODE_OFF, 0); // Ensure blue off
+        LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_OFF, 0); // Ensure purple off
+    }
+
+    /***********************************************************
+     * LOAD + VOLTAGE PROTECTION — USE SAME FSM
+     ***********************************************************/
+    bool fault = loadFault || voltFault;
+
+    switch (loadState)
+    {
+        case LOAD_NORMAL:
+            if (fault && Motor_GetStatus())
+            {
+                loadState = LOAD_FAULT_WAIT;
+                loadTimer = now;
+            }
+            break;
+
+        case LOAD_FAULT_WAIT:
+            if (!fault)
+            {
+                loadState = LOAD_NORMAL;
+                break;
+            }
+            if (now - loadTimer >= LOAD_FAULT_CONFIRM_MS)
+            {
+                stop_motor();
+                loadState = LOAD_FAULT_LOCK;
+                loadTimer = now;
+            }
+            break;
+
+        case LOAD_FAULT_LOCK:
+            if (now - loadTimer >= LOAD_LOCK_DURATION_MS)
+            {
+                if (isAnyModeActive())
+                {
+                    start_motor();
+                    loadState = LOAD_RETRY_RUN;
+                    loadTimer = now;
+                }
+            }
+            break;
+
+        case LOAD_RETRY_RUN:
+            if (now - loadTimer >= LOAD_RETRY_RUN_MS)
+            {
+                if (fault)
+                {
+                    stop_motor();
+                    loadState = LOAD_FAULT_LOCK;
+                    loadTimer = now;
+                }
+                else
+                {
+                    loadState = LOAD_NORMAL;
+                }
+            }
+            break;
+    }
+}
+
 
 /***************************************************************
  *  TANK FULL DETECTION
@@ -403,22 +537,6 @@ typedef enum {
 static DryFSMState dryState = DRY_IDLE;
 static bool dryConfirming   = false;
 
-static uint32_t dryDeadline     = 0;
-static uint32_t dryConfirmStart = 0;
-
-#define DRY_PROBE_ON_MS      5000UL
-#define DRY_PROBE_OFF_MS    10000UL
-#define DRY_CONFIRM_MS       1500UL
-
-static inline bool isAnyModeActive(void)
-{
-    return (manualActive ||
-            semiAutoActive ||
-            countdownActive ||
-            twistActive ||
-            timerActive ||
-            autoActive);
-}
 
 void ModelHandle_SoftDryRunHandler(void)
 {

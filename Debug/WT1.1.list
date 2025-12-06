@@ -21,31 +21,31 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, ALLOC, LOAD, READONLY, DATA
   8 .data         0000025c  20000000  08010338  00012000  2**2
                   CONTENTS, ALLOC, LOAD, DATA
-  9 .bss          000005f4  2000025c  08010594  0001225c  2**2
+  9 .bss          000005f0  2000025c  08010594  0001225c  2**2
                   ALLOC
- 10 ._user_heap_stack 00000600  20000850  08010594  00012850  2**0
+ 10 ._user_heap_stack 00000604  2000084c  08010594  0001284c  2**0
                   ALLOC
  11 .ARM.attributes 00000029  00000000  00000000  0001225c  2**0
                   CONTENTS, READONLY
- 12 .debug_info   0001afc6  00000000  00000000  00012285  2**0
+ 12 .debug_info   0001b117  00000000  00000000  00012285  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 13 .debug_abbrev 000049fd  00000000  00000000  0002d24b  2**0
+ 13 .debug_abbrev 000049e6  00000000  00000000  0002d39c  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 14 .debug_aranges 00001b58  00000000  00000000  00031c48  2**3
+ 14 .debug_aranges 00001b60  00000000  00000000  00031d88  2**3
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 15 .debug_rnglists 00001574  00000000  00000000  000337a0  2**0
+ 15 .debug_rnglists 0000157b  00000000  00000000  000338e8  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 16 .debug_macro  0001cd79  00000000  00000000  00034d14  2**0
+ 16 .debug_macro  0001cd8e  00000000  00000000  00034e63  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 17 .debug_line   00021f40  00000000  00000000  00051a8d  2**0
+ 17 .debug_line   0002204c  00000000  00000000  00051bf1  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_str    0009a37a  00000000  00000000  000739cd  2**0
+ 18 .debug_str    0009a48b  00000000  00000000  00073c3d  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .comment      00000043  00000000  00000000  0010dd47  2**0
+ 19 .comment      00000043  00000000  00000000  0010e0c8  2**0
                   CONTENTS, READONLY
- 20 .debug_frame  000084c4  00000000  00000000  0010dd8c  2**2
+ 20 .debug_frame  000084ec  00000000  00000000  0010e10c  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 21 .debug_line_str 00000079  00000000  00000000  00116250  2**0
+ 21 .debug_line_str 00000079  00000000  00000000  001165f8  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -6005,10 +6005,10 @@ static inline void clear_all_modes(void)
  8002f2c:	2000058f 	.word	0x2000058f
 
 08002f30 <motor_apply>:
-
 /***************************************************************
  *  MOTOR CONTROL (ANTI-CHATTER)
  ***************************************************************/
+
 static inline void motor_apply(bool on)
 {
  8002f30:	b580      	push	{r7, lr}
@@ -6170,380 +6170,383 @@ void reset(void)
  8003014:	bf00      	nop
  8003016:	bd80      	pop	{r7, pc}
 
-08003018 <ModelHandle_StopAllModesAndMotor>:
- *  TANK FULL DETECTION
- *  (5 ADC probes = level sensors)
- ***************************************************************/
-
-void ModelHandle_StopAllModesAndMotor(void)
-{
- 8003018:	b580      	push	{r7, lr}
- 800301a:	af00      	add	r7, sp, #0
-    manualActive     = false;
- 800301c:	4b0c      	ldr	r3, [pc, #48]	@ (8003050 <ModelHandle_StopAllModesAndMotor+0x38>)
- 800301e:	2200      	movs	r2, #0
- 8003020:	701a      	strb	r2, [r3, #0]
-    semiAutoActive   = false;
- 8003022:	4b0c      	ldr	r3, [pc, #48]	@ (8003054 <ModelHandle_StopAllModesAndMotor+0x3c>)
- 8003024:	2200      	movs	r2, #0
- 8003026:	701a      	strb	r2, [r3, #0]
-    timerActive      = false;
- 8003028:	4b0b      	ldr	r3, [pc, #44]	@ (8003058 <ModelHandle_StopAllModesAndMotor+0x40>)
- 800302a:	2200      	movs	r2, #0
- 800302c:	701a      	strb	r2, [r3, #0]
-    countdownActive  = false;
- 800302e:	4b0b      	ldr	r3, [pc, #44]	@ (800305c <ModelHandle_StopAllModesAndMotor+0x44>)
- 8003030:	2200      	movs	r2, #0
- 8003032:	701a      	strb	r2, [r3, #0]
-    twistActive      = false;
- 8003034:	4b0a      	ldr	r3, [pc, #40]	@ (8003060 <ModelHandle_StopAllModesAndMotor+0x48>)
- 8003036:	2200      	movs	r2, #0
- 8003038:	701a      	strb	r2, [r3, #0]
-    autoActive       = false;
- 800303a:	4b0a      	ldr	r3, [pc, #40]	@ (8003064 <ModelHandle_StopAllModesAndMotor+0x4c>)
- 800303c:	2200      	movs	r2, #0
- 800303e:	701a      	strb	r2, [r3, #0]
-    ModelHandle_SaveModeState();
- 8003040:	f7ff fe68 	bl	8002d14 <ModelHandle_SaveModeState>
-    ModelHandle_SetMotor(false);   // turn OFF motor safely
- 8003044:	2000      	movs	r0, #0
- 8003046:	f7ff ffaf 	bl	8002fa8 <ModelHandle_SetMotor>
-}
- 800304a:	bf00      	nop
- 800304c:	bd80      	pop	{r7, pc}
- 800304e:	bf00      	nop
- 8003050:	2000057a 	.word	0x2000057a
- 8003054:	2000057b 	.word	0x2000057b
- 8003058:	2000057e 	.word	0x2000057e
- 800305c:	2000057c 	.word	0x2000057c
- 8003060:	2000057d 	.word	0x2000057d
- 8003064:	2000057f 	.word	0x2000057f
-
-08003068 <isTankFull>:
-
-static inline bool isTankFull(void)
-{
- 8003068:	b580      	push	{r7, lr}
- 800306a:	b084      	sub	sp, #16
- 800306c:	af00      	add	r7, sp, #0
-    static uint32_t stableStart = 0;
-    static bool lastState = false;
-
-    bool allZero = true;
- 800306e:	2301      	movs	r3, #1
- 8003070:	73fb      	strb	r3, [r7, #15]
-
-    for (int i = 1; i <= 5; i++)
- 8003072:	2301      	movs	r3, #1
- 8003074:	60bb      	str	r3, [r7, #8]
- 8003076:	e012      	b.n	800309e <isTankFull+0x36>
-    {
-        if (adcData.voltages[i] > 0.10f)
- 8003078:	4a1c      	ldr	r2, [pc, #112]	@ (80030ec <isTankFull+0x84>)
- 800307a:	68bb      	ldr	r3, [r7, #8]
- 800307c:	3302      	adds	r3, #2
- 800307e:	009b      	lsls	r3, r3, #2
- 8003080:	4413      	add	r3, r2
- 8003082:	685b      	ldr	r3, [r3, #4]
- 8003084:	491a      	ldr	r1, [pc, #104]	@ (80030f0 <isTankFull+0x88>)
- 8003086:	4618      	mov	r0, r3
- 8003088:	f7fd ffd2 	bl	8001030 <__aeabi_fcmpgt>
- 800308c:	4603      	mov	r3, r0
- 800308e:	2b00      	cmp	r3, #0
- 8003090:	d002      	beq.n	8003098 <isTankFull+0x30>
-        {
-            allZero = false;
- 8003092:	2300      	movs	r3, #0
- 8003094:	73fb      	strb	r3, [r7, #15]
-            break;
- 8003096:	e005      	b.n	80030a4 <isTankFull+0x3c>
-    for (int i = 1; i <= 5; i++)
- 8003098:	68bb      	ldr	r3, [r7, #8]
- 800309a:	3301      	adds	r3, #1
- 800309c:	60bb      	str	r3, [r7, #8]
- 800309e:	68bb      	ldr	r3, [r7, #8]
- 80030a0:	2b05      	cmp	r3, #5
- 80030a2:	dde9      	ble.n	8003078 <isTankFull+0x10>
-        }
-    }
-
-    uint32_t now = HAL_GetTick();
- 80030a4:	f004 fb7e 	bl	80077a4 <HAL_GetTick>
- 80030a8:	6078      	str	r0, [r7, #4]
-
-    if (allZero)
- 80030aa:	7bfb      	ldrb	r3, [r7, #15]
- 80030ac:	2b00      	cmp	r3, #0
- 80030ae:	d015      	beq.n	80030dc <isTankFull+0x74>
-    {
-        if (!lastState)
- 80030b0:	4b10      	ldr	r3, [pc, #64]	@ (80030f4 <isTankFull+0x8c>)
- 80030b2:	781b      	ldrb	r3, [r3, #0]
- 80030b4:	f083 0301 	eor.w	r3, r3, #1
- 80030b8:	b2db      	uxtb	r3, r3
- 80030ba:	2b00      	cmp	r3, #0
- 80030bc:	d005      	beq.n	80030ca <isTankFull+0x62>
-        {
-            lastState = true;
- 80030be:	4b0d      	ldr	r3, [pc, #52]	@ (80030f4 <isTankFull+0x8c>)
- 80030c0:	2201      	movs	r2, #1
- 80030c2:	701a      	strb	r2, [r3, #0]
-            stableStart = now;
- 80030c4:	4a0c      	ldr	r2, [pc, #48]	@ (80030f8 <isTankFull+0x90>)
- 80030c6:	687b      	ldr	r3, [r7, #4]
- 80030c8:	6013      	str	r3, [r2, #0]
-        }
-
-        if (now - stableStart >= 1000)
- 80030ca:	4b0b      	ldr	r3, [pc, #44]	@ (80030f8 <isTankFull+0x90>)
- 80030cc:	681b      	ldr	r3, [r3, #0]
- 80030ce:	687a      	ldr	r2, [r7, #4]
- 80030d0:	1ad3      	subs	r3, r2, r3
- 80030d2:	f5b3 7f7a 	cmp.w	r3, #1000	@ 0x3e8
- 80030d6:	d304      	bcc.n	80030e2 <isTankFull+0x7a>
-            return true;
- 80030d8:	2301      	movs	r3, #1
- 80030da:	e003      	b.n	80030e4 <isTankFull+0x7c>
-    }
-    else
-    {
-        lastState = false;
- 80030dc:	4b05      	ldr	r3, [pc, #20]	@ (80030f4 <isTankFull+0x8c>)
- 80030de:	2200      	movs	r2, #0
- 80030e0:	701a      	strb	r2, [r3, #0]
-    }
-
-    return false;
- 80030e2:	2300      	movs	r3, #0
-}
- 80030e4:	4618      	mov	r0, r3
- 80030e6:	3710      	adds	r7, #16
- 80030e8:	46bd      	mov	sp, r7
- 80030ea:	bd80      	pop	{r7, pc}
- 80030ec:	200004ec 	.word	0x200004ec
- 80030f0:	3dcccccd 	.word	0x3dcccccd
- 80030f4:	200005c0 	.word	0x200005c0
- 80030f8:	200005c4 	.word	0x200005c4
-
-080030fc <ModelHandle_CheckDryRun>:
- *  DRY-RUN SENSOR CHECK
- *  Voltage <=0.01f → WATER PRESENT → dry=false
- *  Voltage > 0.01f → DRY → dry=true
- ***************************************************************/
-void ModelHandle_CheckDryRun(void)
-{
- 80030fc:	b580      	push	{r7, lr}
- 80030fe:	b082      	sub	sp, #8
- 8003100:	af00      	add	r7, sp, #0
-    /* Countdown, Semi-Auto, Manual ignore dry-run */
-    if (manualActive || semiAutoActive || countdownActive)
- 8003102:	4b13      	ldr	r3, [pc, #76]	@ (8003150 <ModelHandle_CheckDryRun+0x54>)
- 8003104:	781b      	ldrb	r3, [r3, #0]
- 8003106:	b2db      	uxtb	r3, r3
- 8003108:	2b00      	cmp	r3, #0
- 800310a:	d109      	bne.n	8003120 <ModelHandle_CheckDryRun+0x24>
- 800310c:	4b11      	ldr	r3, [pc, #68]	@ (8003154 <ModelHandle_CheckDryRun+0x58>)
- 800310e:	781b      	ldrb	r3, [r3, #0]
- 8003110:	b2db      	uxtb	r3, r3
- 8003112:	2b00      	cmp	r3, #0
- 8003114:	d104      	bne.n	8003120 <ModelHandle_CheckDryRun+0x24>
- 8003116:	4b10      	ldr	r3, [pc, #64]	@ (8003158 <ModelHandle_CheckDryRun+0x5c>)
- 8003118:	781b      	ldrb	r3, [r3, #0]
- 800311a:	b2db      	uxtb	r3, r3
- 800311c:	2b00      	cmp	r3, #0
- 800311e:	d003      	beq.n	8003128 <ModelHandle_CheckDryRun+0x2c>
-    {
-        senseDryRun = false;
- 8003120:	4b0e      	ldr	r3, [pc, #56]	@ (800315c <ModelHandle_CheckDryRun+0x60>)
- 8003122:	2200      	movs	r2, #0
- 8003124:	701a      	strb	r2, [r3, #0]
-        return;
- 8003126:	e010      	b.n	800314a <ModelHandle_CheckDryRun+0x4e>
-    }
-
-    float v = adcData.voltages[0];
- 8003128:	4b0d      	ldr	r3, [pc, #52]	@ (8003160 <ModelHandle_CheckDryRun+0x64>)
- 800312a:	68db      	ldr	r3, [r3, #12]
- 800312c:	607b      	str	r3, [r7, #4]
-
-    if (v > 0.01f)
- 800312e:	490d      	ldr	r1, [pc, #52]	@ (8003164 <ModelHandle_CheckDryRun+0x68>)
- 8003130:	6878      	ldr	r0, [r7, #4]
- 8003132:	f7fd ff7d 	bl	8001030 <__aeabi_fcmpgt>
- 8003136:	4603      	mov	r3, r0
- 8003138:	2b00      	cmp	r3, #0
- 800313a:	d003      	beq.n	8003144 <ModelHandle_CheckDryRun+0x48>
-        senseDryRun = false;   // WATER PRESENT
- 800313c:	4b07      	ldr	r3, [pc, #28]	@ (800315c <ModelHandle_CheckDryRun+0x60>)
- 800313e:	2200      	movs	r2, #0
- 8003140:	701a      	strb	r2, [r3, #0]
- 8003142:	e002      	b.n	800314a <ModelHandle_CheckDryRun+0x4e>
-    else
-        senseDryRun = true;    // DRY
- 8003144:	4b05      	ldr	r3, [pc, #20]	@ (800315c <ModelHandle_CheckDryRun+0x60>)
- 8003146:	2201      	movs	r2, #1
- 8003148:	701a      	strb	r2, [r3, #0]
-}
- 800314a:	3708      	adds	r7, #8
- 800314c:	46bd      	mov	sp, r7
- 800314e:	bd80      	pop	{r7, pc}
- 8003150:	2000057a 	.word	0x2000057a
- 8003154:	2000057b 	.word	0x2000057b
- 8003158:	2000057c 	.word	0x2000057c
- 800315c:	20000581 	.word	0x20000581
- 8003160:	200004ec 	.word	0x200004ec
- 8003164:	3c23d70a 	.word	0x3c23d70a
-
-08003168 <ModelHandle_ToggleManual>:
-void ModelHandle_ToggleManual(void)
-{
- 8003168:	b580      	push	{r7, lr}
- 800316a:	af00      	add	r7, sp, #0
-    // Stop all other modes before manual
-    timerActive     = false;
- 800316c:	4b19      	ldr	r3, [pc, #100]	@ (80031d4 <ModelHandle_ToggleManual+0x6c>)
- 800316e:	2200      	movs	r2, #0
- 8003170:	701a      	strb	r2, [r3, #0]
-    semiAutoActive  = false;
- 8003172:	4b19      	ldr	r3, [pc, #100]	@ (80031d8 <ModelHandle_ToggleManual+0x70>)
- 8003174:	2200      	movs	r2, #0
- 8003176:	701a      	strb	r2, [r3, #0]
-    countdownActive = false;
- 8003178:	4b18      	ldr	r3, [pc, #96]	@ (80031dc <ModelHandle_ToggleManual+0x74>)
- 800317a:	2200      	movs	r2, #0
- 800317c:	701a      	strb	r2, [r3, #0]
-    twistActive     = false;
- 800317e:	4b18      	ldr	r3, [pc, #96]	@ (80031e0 <ModelHandle_ToggleManual+0x78>)
- 8003180:	2200      	movs	r2, #0
- 8003182:	701a      	strb	r2, [r3, #0]
-    autoActive      = false;
- 8003184:	4b17      	ldr	r3, [pc, #92]	@ (80031e4 <ModelHandle_ToggleManual+0x7c>)
- 8003186:	2200      	movs	r2, #0
- 8003188:	701a      	strb	r2, [r3, #0]
-
-    manualActive = !manualActive;
- 800318a:	4b17      	ldr	r3, [pc, #92]	@ (80031e8 <ModelHandle_ToggleManual+0x80>)
- 800318c:	781b      	ldrb	r3, [r3, #0]
- 800318e:	b2db      	uxtb	r3, r3
- 8003190:	2b00      	cmp	r3, #0
- 8003192:	bf14      	ite	ne
- 8003194:	2301      	movne	r3, #1
- 8003196:	2300      	moveq	r3, #0
- 8003198:	b2db      	uxtb	r3, r3
- 800319a:	f083 0301 	eor.w	r3, r3, #1
- 800319e:	b2db      	uxtb	r3, r3
- 80031a0:	f003 0301 	and.w	r3, r3, #1
- 80031a4:	b2da      	uxtb	r2, r3
- 80031a6:	4b10      	ldr	r3, [pc, #64]	@ (80031e8 <ModelHandle_ToggleManual+0x80>)
- 80031a8:	701a      	strb	r2, [r3, #0]
-    ModelHandle_SaveModeState();
- 80031aa:	f7ff fdb3 	bl	8002d14 <ModelHandle_SaveModeState>
-    if (manualActive)
- 80031ae:	4b0e      	ldr	r3, [pc, #56]	@ (80031e8 <ModelHandle_ToggleManual+0x80>)
- 80031b0:	781b      	ldrb	r3, [r3, #0]
- 80031b2:	b2db      	uxtb	r3, r3
- 80031b4:	2b00      	cmp	r3, #0
- 80031b6:	d005      	beq.n	80031c4 <ModelHandle_ToggleManual+0x5c>
-    {
-        manualOverride = true;
- 80031b8:	4b0c      	ldr	r3, [pc, #48]	@ (80031ec <ModelHandle_ToggleManual+0x84>)
- 80031ba:	2201      	movs	r2, #1
- 80031bc:	701a      	strb	r2, [r3, #0]
-        start_motor();
- 80031be:	f7ff fed5 	bl	8002f6c <start_motor>
-    else
-    {
-        manualOverride = false;
-        stop_motor();
-    }
-}
- 80031c2:	e004      	b.n	80031ce <ModelHandle_ToggleManual+0x66>
-        manualOverride = false;
- 80031c4:	4b09      	ldr	r3, [pc, #36]	@ (80031ec <ModelHandle_ToggleManual+0x84>)
- 80031c6:	2200      	movs	r2, #0
- 80031c8:	701a      	strb	r2, [r3, #0]
-        stop_motor();
- 80031ca:	f7ff fed6 	bl	8002f7a <stop_motor>
-}
- 80031ce:	bf00      	nop
- 80031d0:	bd80      	pop	{r7, pc}
- 80031d2:	bf00      	nop
- 80031d4:	2000057e 	.word	0x2000057e
- 80031d8:	2000057b 	.word	0x2000057b
- 80031dc:	2000057c 	.word	0x2000057c
- 80031e0:	2000057d 	.word	0x2000057d
- 80031e4:	2000057f 	.word	0x2000057f
- 80031e8:	2000057a 	.word	0x2000057a
- 80031ec:	2000058f 	.word	0x2000058f
-
-080031f0 <isAnyModeActive>:
+08003018 <isAnyModeActive>:
 #define DRY_PROBE_ON_MS      5000UL
 #define DRY_PROBE_OFF_MS    10000UL
 #define DRY_CONFIRM_MS       1500UL
 
 static inline bool isAnyModeActive(void)
 {
- 80031f0:	b480      	push	{r7}
- 80031f2:	af00      	add	r7, sp, #0
+ 8003018:	b480      	push	{r7}
+ 800301a:	af00      	add	r7, sp, #0
     return (manualActive ||
- 80031f4:	4b13      	ldr	r3, [pc, #76]	@ (8003244 <isAnyModeActive+0x54>)
- 80031f6:	781b      	ldrb	r3, [r3, #0]
- 80031f8:	b2db      	uxtb	r3, r3
+ 800301c:	4b13      	ldr	r3, [pc, #76]	@ (800306c <isAnyModeActive+0x54>)
+ 800301e:	781b      	ldrb	r3, [r3, #0]
+ 8003020:	b2db      	uxtb	r3, r3
             semiAutoActive ||
             countdownActive ||
             twistActive ||
             timerActive ||
- 80031fa:	2b00      	cmp	r3, #0
- 80031fc:	d118      	bne.n	8003230 <isAnyModeActive+0x40>
+ 8003022:	2b00      	cmp	r3, #0
+ 8003024:	d118      	bne.n	8003058 <isAnyModeActive+0x40>
     return (manualActive ||
- 80031fe:	4b12      	ldr	r3, [pc, #72]	@ (8003248 <isAnyModeActive+0x58>)
- 8003200:	781b      	ldrb	r3, [r3, #0]
- 8003202:	b2db      	uxtb	r3, r3
- 8003204:	2b00      	cmp	r3, #0
- 8003206:	d113      	bne.n	8003230 <isAnyModeActive+0x40>
+ 8003026:	4b12      	ldr	r3, [pc, #72]	@ (8003070 <isAnyModeActive+0x58>)
+ 8003028:	781b      	ldrb	r3, [r3, #0]
+ 800302a:	b2db      	uxtb	r3, r3
+ 800302c:	2b00      	cmp	r3, #0
+ 800302e:	d113      	bne.n	8003058 <isAnyModeActive+0x40>
             semiAutoActive ||
- 8003208:	4b10      	ldr	r3, [pc, #64]	@ (800324c <isAnyModeActive+0x5c>)
- 800320a:	781b      	ldrb	r3, [r3, #0]
- 800320c:	b2db      	uxtb	r3, r3
- 800320e:	2b00      	cmp	r3, #0
- 8003210:	d10e      	bne.n	8003230 <isAnyModeActive+0x40>
+ 8003030:	4b10      	ldr	r3, [pc, #64]	@ (8003074 <isAnyModeActive+0x5c>)
+ 8003032:	781b      	ldrb	r3, [r3, #0]
+ 8003034:	b2db      	uxtb	r3, r3
+ 8003036:	2b00      	cmp	r3, #0
+ 8003038:	d10e      	bne.n	8003058 <isAnyModeActive+0x40>
             countdownActive ||
- 8003212:	4b0f      	ldr	r3, [pc, #60]	@ (8003250 <isAnyModeActive+0x60>)
- 8003214:	781b      	ldrb	r3, [r3, #0]
- 8003216:	b2db      	uxtb	r3, r3
- 8003218:	2b00      	cmp	r3, #0
- 800321a:	d109      	bne.n	8003230 <isAnyModeActive+0x40>
+ 800303a:	4b0f      	ldr	r3, [pc, #60]	@ (8003078 <isAnyModeActive+0x60>)
+ 800303c:	781b      	ldrb	r3, [r3, #0]
+ 800303e:	b2db      	uxtb	r3, r3
+ 8003040:	2b00      	cmp	r3, #0
+ 8003042:	d109      	bne.n	8003058 <isAnyModeActive+0x40>
             twistActive ||
- 800321c:	4b0d      	ldr	r3, [pc, #52]	@ (8003254 <isAnyModeActive+0x64>)
- 800321e:	781b      	ldrb	r3, [r3, #0]
- 8003220:	b2db      	uxtb	r3, r3
- 8003222:	2b00      	cmp	r3, #0
- 8003224:	d104      	bne.n	8003230 <isAnyModeActive+0x40>
+ 8003044:	4b0d      	ldr	r3, [pc, #52]	@ (800307c <isAnyModeActive+0x64>)
+ 8003046:	781b      	ldrb	r3, [r3, #0]
+ 8003048:	b2db      	uxtb	r3, r3
+ 800304a:	2b00      	cmp	r3, #0
+ 800304c:	d104      	bne.n	8003058 <isAnyModeActive+0x40>
             timerActive ||
- 8003226:	4b0c      	ldr	r3, [pc, #48]	@ (8003258 <isAnyModeActive+0x68>)
- 8003228:	781b      	ldrb	r3, [r3, #0]
- 800322a:	b2db      	uxtb	r3, r3
- 800322c:	2b00      	cmp	r3, #0
- 800322e:	d001      	beq.n	8003234 <isAnyModeActive+0x44>
- 8003230:	2301      	movs	r3, #1
- 8003232:	e000      	b.n	8003236 <isAnyModeActive+0x46>
- 8003234:	2300      	movs	r3, #0
- 8003236:	f003 0301 	and.w	r3, r3, #1
- 800323a:	b2db      	uxtb	r3, r3
+ 800304e:	4b0c      	ldr	r3, [pc, #48]	@ (8003080 <isAnyModeActive+0x68>)
+ 8003050:	781b      	ldrb	r3, [r3, #0]
+ 8003052:	b2db      	uxtb	r3, r3
+ 8003054:	2b00      	cmp	r3, #0
+ 8003056:	d001      	beq.n	800305c <isAnyModeActive+0x44>
+ 8003058:	2301      	movs	r3, #1
+ 800305a:	e000      	b.n	800305e <isAnyModeActive+0x46>
+ 800305c:	2300      	movs	r3, #0
+ 800305e:	f003 0301 	and.w	r3, r3, #1
+ 8003062:	b2db      	uxtb	r3, r3
             autoActive);
 }
- 800323c:	4618      	mov	r0, r3
- 800323e:	46bd      	mov	sp, r7
- 8003240:	bc80      	pop	{r7}
- 8003242:	4770      	bx	lr
- 8003244:	2000057a 	.word	0x2000057a
- 8003248:	2000057b 	.word	0x2000057b
- 800324c:	2000057c 	.word	0x2000057c
- 8003250:	2000057d 	.word	0x2000057d
- 8003254:	2000057e 	.word	0x2000057e
- 8003258:	2000057f 	.word	0x2000057f
+ 8003064:	4618      	mov	r0, r3
+ 8003066:	46bd      	mov	sp, r7
+ 8003068:	bc80      	pop	{r7}
+ 800306a:	4770      	bx	lr
+ 800306c:	2000057a 	.word	0x2000057a
+ 8003070:	2000057b 	.word	0x2000057b
+ 8003074:	2000057c 	.word	0x2000057c
+ 8003078:	2000057d 	.word	0x2000057d
+ 800307c:	2000057e 	.word	0x2000057e
+ 8003080:	2000057f 	.word	0x2000057f
+
+08003084 <ModelHandle_StopAllModesAndMotor>:
+ *  TANK FULL DETECTION
+ *  (5 ADC probes = level sensors)
+ ***************************************************************/
+
+void ModelHandle_StopAllModesAndMotor(void)
+{
+ 8003084:	b580      	push	{r7, lr}
+ 8003086:	af00      	add	r7, sp, #0
+    manualActive     = false;
+ 8003088:	4b0c      	ldr	r3, [pc, #48]	@ (80030bc <ModelHandle_StopAllModesAndMotor+0x38>)
+ 800308a:	2200      	movs	r2, #0
+ 800308c:	701a      	strb	r2, [r3, #0]
+    semiAutoActive   = false;
+ 800308e:	4b0c      	ldr	r3, [pc, #48]	@ (80030c0 <ModelHandle_StopAllModesAndMotor+0x3c>)
+ 8003090:	2200      	movs	r2, #0
+ 8003092:	701a      	strb	r2, [r3, #0]
+    timerActive      = false;
+ 8003094:	4b0b      	ldr	r3, [pc, #44]	@ (80030c4 <ModelHandle_StopAllModesAndMotor+0x40>)
+ 8003096:	2200      	movs	r2, #0
+ 8003098:	701a      	strb	r2, [r3, #0]
+    countdownActive  = false;
+ 800309a:	4b0b      	ldr	r3, [pc, #44]	@ (80030c8 <ModelHandle_StopAllModesAndMotor+0x44>)
+ 800309c:	2200      	movs	r2, #0
+ 800309e:	701a      	strb	r2, [r3, #0]
+    twistActive      = false;
+ 80030a0:	4b0a      	ldr	r3, [pc, #40]	@ (80030cc <ModelHandle_StopAllModesAndMotor+0x48>)
+ 80030a2:	2200      	movs	r2, #0
+ 80030a4:	701a      	strb	r2, [r3, #0]
+    autoActive       = false;
+ 80030a6:	4b0a      	ldr	r3, [pc, #40]	@ (80030d0 <ModelHandle_StopAllModesAndMotor+0x4c>)
+ 80030a8:	2200      	movs	r2, #0
+ 80030aa:	701a      	strb	r2, [r3, #0]
+    ModelHandle_SaveModeState();
+ 80030ac:	f7ff fe32 	bl	8002d14 <ModelHandle_SaveModeState>
+    ModelHandle_SetMotor(false);   // turn OFF motor safely
+ 80030b0:	2000      	movs	r0, #0
+ 80030b2:	f7ff ff79 	bl	8002fa8 <ModelHandle_SetMotor>
+}
+ 80030b6:	bf00      	nop
+ 80030b8:	bd80      	pop	{r7, pc}
+ 80030ba:	bf00      	nop
+ 80030bc:	2000057a 	.word	0x2000057a
+ 80030c0:	2000057b 	.word	0x2000057b
+ 80030c4:	2000057e 	.word	0x2000057e
+ 80030c8:	2000057c 	.word	0x2000057c
+ 80030cc:	2000057d 	.word	0x2000057d
+ 80030d0:	2000057f 	.word	0x2000057f
+
+080030d4 <isTankFull>:
+
+static inline bool isTankFull(void)
+{
+ 80030d4:	b580      	push	{r7, lr}
+ 80030d6:	b084      	sub	sp, #16
+ 80030d8:	af00      	add	r7, sp, #0
+    static uint32_t stableStart = 0;
+    static bool lastState = false;
+
+    bool allZero = true;
+ 80030da:	2301      	movs	r3, #1
+ 80030dc:	73fb      	strb	r3, [r7, #15]
+
+    for (int i = 1; i <= 5; i++)
+ 80030de:	2301      	movs	r3, #1
+ 80030e0:	60bb      	str	r3, [r7, #8]
+ 80030e2:	e012      	b.n	800310a <isTankFull+0x36>
+    {
+        if (adcData.voltages[i] > 0.10f)
+ 80030e4:	4a1c      	ldr	r2, [pc, #112]	@ (8003158 <isTankFull+0x84>)
+ 80030e6:	68bb      	ldr	r3, [r7, #8]
+ 80030e8:	3302      	adds	r3, #2
+ 80030ea:	009b      	lsls	r3, r3, #2
+ 80030ec:	4413      	add	r3, r2
+ 80030ee:	685b      	ldr	r3, [r3, #4]
+ 80030f0:	491a      	ldr	r1, [pc, #104]	@ (800315c <isTankFull+0x88>)
+ 80030f2:	4618      	mov	r0, r3
+ 80030f4:	f7fd ff9c 	bl	8001030 <__aeabi_fcmpgt>
+ 80030f8:	4603      	mov	r3, r0
+ 80030fa:	2b00      	cmp	r3, #0
+ 80030fc:	d002      	beq.n	8003104 <isTankFull+0x30>
+        {
+            allZero = false;
+ 80030fe:	2300      	movs	r3, #0
+ 8003100:	73fb      	strb	r3, [r7, #15]
+            break;
+ 8003102:	e005      	b.n	8003110 <isTankFull+0x3c>
+    for (int i = 1; i <= 5; i++)
+ 8003104:	68bb      	ldr	r3, [r7, #8]
+ 8003106:	3301      	adds	r3, #1
+ 8003108:	60bb      	str	r3, [r7, #8]
+ 800310a:	68bb      	ldr	r3, [r7, #8]
+ 800310c:	2b05      	cmp	r3, #5
+ 800310e:	dde9      	ble.n	80030e4 <isTankFull+0x10>
+        }
+    }
+
+    uint32_t now = HAL_GetTick();
+ 8003110:	f004 fb48 	bl	80077a4 <HAL_GetTick>
+ 8003114:	6078      	str	r0, [r7, #4]
+
+    if (allZero)
+ 8003116:	7bfb      	ldrb	r3, [r7, #15]
+ 8003118:	2b00      	cmp	r3, #0
+ 800311a:	d015      	beq.n	8003148 <isTankFull+0x74>
+    {
+        if (!lastState)
+ 800311c:	4b10      	ldr	r3, [pc, #64]	@ (8003160 <isTankFull+0x8c>)
+ 800311e:	781b      	ldrb	r3, [r3, #0]
+ 8003120:	f083 0301 	eor.w	r3, r3, #1
+ 8003124:	b2db      	uxtb	r3, r3
+ 8003126:	2b00      	cmp	r3, #0
+ 8003128:	d005      	beq.n	8003136 <isTankFull+0x62>
+        {
+            lastState = true;
+ 800312a:	4b0d      	ldr	r3, [pc, #52]	@ (8003160 <isTankFull+0x8c>)
+ 800312c:	2201      	movs	r2, #1
+ 800312e:	701a      	strb	r2, [r3, #0]
+            stableStart = now;
+ 8003130:	4a0c      	ldr	r2, [pc, #48]	@ (8003164 <isTankFull+0x90>)
+ 8003132:	687b      	ldr	r3, [r7, #4]
+ 8003134:	6013      	str	r3, [r2, #0]
+        }
+
+        if (now - stableStart >= 1000)
+ 8003136:	4b0b      	ldr	r3, [pc, #44]	@ (8003164 <isTankFull+0x90>)
+ 8003138:	681b      	ldr	r3, [r3, #0]
+ 800313a:	687a      	ldr	r2, [r7, #4]
+ 800313c:	1ad3      	subs	r3, r2, r3
+ 800313e:	f5b3 7f7a 	cmp.w	r3, #1000	@ 0x3e8
+ 8003142:	d304      	bcc.n	800314e <isTankFull+0x7a>
+            return true;
+ 8003144:	2301      	movs	r3, #1
+ 8003146:	e003      	b.n	8003150 <isTankFull+0x7c>
+    }
+    else
+    {
+        lastState = false;
+ 8003148:	4b05      	ldr	r3, [pc, #20]	@ (8003160 <isTankFull+0x8c>)
+ 800314a:	2200      	movs	r2, #0
+ 800314c:	701a      	strb	r2, [r3, #0]
+    }
+
+    return false;
+ 800314e:	2300      	movs	r3, #0
+}
+ 8003150:	4618      	mov	r0, r3
+ 8003152:	3710      	adds	r7, #16
+ 8003154:	46bd      	mov	sp, r7
+ 8003156:	bd80      	pop	{r7, pc}
+ 8003158:	200004ec 	.word	0x200004ec
+ 800315c:	3dcccccd 	.word	0x3dcccccd
+ 8003160:	200005bc 	.word	0x200005bc
+ 8003164:	200005c0 	.word	0x200005c0
+
+08003168 <ModelHandle_CheckDryRun>:
+ *  DRY-RUN SENSOR CHECK
+ *  Voltage <=0.01f → WATER PRESENT → dry=false
+ *  Voltage > 0.01f → DRY → dry=true
+ ***************************************************************/
+void ModelHandle_CheckDryRun(void)
+{
+ 8003168:	b580      	push	{r7, lr}
+ 800316a:	b082      	sub	sp, #8
+ 800316c:	af00      	add	r7, sp, #0
+    /* Countdown, Semi-Auto, Manual ignore dry-run */
+    if (manualActive || semiAutoActive || countdownActive)
+ 800316e:	4b13      	ldr	r3, [pc, #76]	@ (80031bc <ModelHandle_CheckDryRun+0x54>)
+ 8003170:	781b      	ldrb	r3, [r3, #0]
+ 8003172:	b2db      	uxtb	r3, r3
+ 8003174:	2b00      	cmp	r3, #0
+ 8003176:	d109      	bne.n	800318c <ModelHandle_CheckDryRun+0x24>
+ 8003178:	4b11      	ldr	r3, [pc, #68]	@ (80031c0 <ModelHandle_CheckDryRun+0x58>)
+ 800317a:	781b      	ldrb	r3, [r3, #0]
+ 800317c:	b2db      	uxtb	r3, r3
+ 800317e:	2b00      	cmp	r3, #0
+ 8003180:	d104      	bne.n	800318c <ModelHandle_CheckDryRun+0x24>
+ 8003182:	4b10      	ldr	r3, [pc, #64]	@ (80031c4 <ModelHandle_CheckDryRun+0x5c>)
+ 8003184:	781b      	ldrb	r3, [r3, #0]
+ 8003186:	b2db      	uxtb	r3, r3
+ 8003188:	2b00      	cmp	r3, #0
+ 800318a:	d003      	beq.n	8003194 <ModelHandle_CheckDryRun+0x2c>
+    {
+        senseDryRun = false;
+ 800318c:	4b0e      	ldr	r3, [pc, #56]	@ (80031c8 <ModelHandle_CheckDryRun+0x60>)
+ 800318e:	2200      	movs	r2, #0
+ 8003190:	701a      	strb	r2, [r3, #0]
+        return;
+ 8003192:	e010      	b.n	80031b6 <ModelHandle_CheckDryRun+0x4e>
+    }
+
+    float v = adcData.voltages[0];
+ 8003194:	4b0d      	ldr	r3, [pc, #52]	@ (80031cc <ModelHandle_CheckDryRun+0x64>)
+ 8003196:	68db      	ldr	r3, [r3, #12]
+ 8003198:	607b      	str	r3, [r7, #4]
+
+    if (v > 0.01f)
+ 800319a:	490d      	ldr	r1, [pc, #52]	@ (80031d0 <ModelHandle_CheckDryRun+0x68>)
+ 800319c:	6878      	ldr	r0, [r7, #4]
+ 800319e:	f7fd ff47 	bl	8001030 <__aeabi_fcmpgt>
+ 80031a2:	4603      	mov	r3, r0
+ 80031a4:	2b00      	cmp	r3, #0
+ 80031a6:	d003      	beq.n	80031b0 <ModelHandle_CheckDryRun+0x48>
+        senseDryRun = false;   // WATER PRESENT
+ 80031a8:	4b07      	ldr	r3, [pc, #28]	@ (80031c8 <ModelHandle_CheckDryRun+0x60>)
+ 80031aa:	2200      	movs	r2, #0
+ 80031ac:	701a      	strb	r2, [r3, #0]
+ 80031ae:	e002      	b.n	80031b6 <ModelHandle_CheckDryRun+0x4e>
+    else
+        senseDryRun = true;    // DRY
+ 80031b0:	4b05      	ldr	r3, [pc, #20]	@ (80031c8 <ModelHandle_CheckDryRun+0x60>)
+ 80031b2:	2201      	movs	r2, #1
+ 80031b4:	701a      	strb	r2, [r3, #0]
+}
+ 80031b6:	3708      	adds	r7, #8
+ 80031b8:	46bd      	mov	sp, r7
+ 80031ba:	bd80      	pop	{r7, pc}
+ 80031bc:	2000057a 	.word	0x2000057a
+ 80031c0:	2000057b 	.word	0x2000057b
+ 80031c4:	2000057c 	.word	0x2000057c
+ 80031c8:	20000581 	.word	0x20000581
+ 80031cc:	200004ec 	.word	0x200004ec
+ 80031d0:	3c23d70a 	.word	0x3c23d70a
+
+080031d4 <ModelHandle_ToggleManual>:
+void ModelHandle_ToggleManual(void)
+{
+ 80031d4:	b580      	push	{r7, lr}
+ 80031d6:	af00      	add	r7, sp, #0
+    // Stop all other modes before manual
+    timerActive     = false;
+ 80031d8:	4b19      	ldr	r3, [pc, #100]	@ (8003240 <ModelHandle_ToggleManual+0x6c>)
+ 80031da:	2200      	movs	r2, #0
+ 80031dc:	701a      	strb	r2, [r3, #0]
+    semiAutoActive  = false;
+ 80031de:	4b19      	ldr	r3, [pc, #100]	@ (8003244 <ModelHandle_ToggleManual+0x70>)
+ 80031e0:	2200      	movs	r2, #0
+ 80031e2:	701a      	strb	r2, [r3, #0]
+    countdownActive = false;
+ 80031e4:	4b18      	ldr	r3, [pc, #96]	@ (8003248 <ModelHandle_ToggleManual+0x74>)
+ 80031e6:	2200      	movs	r2, #0
+ 80031e8:	701a      	strb	r2, [r3, #0]
+    twistActive     = false;
+ 80031ea:	4b18      	ldr	r3, [pc, #96]	@ (800324c <ModelHandle_ToggleManual+0x78>)
+ 80031ec:	2200      	movs	r2, #0
+ 80031ee:	701a      	strb	r2, [r3, #0]
+    autoActive      = false;
+ 80031f0:	4b17      	ldr	r3, [pc, #92]	@ (8003250 <ModelHandle_ToggleManual+0x7c>)
+ 80031f2:	2200      	movs	r2, #0
+ 80031f4:	701a      	strb	r2, [r3, #0]
+
+    manualActive = !manualActive;
+ 80031f6:	4b17      	ldr	r3, [pc, #92]	@ (8003254 <ModelHandle_ToggleManual+0x80>)
+ 80031f8:	781b      	ldrb	r3, [r3, #0]
+ 80031fa:	b2db      	uxtb	r3, r3
+ 80031fc:	2b00      	cmp	r3, #0
+ 80031fe:	bf14      	ite	ne
+ 8003200:	2301      	movne	r3, #1
+ 8003202:	2300      	moveq	r3, #0
+ 8003204:	b2db      	uxtb	r3, r3
+ 8003206:	f083 0301 	eor.w	r3, r3, #1
+ 800320a:	b2db      	uxtb	r3, r3
+ 800320c:	f003 0301 	and.w	r3, r3, #1
+ 8003210:	b2da      	uxtb	r2, r3
+ 8003212:	4b10      	ldr	r3, [pc, #64]	@ (8003254 <ModelHandle_ToggleManual+0x80>)
+ 8003214:	701a      	strb	r2, [r3, #0]
+    ModelHandle_SaveModeState();
+ 8003216:	f7ff fd7d 	bl	8002d14 <ModelHandle_SaveModeState>
+    if (manualActive)
+ 800321a:	4b0e      	ldr	r3, [pc, #56]	@ (8003254 <ModelHandle_ToggleManual+0x80>)
+ 800321c:	781b      	ldrb	r3, [r3, #0]
+ 800321e:	b2db      	uxtb	r3, r3
+ 8003220:	2b00      	cmp	r3, #0
+ 8003222:	d005      	beq.n	8003230 <ModelHandle_ToggleManual+0x5c>
+    {
+        manualOverride = true;
+ 8003224:	4b0c      	ldr	r3, [pc, #48]	@ (8003258 <ModelHandle_ToggleManual+0x84>)
+ 8003226:	2201      	movs	r2, #1
+ 8003228:	701a      	strb	r2, [r3, #0]
+        start_motor();
+ 800322a:	f7ff fe9f 	bl	8002f6c <start_motor>
+    else
+    {
+        manualOverride = false;
+        stop_motor();
+    }
+}
+ 800322e:	e004      	b.n	800323a <ModelHandle_ToggleManual+0x66>
+        manualOverride = false;
+ 8003230:	4b09      	ldr	r3, [pc, #36]	@ (8003258 <ModelHandle_ToggleManual+0x84>)
+ 8003232:	2200      	movs	r2, #0
+ 8003234:	701a      	strb	r2, [r3, #0]
+        stop_motor();
+ 8003236:	f7ff fea0 	bl	8002f7a <stop_motor>
+}
+ 800323a:	bf00      	nop
+ 800323c:	bd80      	pop	{r7, pc}
+ 800323e:	bf00      	nop
+ 8003240:	2000057e 	.word	0x2000057e
+ 8003244:	2000057b 	.word	0x2000057b
+ 8003248:	2000057c 	.word	0x2000057c
+ 800324c:	2000057d 	.word	0x2000057d
+ 8003250:	2000057f 	.word	0x2000057f
+ 8003254:	2000057a 	.word	0x2000057a
+ 8003258:	2000058f 	.word	0x2000058f
 
 0800325c <ModelHandle_SoftDryRunHandler>:
+static DryFSMState dryState = DRY_IDLE;
+static bool dryConfirming   = false;
+
 
 void ModelHandle_SoftDryRunHandler(void)
 {
@@ -6588,11 +6591,11 @@ void ModelHandle_SoftDryRunHandler(void)
      * 2) Normal dry-run check
      ***********************************************************/
     ModelHandle_CheckDryRun();
- 800328c:	f7ff ff36 	bl	80030fc <ModelHandle_CheckDryRun>
+ 800328c:	f7ff ff6c 	bl	8003168 <ModelHandle_CheckDryRun>
 
     /* No active mode → motor off + reset FSM */
     if (!isAnyModeActive())
- 8003290:	f7ff ffae 	bl	80031f0 <isAnyModeActive>
+ 8003290:	f7ff fec2 	bl	8003018 <isAnyModeActive>
  8003294:	4603      	mov	r3, r0
  8003296:	f083 0301 	eor.w	r3, r3, #1
  800329a:	b2db      	uxtb	r3, r3
@@ -6794,10 +6797,10 @@ void ModelHandle_SoftDryRunHandler(void)
  80033a8:	46bd      	mov	sp, r7
  80033aa:	bd80      	pop	{r7, pc}
  80033ac:	2000057c 	.word	0x2000057c
- 80033b0:	20000590 	.word	0x20000590
- 80033b4:	20000591 	.word	0x20000591
- 80033b8:	20000594 	.word	0x20000594
- 80033bc:	20000598 	.word	0x20000598
+ 80033b0:	20000598 	.word	0x20000598
+ 80033b4:	20000599 	.word	0x20000599
+ 80033b8:	20000590 	.word	0x20000590
+ 80033bc:	20000594 	.word	0x20000594
  80033c0:	20000581 	.word	0x20000581
 
 080033c4 <ModelHandle_ProcessDryRun>:
@@ -6852,7 +6855,7 @@ static inline uint8_t get_today_mask(void)
  80033fe:	bc80      	pop	{r7}
  8003400:	4770      	bx	lr
  8003402:	bf00      	nop
- 8003404:	200005c8 	.word	0x200005c8
+ 8003404:	200005c4 	.word	0x200005c4
 
 08003408 <slot_is_active_now>:
 
@@ -6974,7 +6977,7 @@ static bool slot_is_active_now(const TimerSlot *t)
  80034c2:	3710      	adds	r7, #16
  80034c4:	46bd      	mov	sp, r7
  80034c6:	bd80      	pop	{r7, pc}
- 80034c8:	200005c8 	.word	0x200005c8
+ 80034c8:	200005c4 	.word	0x200005c4
 
 080034cc <timer_any_active_slot>:
 
@@ -7168,7 +7171,7 @@ void ModelHandle_StartTimerNearestSlot(void)
  80035e8:	46bd      	mov	sp, r7
  80035ea:	bd80      	pop	{r7, pc}
  80035ec:	2000057e 	.word	0x2000057e
- 80035f0:	200005c8 	.word	0x200005c8
+ 80035f0:	200005c4 	.word	0x200005c4
  80035f4:	2000055c 	.word	0x2000055c
 
 080035f8 <ModelHandle_ProcessTimerSlots>:
@@ -7381,7 +7384,7 @@ void ModelHandle_StartSemiAuto(void)
  8003706:	701a      	strb	r2, [r3, #0]
 
     if (!isTankFull())
- 8003708:	f7ff fcae 	bl	8003068 <isTankFull>
+ 8003708:	f7ff fce4 	bl	80030d4 <isTankFull>
  800370c:	4603      	mov	r3, r0
  800370e:	f083 0301 	eor.w	r3, r3, #1
  8003712:	b2db      	uxtb	r3, r3
@@ -7486,10 +7489,10 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
  80037b0:	2000004c 	.word	0x2000004c
  80037b4:	2000004e 	.word	0x2000004e
  80037b8:	20000050 	.word	0x20000050
- 80037bc:	2000059c 	.word	0x2000059c
- 80037c0:	2000059d 	.word	0x2000059d
- 80037c4:	200005a4 	.word	0x200005a4
- 80037c8:	200005a0 	.word	0x200005a0
+ 80037bc:	2000059a 	.word	0x2000059a
+ 80037c0:	2000059b 	.word	0x2000059b
+ 80037c4:	200005a0 	.word	0x200005a0
+ 80037c8:	2000059c 	.word	0x2000059c
 
 080037cc <ModelHandle_StopAuto>:
 
@@ -7518,8 +7521,8 @@ void ModelHandle_StopAuto(void)
  80037e8:	bd80      	pop	{r7, pc}
  80037ea:	bf00      	nop
  80037ec:	2000057f 	.word	0x2000057f
- 80037f0:	2000059d 	.word	0x2000059d
- 80037f4:	2000059c 	.word	0x2000059c
+ 80037f0:	2000059b 	.word	0x2000059b
+ 80037f4:	2000059a 	.word	0x2000059a
 
 080037f8 <auto_tick>:
 
@@ -7566,7 +7569,7 @@ static void auto_tick(void)
 
     /* Tank full → normal stop */
     if (isTankFull())
- 8003830:	f7ff fc1a 	bl	8003068 <isTankFull>
+ 8003830:	f7ff fc50 	bl	80030d4 <isTankFull>
  8003834:	4603      	mov	r3, r0
  8003836:	2b00      	cmp	r3, #0
  8003838:	d002      	beq.n	8003840 <auto_tick+0x48>
@@ -7632,7 +7635,7 @@ static void auto_tick(void)
         break;
  800388c:	e059      	b.n	8003942 <auto_tick+0x14a>
         ModelHandle_CheckDryRun();
- 800388e:	f7ff fc35 	bl	80030fc <ModelHandle_CheckDryRun>
+ 800388e:	f7ff fc6b 	bl	8003168 <ModelHandle_CheckDryRun>
         if (!senseDryRun)     // DRY condition
  8003892:	4b37      	ldr	r3, [pc, #220]	@ (8003970 <auto_tick+0x178>)
  8003894:	781b      	ldrb	r3, [r3, #0]
@@ -7747,14 +7750,14 @@ static void auto_tick(void)
  8003950:	2000057f 	.word	0x2000057f
  8003954:	20000582 	.word	0x20000582
  8003958:	20000583 	.word	0x20000583
- 800395c:	200005a4 	.word	0x200005a4
+ 800395c:	200005a0 	.word	0x200005a0
  8003960:	2000004e 	.word	0x2000004e
  8003964:	20000584 	.word	0x20000584
- 8003968:	2000059d 	.word	0x2000059d
- 800396c:	200005a0 	.word	0x200005a0
+ 8003968:	2000059b 	.word	0x2000059b
+ 800396c:	2000059c 	.word	0x2000059c
  8003970:	20000581 	.word	0x20000581
  8003974:	2000004c 	.word	0x2000004c
- 8003978:	2000059c 	.word	0x2000059c
+ 8003978:	2000059a 	.word	0x2000059a
  800397c:	20000050 	.word	0x20000050
 
 08003980 <ModelHandle_StopCountdown>:
@@ -7780,7 +7783,7 @@ void ModelHandle_StopCountdown(void)
  8003994:	bf00      	nop
  8003996:	bd80      	pop	{r7, pc}
  8003998:	2000057c 	.word	0x2000057c
- 800399c:	200005a8 	.word	0x200005a8
+ 800399c:	200005a4 	.word	0x200005a4
 
 080039a0 <ModelHandle_StartCountdown>:
 
@@ -7837,8 +7840,8 @@ void ModelHandle_StartCountdown(uint32_t seconds)
  80039ec:	46bd      	mov	sp, r7
  80039ee:	bd80      	pop	{r7, pc}
  80039f0:	2000057c 	.word	0x2000057c
- 80039f4:	200005a8 	.word	0x200005a8
- 80039f8:	200005ac 	.word	0x200005ac
+ 80039f4:	200005a4 	.word	0x200005a4
+ 80039f8:	200005a8 	.word	0x200005a8
 
 080039fc <countdown_tick>:
 
@@ -7864,7 +7867,7 @@ static void countdown_tick(void)
 
     /* Tank full → stop immediately */
     if (isTankFull())
- 8003a18:	f7ff fb26 	bl	8003068 <isTankFull>
+ 8003a18:	f7ff fb5c 	bl	80030d4 <isTankFull>
  8003a1c:	4603      	mov	r3, r0
  8003a1e:	2b00      	cmp	r3, #0
  8003a20:	d002      	beq.n	8003a28 <countdown_tick+0x2c>
@@ -7912,9 +7915,9 @@ static void countdown_tick(void)
  8003a58:	46bd      	mov	sp, r7
  8003a5a:	bd80      	pop	{r7, pc}
  8003a5c:	2000057c 	.word	0x2000057c
- 8003a60:	200005ac 	.word	0x200005ac
+ 8003a60:	200005a8 	.word	0x200005a8
  8003a64:	10624dd3 	.word	0x10624dd3
- 8003a68:	200005a8 	.word	0x200005a8
+ 8003a68:	200005a4 	.word	0x200005a4
 
 08003a6c <ModelHandle_StartTwist>:
 static uint32_t twist_deadline = 0;
@@ -8011,9 +8014,9 @@ void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s,
  8003af6:	46bd      	mov	sp, r7
  8003af8:	bd90      	pop	{r4, r7, pc}
  8003afa:	bf00      	nop
- 8003afc:	200005b0 	.word	0x200005b0
- 8003b00:	200005ba 	.word	0x200005ba
- 8003b04:	200005bc 	.word	0x200005bc
+ 8003afc:	200005ac 	.word	0x200005ac
+ 8003b00:	200005b6 	.word	0x200005b6
+ 8003b04:	200005b8 	.word	0x200005b8
 
 08003b08 <ModelHandle_StopTwist>:
 
@@ -8035,7 +8038,7 @@ void ModelHandle_StopTwist(void)
  8003b1c:	bf00      	nop
  8003b1e:	bd80      	pop	{r7, pc}
  8003b20:	2000057d 	.word	0x2000057d
- 8003b24:	200005b0 	.word	0x200005b0
+ 8003b24:	200005ac 	.word	0x200005ac
 
 08003b28 <twist_time_logic>:
 
@@ -8141,11 +8144,11 @@ static void twist_time_logic(void)
 }
  8003bbc:	bd80      	pop	{r7, pc}
  8003bbe:	bf00      	nop
- 8003bc0:	200005b0 	.word	0x200005b0
+ 8003bc0:	200005ac 	.word	0x200005ac
  8003bc4:	2000057d 	.word	0x2000057d
- 8003bc8:	200005c8 	.word	0x200005c8
- 8003bcc:	200005ba 	.word	0x200005ba
- 8003bd0:	200005bc 	.word	0x200005bc
+ 8003bc8:	200005c4 	.word	0x200005c4
+ 8003bcc:	200005b6 	.word	0x200005b6
+ 8003bd0:	200005b8 	.word	0x200005b8
 
 08003bd4 <twist_tick>:
 
@@ -8166,7 +8169,7 @@ static void twist_tick(void)
         return;
 
     if (isTankFull())
- 8003bea:	f7ff fa3d 	bl	8003068 <isTankFull>
+ 8003bea:	f7ff fa73 	bl	80030d4 <isTankFull>
  8003bee:	4603      	mov	r3, r0
  8003bf0:	2b00      	cmp	r3, #0
  8003bf2:	d002      	beq.n	8003bfa <twist_tick+0x26>
@@ -8253,9 +8256,9 @@ static void twist_tick(void)
  8003c6c:	46bd      	mov	sp, r7
  8003c6e:	bd80      	pop	{r7, pc}
  8003c70:	2000057d 	.word	0x2000057d
- 8003c74:	200005bc 	.word	0x200005bc
- 8003c78:	200005ba 	.word	0x200005ba
- 8003c7c:	200005b0 	.word	0x200005b0
+ 8003c74:	200005b8 	.word	0x200005b8
+ 8003c78:	200005b6 	.word	0x200005b6
+ 8003c7c:	200005ac 	.word	0x200005ac
 
 08003c80 <protections_tick>:
 
@@ -8279,7 +8282,7 @@ static void protections_tick(void)
  8003c96:	d002      	beq.n	8003c9e <protections_tick+0x1e>
     {
         ModelHandle_StopAllModesAndMotor();
- 8003c98:	f7ff f9be 	bl	8003018 <ModelHandle_StopAllModesAndMotor>
+ 8003c98:	f7ff f9f4 	bl	8003084 <ModelHandle_StopAllModesAndMotor>
         return;
  8003c9c:	bf00      	nop
     }
@@ -8453,7 +8456,7 @@ void ModelHandle_Process(void)
  8003dae:	701a      	strb	r2, [r3, #0]
 
         if (!isTankFull())
- 8003db0:	f7ff f95a 	bl	8003068 <isTankFull>
+ 8003db0:	f7ff f990 	bl	80030d4 <isTankFull>
  8003db4:	4603      	mov	r3, r0
  8003db6:	f083 0301 	eor.w	r3, r3, #1
  8003dba:	b2db      	uxtb	r3, r3
@@ -8518,7 +8521,7 @@ void ModelHandle_Process(void)
 
         /* Tank full cancels countdown */
         if (isTankFull())
- 8003e08:	f7ff f92e 	bl	8003068 <isTankFull>
+ 8003e08:	f7ff f964 	bl	80030d4 <isTankFull>
  8003e0c:	4603      	mov	r3, r0
  8003e0e:	2b00      	cmp	r3, #0
  8003e10:	d004      	beq.n	8003e1c <ModelHandle_Process+0x9c>
@@ -9025,7 +9028,7 @@ void RTC_GetTimeDate(void)
  8004132:	bf00      	nop
  8004134:	2000039c 	.word	0x2000039c
  8004138:	0800fa2c 	.word	0x0800fa2c
- 800413c:	200005c8 	.word	0x200005c8
+ 800413c:	200005c4 	.word	0x200005c4
 
 08004140 <refreshInactivityTimer>:
 
@@ -9045,7 +9048,7 @@ static inline void refreshInactivityTimer(void) {
  800414e:	bf00      	nop
  8004150:	bd80      	pop	{r7, pc}
  8004152:	bf00      	nop
- 8004154:	200005dc 	.word	0x200005dc
+ 8004154:	200005d8 	.word	0x200005d8
 
 08004158 <lcd_line>:
 
@@ -9182,9 +9185,9 @@ static void draw_menu_cursor(void)
  8004226:	3708      	adds	r7, #8
  8004228:	46bd      	mov	sp, r7
  800422a:	bd80      	pop	{r7, pc}
- 800422c:	200005d0 	.word	0x200005d0
- 8004230:	20000604 	.word	0x20000604
- 8004234:	20000608 	.word	0x20000608
+ 800422c:	200005cc 	.word	0x200005cc
+ 8004230:	20000600 	.word	0x20000600
+ 8004234:	20000604 	.word	0x20000604
  8004238:	20000052 	.word	0x20000052
 
 0800423c <show_welcome>:
@@ -9443,9 +9446,9 @@ void Screen_Init(void)
  8004402:	bf00      	nop
  8004404:	bd80      	pop	{r7, pc}
  8004406:	bf00      	nop
- 8004408:	200005d0 	.word	0x200005d0
+ 8004408:	200005cc 	.word	0x200005cc
  800440c:	20000051 	.word	0x20000051
- 8004410:	200005d8 	.word	0x200005d8
+ 8004410:	200005d4 	.word	0x200005d4
 
 08004414 <show_menu>:
 
@@ -9521,8 +9524,8 @@ static void show_menu(void)
  800448e:	46bd      	mov	sp, r7
  8004490:	bd80      	pop	{r7, pc}
  8004492:	bf00      	nop
- 8004494:	20000604 	.word	0x20000604
- 8004498:	20000608 	.word	0x20000608
+ 8004494:	20000600 	.word	0x20000600
+ 8004498:	20000604 	.word	0x20000604
  800449c:	0800ff5c 	.word	0x0800ff5c
  80044a0:	0800fb08 	.word	0x0800fb08
 
@@ -9793,8 +9796,8 @@ static void show_timer_slot_select(void)
  8004646:	46bd      	mov	sp, r7
  8004648:	bd80      	pop	{r7, pc}
  800464a:	bf00      	nop
- 800464c:	2000060c 	.word	0x2000060c
- 8004650:	20000602 	.word	0x20000602
+ 800464c:	20000608 	.word	0x20000608
+ 8004650:	200005fe 	.word	0x200005fe
  8004654:	0800fb70 	.word	0x0800fb70
  8004658:	0800fb7c 	.word	0x0800fb7c
  800465c:	0800fb88 	.word	0x0800fb88
@@ -9867,7 +9870,7 @@ static void show_timer(void){
  80046c2:	3718      	adds	r7, #24
  80046c4:	46bd      	mov	sp, r7
  80046c6:	bdb0      	pop	{r4, r5, r7, pc}
- 80046c8:	20000602 	.word	0x20000602
+ 80046c8:	200005fe 	.word	0x200005fe
  80046cc:	2000055c 	.word	0x2000055c
  80046d0:	0800fba8 	.word	0x0800fba8
  80046d4:	0800fbc4 	.word	0x0800fbc4
@@ -9889,7 +9892,7 @@ static void show_timer_on_h(void){
  80046ec:	bf00      	nop
  80046ee:	bd80      	pop	{r7, pc}
  80046f0:	0800fbd8 	.word	0x0800fbd8
- 80046f4:	200005f8 	.word	0x200005f8
+ 80046f4:	200005f4 	.word	0x200005f4
 
 080046f8 <show_timer_on_m>:
 
@@ -9908,7 +9911,7 @@ static void show_timer_on_m(void){
  800470c:	bf00      	nop
  800470e:	bd80      	pop	{r7, pc}
  8004710:	0800fbe8 	.word	0x0800fbe8
- 8004714:	200005f9 	.word	0x200005f9
+ 8004714:	200005f5 	.word	0x200005f5
 
 08004718 <show_timer_off_h>:
 
@@ -9927,7 +9930,7 @@ static void show_timer_off_h(void){
  800472c:	bf00      	nop
  800472e:	bd80      	pop	{r7, pc}
  8004730:	0800fbf8 	.word	0x0800fbf8
- 8004734:	200005fa 	.word	0x200005fa
+ 8004734:	200005f6 	.word	0x200005f6
 
 08004738 <show_timer_off_m>:
 
@@ -9946,7 +9949,7 @@ static void show_timer_off_m(void){
  800474c:	bf00      	nop
  800474e:	bd80      	pop	{r7, pc}
  8004750:	0800fc08 	.word	0x0800fc08
- 8004754:	200005fb 	.word	0x200005fb
+ 8004754:	200005f7 	.word	0x200005f7
 
 08004758 <show_timer_days>:
 
@@ -10130,7 +10133,7 @@ static void show_auto_retry(void){
  8004894:	bf00      	nop
  8004896:	bd80      	pop	{r7, pc}
  8004898:	0800fca8 	.word	0x0800fca8
- 800489c:	200005fe 	.word	0x200005fe
+ 800489c:	200005fa 	.word	0x200005fa
 
 080048a0 <show_twist>:
 
@@ -10182,7 +10185,7 @@ static void show_twist(void){
  80048de:	3718      	adds	r7, #24
  80048e0:	46bd      	mov	sp, r7
  80048e2:	bd80      	pop	{r7, pc}
- 80048e4:	200005b0 	.word	0x200005b0
+ 80048e4:	200005ac 	.word	0x200005ac
  80048e8:	0800fce8 	.word	0x0800fce8
  80048ec:	2000057d 	.word	0x2000057d
  80048f0:	0800fb48 	.word	0x0800fb48
@@ -10262,7 +10265,7 @@ static void show_twist_on_m(void){
  800496c:	bf00      	nop
  800496e:	bd80      	pop	{r7, pc}
  8004970:	0800fd24 	.word	0x0800fd24
- 8004974:	20000600 	.word	0x20000600
+ 8004974:	200005fc 	.word	0x200005fc
 
 08004978 <show_twist_off_h>:
 
@@ -10300,7 +10303,7 @@ static void show_twist_off_m(void){
  80049ac:	bf00      	nop
  80049ae:	bd80      	pop	{r7, pc}
  80049b0:	0800fd40 	.word	0x0800fd40
- 80049b4:	20000601 	.word	0x20000601
+ 80049b4:	200005fd 	.word	0x200005fd
 
 080049b8 <show_countdown>:
 
@@ -10388,7 +10391,7 @@ static void show_countdown(void){
  8004a44:	bd80      	pop	{r7, pc}
  8004a46:	bf00      	nop
  8004a48:	2000057c 	.word	0x2000057c
- 8004a4c:	200005a8 	.word	0x200005a8
+ 8004a4c:	200005a4 	.word	0x200005a4
  8004a50:	88888889 	.word	0x88888889
  8004a54:	0800fd50 	.word	0x0800fd50
  8004a58:	0800fd64 	.word	0x0800fd64
@@ -10575,7 +10578,7 @@ static void show_settings_factory(void){
  8004b88:	bd80      	pop	{r7, pc}
  8004b8a:	bf00      	nop
  8004b8c:	0800fdd8 	.word	0x0800fdd8
- 8004b90:	20000603 	.word	0x20000603
+ 8004b90:	200005ff 	.word	0x200005ff
  8004b94:	0800fc4c 	.word	0x0800fc4c
  8004b98:	0800fc5c 	.word	0x0800fc5c
 
@@ -10642,12 +10645,12 @@ static void apply_timer_settings(void){
  8004bee:	46bd      	mov	sp, r7
  8004bf0:	bd80      	pop	{r7, pc}
  8004bf2:	bf00      	nop
- 8004bf4:	20000602 	.word	0x20000602
+ 8004bf4:	200005fe 	.word	0x200005fe
  8004bf8:	2000055c 	.word	0x2000055c
- 8004bfc:	200005f8 	.word	0x200005f8
- 8004c00:	200005f9 	.word	0x200005f9
- 8004c04:	200005fa 	.word	0x200005fa
- 8004c08:	200005fb 	.word	0x200005fb
+ 8004bfc:	200005f4 	.word	0x200005f4
+ 8004c00:	200005f5 	.word	0x200005f5
+ 8004c04:	200005f6 	.word	0x200005f6
+ 8004c08:	200005f7 	.word	0x200005f7
  8004c0c:	20000053 	.word	0x20000053
  8004c10:	20000054 	.word	0x20000054
 
@@ -10677,7 +10680,7 @@ static void apply_auto_settings(void){
  8004c32:	bf00      	nop
  8004c34:	20000056 	.word	0x20000056
  8004c38:	20000058 	.word	0x20000058
- 8004c3c:	200005fe 	.word	0x200005fe
+ 8004c3c:	200005fa 	.word	0x200005fa
 
 08004c40 <apply_twist_settings>:
 
@@ -10722,12 +10725,12 @@ static void apply_twist_settings(void){
  8004c78:	bc80      	pop	{r7}
  8004c7a:	4770      	bx	lr
  8004c7c:	2000005a 	.word	0x2000005a
- 8004c80:	200005b0 	.word	0x200005b0
+ 8004c80:	200005ac 	.word	0x200005ac
  8004c84:	2000005c 	.word	0x2000005c
  8004c88:	2000005e 	.word	0x2000005e
- 8004c8c:	20000600 	.word	0x20000600
+ 8004c8c:	200005fc 	.word	0x200005fc
  8004c90:	2000005f 	.word	0x2000005f
- 8004c94:	20000601 	.word	0x20000601
+ 8004c94:	200005fd 	.word	0x200005fd
 
 08004c98 <apply_countdown_settings>:
 
@@ -10762,7 +10765,7 @@ static void apply_countdown_settings(void){
  8004cc4:	4770      	bx	lr
  8004cc6:	bf00      	nop
  8004cc8:	20000060 	.word	0x20000060
- 8004ccc:	200005a8 	.word	0x200005a8
+ 8004ccc:	200005a4 	.word	0x200005a4
 
 08004cd0 <apply_settings_all>:
 
@@ -10829,7 +10832,7 @@ static void apply_settings_all(void){
  8004d4c:	2000006c 	.word	0x2000006c
  8004d50:	20000070 	.word	0x20000070
  8004d54:	20000074 	.word	0x20000074
- 8004d58:	20000603 	.word	0x20000603
+ 8004d58:	200005ff 	.word	0x200005ff
 
 08004d5c <start_settings_edit_flow>:
 
@@ -10912,9 +10915,9 @@ static void start_settings_edit_flow(void){
  8004de8:	2000006c 	.word	0x2000006c
  8004dec:	20000070 	.word	0x20000070
  8004df0:	20000074 	.word	0x20000074
- 8004df4:	20000603 	.word	0x20000603
- 8004df8:	200005d0 	.word	0x200005d0
- 8004dfc:	200005d1 	.word	0x200005d1
+ 8004df4:	200005ff 	.word	0x200005ff
+ 8004df8:	200005cc 	.word	0x200005cc
+ 8004dfc:	200005cd 	.word	0x200005cd
 
 08004e00 <advance_settings_flow>:
 
@@ -11021,8 +11024,8 @@ static void advance_settings_flow(void){
  8004e86:	bf00      	nop
  8004e88:	bd80      	pop	{r7, pc}
  8004e8a:	bf00      	nop
- 8004e8c:	200005d0 	.word	0x200005d0
- 8004e90:	200005d1 	.word	0x200005d1
+ 8004e8c:	200005cc 	.word	0x200005cc
+ 8004e90:	200005cd 	.word	0x200005cd
 
 08004e94 <goto_menu_top>:
 
@@ -11046,8 +11049,8 @@ static void goto_menu_top(void){
  8004ea6:	46bd      	mov	sp, r7
  8004ea8:	bc80      	pop	{r7}
  8004eaa:	4770      	bx	lr
- 8004eac:	20000604 	.word	0x20000604
- 8004eb0:	20000608 	.word	0x20000608
+ 8004eac:	20000600 	.word	0x20000600
+ 8004eb0:	20000604 	.word	0x20000604
 
 08004eb4 <menu_select>:
 
@@ -11525,19 +11528,19 @@ static void menu_select(void){
         return;
  8005150:	e062      	b.n	8005218 <menu_select+0x364>
  8005152:	bf00      	nop
- 8005154:	200005d0 	.word	0x200005d0
- 8005158:	200005d1 	.word	0x200005d1
- 800515c:	20000604 	.word	0x20000604
- 8005160:	2000060c 	.word	0x2000060c
- 8005164:	20000602 	.word	0x20000602
+ 8005154:	200005cc 	.word	0x200005cc
+ 8005158:	200005cd 	.word	0x200005cd
+ 800515c:	20000600 	.word	0x20000600
+ 8005160:	20000608 	.word	0x20000608
+ 8005164:	200005fe 	.word	0x200005fe
  8005168:	2000055c 	.word	0x2000055c
- 800516c:	200005f8 	.word	0x200005f8
- 8005170:	200005f9 	.word	0x200005f9
- 8005174:	200005fa 	.word	0x200005fa
- 8005178:	200005fb 	.word	0x200005fb
+ 800516c:	200005f4 	.word	0x200005f4
+ 8005170:	200005f5 	.word	0x200005f5
+ 8005174:	200005f6 	.word	0x200005f6
+ 8005178:	200005f7 	.word	0x200005f7
  800517c:	20000053 	.word	0x20000053
  8005180:	20000054 	.word	0x20000054
- 8005184:	200005fc 	.word	0x200005fc
+ 8005184:	200005f8 	.word	0x200005f8
  8005188:	2000057f 	.word	0x2000057f
     }
     if (ui == UI_TWIST_EDIT_OFF_H){
@@ -11647,8 +11650,8 @@ static void menu_select(void){
 }
  8005218:	bd80      	pop	{r7, pc}
  800521a:	bf00      	nop
- 800521c:	200005d0 	.word	0x200005d0
- 8005220:	200005d1 	.word	0x200005d1
+ 800521c:	200005cc 	.word	0x200005cc
+ 8005220:	200005cd 	.word	0x200005cd
  8005224:	2000057c 	.word	0x2000057c
 
 08005228 <decode_button_press>:
@@ -11868,8 +11871,8 @@ static UiButton decode_button_press(void){
  80053a2:	3718      	adds	r7, #24
  80053a4:	46bd      	mov	sp, r7
  80053a6:	bd80      	pop	{r7, pc}
- 80053a8:	200005e0 	.word	0x200005e0
- 80053ac:	200005f0 	.word	0x200005f0
+ 80053a8:	200005dc 	.word	0x200005dc
+ 80053ac:	200005ec 	.word	0x200005ec
 
 080053b0 <increase_edit_value>:
 
@@ -12214,20 +12217,20 @@ void increase_edit_value(void){
             break;
  8005630:	e049      	b.n	80056c6 <increase_edit_value+0x316>
  8005632:	bf00      	nop
- 8005634:	200005d0 	.word	0x200005d0
- 8005638:	200005f8 	.word	0x200005f8
- 800563c:	200005f9 	.word	0x200005f9
- 8005640:	200005fa 	.word	0x200005fa
- 8005644:	200005fb 	.word	0x200005fb
+ 8005634:	200005cc 	.word	0x200005cc
+ 8005638:	200005f4 	.word	0x200005f4
+ 800563c:	200005f5 	.word	0x200005f5
+ 8005640:	200005f6 	.word	0x200005f6
+ 8005644:	200005f7 	.word	0x200005f7
  8005648:	20000056 	.word	0x20000056
  800564c:	20000058 	.word	0x20000058
- 8005650:	200005fe 	.word	0x200005fe
+ 8005650:	200005fa 	.word	0x200005fa
  8005654:	2000005a 	.word	0x2000005a
  8005658:	2000005c 	.word	0x2000005c
  800565c:	2000005e 	.word	0x2000005e
- 8005660:	20000600 	.word	0x20000600
+ 8005660:	200005fc 	.word	0x200005fc
  8005664:	2000005f 	.word	0x2000005f
- 8005668:	20000601 	.word	0x20000601
+ 8005668:	200005fd 	.word	0x200005fd
  800566c:	20000060 	.word	0x20000060
  8005670:	20000062 	.word	0x20000062
  8005674:	20000064 	.word	0x20000064
@@ -12238,7 +12241,7 @@ void increase_edit_value(void){
  8005688:	42480000 	.word	0x42480000
  800568c:	20000070 	.word	0x20000070
  8005690:	20000074 	.word	0x20000074
- 8005694:	20000603 	.word	0x20000603
+ 8005694:	200005ff 	.word	0x200005ff
 
         default:
             break;
@@ -12591,20 +12594,20 @@ void decrease_edit_value(void){
  8005930:	601a      	str	r2, [r3, #0]
             break;
  8005932:	e080      	b.n	8005a36 <decrease_edit_value+0x36a>
- 8005934:	200005d0 	.word	0x200005d0
- 8005938:	200005f8 	.word	0x200005f8
- 800593c:	200005f9 	.word	0x200005f9
- 8005940:	200005fa 	.word	0x200005fa
- 8005944:	200005fb 	.word	0x200005fb
+ 8005934:	200005cc 	.word	0x200005cc
+ 8005938:	200005f4 	.word	0x200005f4
+ 800593c:	200005f5 	.word	0x200005f5
+ 8005940:	200005f6 	.word	0x200005f6
+ 8005944:	200005f7 	.word	0x200005f7
  8005948:	20000056 	.word	0x20000056
  800594c:	20000058 	.word	0x20000058
- 8005950:	200005fe 	.word	0x200005fe
+ 8005950:	200005fa 	.word	0x200005fa
  8005954:	2000005a 	.word	0x2000005a
  8005958:	2000005c 	.word	0x2000005c
  800595c:	2000005e 	.word	0x2000005e
- 8005960:	20000600 	.word	0x20000600
+ 8005960:	200005fc 	.word	0x200005fc
  8005964:	2000005f 	.word	0x2000005f
- 8005968:	20000601 	.word	0x20000601
+ 8005968:	200005fd 	.word	0x200005fd
  800596c:	20000060 	.word	0x20000060
  8005970:	20000062 	.word	0x20000062
  8005974:	20000064 	.word	0x20000064
@@ -12741,7 +12744,7 @@ void decrease_edit_value(void){
  8005a3c:	20000070 	.word	0x20000070
  8005a40:	3dcccccd 	.word	0x3dcccccd
  8005a44:	20000074 	.word	0x20000074
- 8005a48:	20000603 	.word	0x20000603
+ 8005a48:	200005ff 	.word	0x200005ff
 
 08005a4c <Screen_HandleSwitches>:
 /* ================================================================
@@ -12782,7 +12785,7 @@ void Screen_HandleSwitches(void)
  8005a78:	d108      	bne.n	8005a8c <Screen_HandleSwitches+0x40>
     {
         ModelHandle_ToggleManual();
- 8005a7a:	f7fd fb75 	bl	8003168 <ModelHandle_ToggleManual>
+ 8005a7a:	f7fd fbab 	bl	80031d4 <ModelHandle_ToggleManual>
         ui = UI_DASH;
  8005a7e:	4b5d      	ldr	r3, [pc, #372]	@ (8005bf4 <Screen_HandleSwitches+0x1a8>)
  8005a80:	2201      	movs	r2, #1
@@ -13018,16 +13021,16 @@ void Screen_HandleSwitches(void)
  8005bee:	4a07      	ldr	r2, [pc, #28]	@ (8005c0c <Screen_HandleSwitches+0x1c0>)
  8005bf0:	6013      	str	r3, [r2, #0]
  8005bf2:	e015      	b.n	8005c20 <Screen_HandleSwitches+0x1d4>
- 8005bf4:	200005d0 	.word	0x200005d0
- 8005bf8:	200005d1 	.word	0x200005d1
- 8005bfc:	200005f0 	.word	0x200005f0
- 8005c00:	200005f4 	.word	0x200005f4
- 8005c04:	20000604 	.word	0x20000604
- 8005c08:	20000602 	.word	0x20000602
- 8005c0c:	2000060c 	.word	0x2000060c
- 8005c10:	20000610 	.word	0x20000610
+ 8005bf4:	200005cc 	.word	0x200005cc
+ 8005bf8:	200005cd 	.word	0x200005cd
+ 8005bfc:	200005ec 	.word	0x200005ec
+ 8005c00:	200005f0 	.word	0x200005f0
+ 8005c04:	20000600 	.word	0x20000600
+ 8005c08:	200005fe 	.word	0x200005fe
+ 8005c0c:	20000608 	.word	0x20000608
+ 8005c10:	2000060c 	.word	0x2000060c
  8005c14:	20000060 	.word	0x20000060
- 8005c18:	200005a8 	.word	0x200005a8
+ 8005c18:	200005a4 	.word	0x200005a4
             }
             else {
                 decrease_edit_value();
@@ -13446,10 +13449,10 @@ void Screen_HandleSwitches(void)
  8005e5a:	bf00      	nop
  8005e5c:	e009      	b.n	8005e72 <Screen_HandleSwitches+0x426>
  8005e5e:	bf00      	nop
- 8005e60:	200005d1 	.word	0x200005d1
- 8005e64:	200005d0 	.word	0x200005d0
- 8005e68:	200005f4 	.word	0x200005f4
- 8005e6c:	20000604 	.word	0x20000604
+ 8005e60:	200005cd 	.word	0x200005cd
+ 8005e64:	200005cc 	.word	0x200005cc
+ 8005e68:	200005f0 	.word	0x200005f0
+ 8005e6c:	20000600 	.word	0x20000600
                 break;
  8005e70:	bf00      	nop
         }
@@ -13862,15 +13865,15 @@ void Screen_HandleSwitches(void)
         return;
  80060f4:	e0b3      	b.n	800625e <Screen_HandleSwitches+0x812>
  80060f6:	bf00      	nop
- 80060f8:	200005d1 	.word	0x200005d1
- 80060fc:	200005d0 	.word	0x200005d0
- 8006100:	20000602 	.word	0x20000602
- 8006104:	2000060c 	.word	0x2000060c
- 8006108:	200005fc 	.word	0x200005fc
+ 80060f8:	200005cd 	.word	0x200005cd
+ 80060fc:	200005cc 	.word	0x200005cc
+ 8006100:	200005fe 	.word	0x200005fe
+ 8006104:	20000608 	.word	0x20000608
+ 8006108:	200005f8 	.word	0x200005f8
  800610c:	92492493 	.word	0x92492493
  8006110:	20000053 	.word	0x20000053
  8006114:	20000054 	.word	0x20000054
- 8006118:	200005f4 	.word	0x200005f4
+ 8006118:	200005f0 	.word	0x200005f0
 
     /* =====================================================================
        BELOW: NORMAL MODE — DASHBOARD ONLY
@@ -13908,7 +13911,7 @@ void Screen_HandleSwitches(void)
 
         case BTN_RESET_LONG:
             ModelHandle_ToggleManual();
- 800615e:	f7fd f803 	bl	8003168 <ModelHandle_ToggleManual>
+ 800615e:	f7fd f839 	bl	80031d4 <ModelHandle_ToggleManual>
             ui = UI_DASH;
  8006162:	4b43      	ldr	r3, [pc, #268]	@ (8006270 <Screen_HandleSwitches+0x824>)
  8006164:	2201      	movs	r2, #1
@@ -14100,17 +14103,17 @@ void Screen_HandleSwitches(void)
  800626a:	46bd      	mov	sp, r7
  800626c:	bd80      	pop	{r7, pc}
  800626e:	bf00      	nop
- 8006270:	200005d0 	.word	0x200005d0
- 8006274:	200005d1 	.word	0x200005d1
+ 8006270:	200005cc 	.word	0x200005cc
+ 8006274:	200005cd 	.word	0x200005cd
  8006278:	2000057f 	.word	0x2000057f
  800627c:	20000056 	.word	0x20000056
  8006280:	20000058 	.word	0x20000058
- 8006284:	200005fe 	.word	0x200005fe
+ 8006284:	200005fa 	.word	0x200005fa
  8006288:	2000057e 	.word	0x2000057e
  800628c:	2000057b 	.word	0x2000057b
  8006290:	2000057c 	.word	0x2000057c
  8006294:	20000060 	.word	0x20000060
- 8006298:	200005f4 	.word	0x200005f4
+ 8006298:	200005f0 	.word	0x200005f0
 
 0800629c <Screen_Update>:
  *  SCREEN.C — PART E / 6
@@ -14566,12 +14569,12 @@ void Screen_Update(void)
  8006516:	46bd      	mov	sp, r7
  8006518:	bd80      	pop	{r7, pc}
  800651a:	bf00      	nop
- 800651c:	200005d0 	.word	0x200005d0
- 8006520:	200005d4 	.word	0x200005d4
+ 800651c:	200005cc 	.word	0x200005cc
+ 8006520:	200005d0 	.word	0x200005d0
  8006524:	20000052 	.word	0x20000052
- 8006528:	200005d8 	.word	0x200005d8
- 800652c:	200005d1 	.word	0x200005d1
- 8006530:	200005dc 	.word	0x200005dc
+ 8006528:	200005d4 	.word	0x200005d4
+ 800652c:	200005cd 	.word	0x200005cd
+ 8006530:	200005d8 	.word	0x200005d8
  8006534:	20000051 	.word	0x20000051
 
 08006538 <HAL_MspInit>:
@@ -15452,11 +15455,11 @@ void Switches_Init(void)
  80069a2:	3708      	adds	r7, #8
  80069a4:	46bd      	mov	sp, r7
  80069a6:	bd80      	pop	{r7, pc}
- 80069a8:	20000614 	.word	0x20000614
- 80069ac:	20000628 	.word	0x20000628
- 80069b0:	20000618 	.word	0x20000618
- 80069b4:	2000062c 	.word	0x2000062c
- 80069b8:	2000063c 	.word	0x2000063c
+ 80069a8:	20000610 	.word	0x20000610
+ 80069ac:	20000624 	.word	0x20000624
+ 80069b0:	20000614 	.word	0x20000614
+ 80069b4:	20000628 	.word	0x20000628
+ 80069b8:	20000638 	.word	0x20000638
 
 080069bc <update_state>:
     s_longPressMs = ms;
@@ -15518,9 +15521,9 @@ static void update_state(uint8_t idx)
  8006a12:	46bd      	mov	sp, r7
  8006a14:	bd80      	pop	{r7, pc}
  8006a16:	bf00      	nop
- 8006a18:	20000628 	.word	0x20000628
- 8006a1c:	20000618 	.word	0x20000618
- 8006a20:	20000614 	.word	0x20000614
+ 8006a18:	20000624 	.word	0x20000624
+ 8006a1c:	20000614 	.word	0x20000614
+ 8006a20:	20000610 	.word	0x20000610
 
 08006a24 <Switch_IsPressed>:
 
@@ -15556,7 +15559,7 @@ bool Switch_IsPressed(uint8_t idx)
  8006a52:	3708      	adds	r7, #8
  8006a54:	46bd      	mov	sp, r7
  8006a56:	bd80      	pop	{r7, pc}
- 8006a58:	20000614 	.word	0x20000614
+ 8006a58:	20000610 	.word	0x20000610
 
 08006a5c <_getpid>:
 void initialise_monitor_handles()
@@ -15863,7 +15866,7 @@ void *_sbrk(ptrdiff_t incr)
  8006bce:	bd80      	pop	{r7, pc}
  8006bd0:	20005000 	.word	0x20005000
  8006bd4:	00000400 	.word	0x00000400
- 8006bd8:	20000640 	.word	0x20000640
+ 8006bd8:	2000063c 	.word	0x2000063c
  8006bdc:	20000850 	.word	0x20000850
 
 08006be0 <SystemInit>:
@@ -15925,12 +15928,12 @@ void UART_Init(void)
 }
  8006c20:	bf00      	nop
  8006c22:	bd80      	pop	{r7, pc}
- 8006c24:	20000648 	.word	0x20000648
- 8006c28:	20000688 	.word	0x20000688
- 8006c2c:	200006c8 	.word	0x200006c8
- 8006c30:	200006ca 	.word	0x200006ca
- 8006c34:	200006cb 	.word	0x200006cb
- 8006c38:	20000644 	.word	0x20000644
+ 8006c24:	20000644 	.word	0x20000644
+ 8006c28:	20000684 	.word	0x20000684
+ 8006c2c:	200006c4 	.word	0x200006c4
+ 8006c30:	200006c6 	.word	0x200006c6
+ 8006c34:	200006c7 	.word	0x200006c7
+ 8006c38:	20000640 	.word	0x20000640
  8006c3c:	200004a4 	.word	0x200004a4
 
 08006c40 <UART_TransmitString>:
@@ -16007,7 +16010,7 @@ void UART_TransmitPacket(const char *payload)
  8006cb0:	bd80      	pop	{r7, pc}
  8006cb2:	bf00      	nop
  8006cb4:	0800fde8 	.word	0x0800fde8
- 8006cb8:	200006cc 	.word	0x200006cc
+ 8006cb8:	200006c8 	.word	0x200006c8
  8006cbc:	200004a4 	.word	0x200004a4
 
 08006cc0 <HAL_UART_RxCpltCallback>:
@@ -16142,12 +16145,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
  8006d84:	46bd      	mov	sp, r7
  8006d86:	bd80      	pop	{r7, pc}
  8006d88:	40013800 	.word	0x40013800
- 8006d8c:	20000644 	.word	0x20000644
- 8006d90:	200006ca 	.word	0x200006ca
- 8006d94:	200006cb 	.word	0x200006cb
- 8006d98:	200006c8 	.word	0x200006c8
- 8006d9c:	20000648 	.word	0x20000648
- 8006da0:	20000688 	.word	0x20000688
+ 8006d8c:	20000640 	.word	0x20000640
+ 8006d90:	200006c6 	.word	0x200006c6
+ 8006d94:	200006c7 	.word	0x200006c7
+ 8006d98:	200006c4 	.word	0x200006c4
+ 8006d9c:	20000644 	.word	0x20000644
+ 8006da0:	20000684 	.word	0x20000684
  8006da4:	200004a4 	.word	0x200004a4
 
 08006da8 <UART_GetReceivedPacket>:
@@ -16204,8 +16207,8 @@ bool UART_GetReceivedPacket(char *buffer, size_t buffer_size)
  8006df2:	3708      	adds	r7, #8
  8006df4:	46bd      	mov	sp, r7
  8006df6:	bd80      	pop	{r7, pc}
- 8006df8:	200006ca 	.word	0x200006ca
- 8006dfc:	20000688 	.word	0x20000688
+ 8006df8:	200006c6 	.word	0x200006c6
+ 8006dfc:	20000684 	.word	0x20000684
 
 08006e00 <ack>:
 #include <string.h>
@@ -16608,7 +16611,7 @@ void UART_HandleCommand(const char *pkt)
  80070c6:	4603      	mov	r3, r0
  80070c8:	2b00      	cmp	r3, #0
  80070ca:	d102      	bne.n	80070d2 <UART_HandleCommand+0xe6>
- 80070cc:	f7fc f84c 	bl	8003168 <ModelHandle_ToggleManual>
+ 80070cc:	f7fc f882 	bl	80031d4 <ModelHandle_ToggleManual>
  80070d0:	e00d      	b.n	80070ee <UART_HandleCommand+0x102>
         else if (!strcmp(state, "OFF")) ModelHandle_StopAllModesAndMotor();
  80070d2:	4985      	ldr	r1, [pc, #532]	@ (80072e8 <UART_HandleCommand+0x2fc>)
@@ -16617,7 +16620,7 @@ void UART_HandleCommand(const char *pkt)
  80070da:	4603      	mov	r3, r0
  80070dc:	2b00      	cmp	r3, #0
  80070de:	d102      	bne.n	80070e6 <UART_HandleCommand+0xfa>
- 80070e0:	f7fb ff9a 	bl	8003018 <ModelHandle_StopAllModesAndMotor>
+ 80070e0:	f7fb ffd0 	bl	8003084 <ModelHandle_StopAllModesAndMotor>
  80070e4:	e003      	b.n	80070ee <UART_HandleCommand+0x102>
         else { err("FORMAT"); return; }
  80070e6:	4881      	ldr	r0, [pc, #516]	@ (80072ec <UART_HandleCommand+0x300>)
@@ -17122,7 +17125,7 @@ void UART_HandleCommand(const char *pkt)
  80074e0:	2b04      	cmp	r3, #4
  80074e2:	ddec      	ble.n	80074be <UART_HandleCommand+0x4d2>
             ModelHandle_StopAllModesAndMotor();
- 80074e4:	f7fb fd98 	bl	8003018 <ModelHandle_StopAllModesAndMotor>
+ 80074e4:	f7fb fdce 	bl	8003084 <ModelHandle_StopAllModesAndMotor>
             ack("TIMER_STOP");
  80074e8:	4862      	ldr	r0, [pc, #392]	@ (8007674 <UART_HandleCommand+0x688>)
  80074ea:	f7ff fc89 	bl	8006e00 <ack>
@@ -17177,7 +17180,7 @@ void UART_HandleCommand(const char *pkt)
  800754e:	2b00      	cmp	r3, #0
  8007550:	d105      	bne.n	800755e <UART_HandleCommand+0x572>
             ModelHandle_StopAllModesAndMotor();
- 8007552:	f7fb fd61 	bl	8003018 <ModelHandle_StopAllModesAndMotor>
+ 8007552:	f7fb fd97 	bl	8003084 <ModelHandle_StopAllModesAndMotor>
             ack("SEMIAUTO_OFF");
  8007556:	484d      	ldr	r0, [pc, #308]	@ (800768c <UART_HandleCommand+0x6a0>)
  8007558:	f7ff fc52 	bl	8006e00 <ack>
@@ -17339,7 +17342,7 @@ void UART_HandleCommand(const char *pkt)
  8007698:	0800ff04 	.word	0x0800ff04
  800769c:	0800ff14 	.word	0x0800ff14
  80076a0:	0800ff24 	.word	0x0800ff24
- 80076a4:	200006fc 	.word	0x200006fc
+ 80076a4:	200006f8 	.word	0x200006f8
 
 080076a8 <Reset_Handler>:
   .weak Reset_Handler
@@ -17425,7 +17428,7 @@ LoopFillZerobss:
   ldr r2, =_sbss
  80076e8:	2000025c 	.word	0x2000025c
   ldr r4, =_ebss
- 80076ec:	20000850 	.word	0x20000850
+ 80076ec:	2000084c 	.word	0x2000084c
 
 080076f0 <CAN1_RX1_IRQHandler>:
  * @retval : None
@@ -17573,7 +17576,7 @@ __weak void HAL_IncTick(void)
  8007798:	bc80      	pop	{r7}
  800779a:	4770      	bx	lr
  800779c:	20000090 	.word	0x20000090
- 80077a0:	20000700 	.word	0x20000700
+ 80077a0:	200006fc 	.word	0x200006fc
 
 080077a4 <HAL_GetTick>:
   * @note  This function is declared as __weak to be overwritten in case of other
@@ -17592,7 +17595,7 @@ __weak uint32_t HAL_GetTick(void)
  80077ae:	46bd      	mov	sp, r7
  80077b0:	bc80      	pop	{r7}
  80077b2:	4770      	bx	lr
- 80077b4:	20000700 	.word	0x20000700
+ 80077b4:	200006fc 	.word	0x200006fc
 
 080077b8 <HAL_Delay>:
   *       implementations in user file.
@@ -33055,7 +33058,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800d344:	0800d5b7 	.word	0x0800d5b7
  800d348:	0800d5ef 	.word	0x0800d5ef
  800d34c:	0800d613 	.word	0x0800d613
- 800d350:	20000704 	.word	0x20000704
+ 800d350:	20000700 	.word	0x20000700
 
 0800d354 <stdio_exit_handler>:
  800d354:	4a02      	ldr	r2, [pc, #8]	@ (800d360 <stdio_exit_handler+0xc>)
@@ -33090,9 +33093,9 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800d398:	f001 bf5e 	b.w	800f258 <_fflush_r>
  800d39c:	bd10      	pop	{r4, pc}
  800d39e:	bf00      	nop
- 800d3a0:	20000704 	.word	0x20000704
- 800d3a4:	2000076c 	.word	0x2000076c
- 800d3a8:	200007d4 	.word	0x200007d4
+ 800d3a0:	20000700 	.word	0x20000700
+ 800d3a4:	20000768 	.word	0x20000768
+ 800d3a8:	200007d0 	.word	0x200007d0
 
 0800d3ac <global_stdio_init.part.0>:
  800d3ac:	b510      	push	{r4, lr}
@@ -33113,21 +33116,21 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800d3d2:	e8bd 4010 	ldmia.w	sp!, {r4, lr}
  800d3d6:	2112      	movs	r1, #18
  800d3d8:	f7ff bf86 	b.w	800d2e8 <std>
- 800d3dc:	2000083c 	.word	0x2000083c
- 800d3e0:	20000704 	.word	0x20000704
+ 800d3dc:	20000838 	.word	0x20000838
+ 800d3e0:	20000700 	.word	0x20000700
  800d3e4:	0800d355 	.word	0x0800d355
 
 0800d3e8 <__sfp_lock_acquire>:
  800d3e8:	4801      	ldr	r0, [pc, #4]	@ (800d3f0 <__sfp_lock_acquire+0x8>)
  800d3ea:	f000 ba76 	b.w	800d8da <__retarget_lock_acquire_recursive>
  800d3ee:	bf00      	nop
- 800d3f0:	20000845 	.word	0x20000845
+ 800d3f0:	20000841 	.word	0x20000841
 
 0800d3f4 <__sfp_lock_release>:
  800d3f4:	4801      	ldr	r0, [pc, #4]	@ (800d3fc <__sfp_lock_release+0x8>)
  800d3f6:	f000 ba71 	b.w	800d8dc <__retarget_lock_release_recursive>
  800d3fa:	bf00      	nop
- 800d3fc:	20000845 	.word	0x20000845
+ 800d3fc:	20000841 	.word	0x20000841
 
 0800d400 <__sinit>:
  800d400:	b510      	push	{r4, lr}
@@ -33147,7 +33150,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800d424:	e7f2      	b.n	800d40c <__sinit+0xc>
  800d426:	bf00      	nop
  800d428:	0800d36d 	.word	0x0800d36d
- 800d42c:	2000083c 	.word	0x2000083c
+ 800d42c:	20000838 	.word	0x20000838
 
 0800d430 <_fwalk_sglue>:
  800d430:	e92d 43f8 	stmdb	sp!, {r3, r4, r5, r6, r7, r8, r9, lr}
@@ -33605,7 +33608,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800d80e:	b103      	cbz	r3, 800d812 <_close_r+0x1a>
  800d810:	6023      	str	r3, [r4, #0]
  800d812:	bd38      	pop	{r3, r4, r5, pc}
- 800d814:	20000840 	.word	0x20000840
+ 800d814:	2000083c 	.word	0x2000083c
 
 0800d818 <_lseek_r>:
  800d818:	b538      	push	{r3, r4, r5, lr}
@@ -33623,7 +33626,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800d832:	b103      	cbz	r3, 800d836 <_lseek_r+0x1e>
  800d834:	6023      	str	r3, [r4, #0]
  800d836:	bd38      	pop	{r3, r4, r5, pc}
- 800d838:	20000840 	.word	0x20000840
+ 800d838:	2000083c 	.word	0x2000083c
 
 0800d83c <_read_r>:
  800d83c:	b538      	push	{r3, r4, r5, lr}
@@ -33641,7 +33644,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800d856:	b103      	cbz	r3, 800d85a <_read_r+0x1e>
  800d858:	6023      	str	r3, [r4, #0]
  800d85a:	bd38      	pop	{r3, r4, r5, pc}
- 800d85c:	20000840 	.word	0x20000840
+ 800d85c:	2000083c 	.word	0x2000083c
 
 0800d860 <_write_r>:
  800d860:	b538      	push	{r3, r4, r5, lr}
@@ -33659,7 +33662,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800d87a:	b103      	cbz	r3, 800d87e <_write_r+0x1e>
  800d87c:	6023      	str	r3, [r4, #0]
  800d87e:	bd38      	pop	{r3, r4, r5, pc}
- 800d880:	20000840 	.word	0x20000840
+ 800d880:	2000083c 	.word	0x2000083c
 
 0800d884 <__errno>:
  800d884:	4b01      	ldr	r3, [pc, #4]	@ (800d88c <__errno+0x8>)
@@ -35049,7 +35052,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800e63e:	6054      	str	r4, [r2, #4]
  800e640:	e7cb      	b.n	800e5da <_free_r+0x22>
  800e642:	bd38      	pop	{r3, r4, r5, pc}
- 800e644:	2000084c 	.word	0x2000084c
+ 800e644:	20000848 	.word	0x20000848
 
 0800e648 <malloc>:
  800e648:	4b02      	ldr	r3, [pc, #8]	@ (800e654 <malloc+0xc>)
@@ -35087,7 +35090,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800e692:	d1f2      	bne.n	800e67a <sbrk_aligned+0x22>
  800e694:	e7ef      	b.n	800e676 <sbrk_aligned+0x1e>
  800e696:	bf00      	nop
- 800e698:	20000848 	.word	0x20000848
+ 800e698:	20000844 	.word	0x20000844
 
 0800e69c <_malloc_r>:
  800e69c:	e92d 43f8 	stmdb	sp!, {r3, r4, r5, r6, r7, r8, r9, lr}
@@ -35197,19 +35200,19 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800e792:	6005      	str	r5, [r0, #0]
  800e794:	e7d6      	b.n	800e744 <_malloc_r+0xa8>
  800e796:	bf00      	nop
- 800e798:	2000084c 	.word	0x2000084c
+ 800e798:	20000848 	.word	0x20000848
 
 0800e79c <__malloc_lock>:
  800e79c:	4801      	ldr	r0, [pc, #4]	@ (800e7a4 <__malloc_lock+0x8>)
  800e79e:	f7ff b89c 	b.w	800d8da <__retarget_lock_acquire_recursive>
  800e7a2:	bf00      	nop
- 800e7a4:	20000844 	.word	0x20000844
+ 800e7a4:	20000840 	.word	0x20000840
 
 0800e7a8 <__malloc_unlock>:
  800e7a8:	4801      	ldr	r0, [pc, #4]	@ (800e7b0 <__malloc_unlock+0x8>)
  800e7aa:	f7ff b897 	b.w	800d8dc <__retarget_lock_release_recursive>
  800e7ae:	bf00      	nop
- 800e7b0:	20000844 	.word	0x20000844
+ 800e7b0:	20000840 	.word	0x20000840
 
 0800e7b4 <_Balloc>:
  800e7b4:	b570      	push	{r4, r5, r6, lr}
@@ -36452,7 +36455,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800f386:	6023      	str	r3, [r4, #0]
  800f388:	bd38      	pop	{r3, r4, r5, pc}
  800f38a:	bf00      	nop
- 800f38c:	20000840 	.word	0x20000840
+ 800f38c:	2000083c 	.word	0x2000083c
 
 0800f390 <_isatty_r>:
  800f390:	b538      	push	{r3, r4, r5, lr}
@@ -36468,7 +36471,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800f3a6:	b103      	cbz	r3, 800f3aa <_isatty_r+0x1a>
  800f3a8:	6023      	str	r3, [r4, #0]
  800f3aa:	bd38      	pop	{r3, r4, r5, pc}
- 800f3ac:	20000840 	.word	0x20000840
+ 800f3ac:	2000083c 	.word	0x2000083c
 
 0800f3b0 <_sbrk_r>:
  800f3b0:	b538      	push	{r3, r4, r5, lr}
@@ -36484,7 +36487,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800f3c6:	b103      	cbz	r3, 800f3ca <_sbrk_r+0x1a>
  800f3c8:	6023      	str	r3, [r4, #0]
  800f3ca:	bd38      	pop	{r3, r4, r5, pc}
- 800f3cc:	20000840 	.word	0x20000840
+ 800f3cc:	2000083c 	.word	0x2000083c
 
 0800f3d0 <memcpy>:
  800f3d0:	440a      	add	r2, r1
@@ -36976,7 +36979,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
  800f826:	6023      	str	r3, [r4, #0]
  800f828:	bd38      	pop	{r3, r4, r5, pc}
  800f82a:	bf00      	nop
- 800f82c:	20000840 	.word	0x20000840
+ 800f82c:	2000083c 	.word	0x2000083c
 
 0800f830 <_getpid_r>:
  800f830:	f7f7 b914 	b.w	8006a5c <_getpid>
