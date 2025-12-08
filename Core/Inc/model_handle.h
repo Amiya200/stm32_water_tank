@@ -9,13 +9,15 @@
    TIMER SLOT
    ============================================================ */
 typedef struct {
-    bool enabled;
     uint8_t onHour;
     uint8_t onMinute;
     uint8_t offHour;
     uint8_t offMinute;
     uint8_t dayMask;
+    uint8_t gapMinutes;   // <--- ADD THIS LINE
+    bool    enabled;
 } TimerSlot;
+
 
 /* ============================================================
    SYSTEM SETTINGS STRUCT
