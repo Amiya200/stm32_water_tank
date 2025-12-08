@@ -66,6 +66,10 @@ typedef enum {
     UI_SETTINGS_MAXRUN,
     UI_SETTINGS_FACTORY,
 
+    /* New menu items */
+    UI_ADD_DEVICE_INFO,
+    UI_RESET_CONFIRM,
+
     UI_NONE,
     UI_MAX_
 } UiState;
@@ -112,6 +116,9 @@ static uint32_t sw_press_start[4] = {0,0,0,0};
 static bool     sw_long_issued[4] = {false,false,false,false};
 
 static uint32_t last_repeat_time = 0;
+
+/* For reset confirm screen */
+static bool reset_confirm_yes = false;
 
 /* ================================================================
    EXTERNAL STATES (from model_handle)
@@ -188,14 +195,17 @@ static bool     edit_settings_factory_yes = false;
    MAIN MENU ITEMS
    ================================================================ */
 static const char* const main_menu[] = {
-    "Timer Mode",
-    "Settings",
-    "Back"
+    "Timer Setting",     // 0
+    "Add New Device",    // 1
+    "Device Setup",      // 2 (Settings flow)
+    "Reset To Default",  // 3
+    "Back"               // 4
 };
-#define MAIN_MENU_COUNT 3
+#define MAIN_MENU_COUNT 5
 
 static uint8_t menu_idx      = 0;
 static uint8_t menu_view_top = 0;
+
 void Screen_Init(void)
 {
     lcd_init();
@@ -614,6 +624,26 @@ static void show_settings_factory(void){
                                          "NO        Next>");
 }
 
+/***************************************************************
+ *  ADD NEW DEVICE — INFO SCREEN
+ ***************************************************************/
+static void show_add_device_info(void)
+{
+    lcd_line0("Add New Device");
+    lcd_line1("Use app/BLE/WiFi");
+}
+
+/***************************************************************
+ *  RESET TO DEFAULT — CONFIRM
+ *  (UP=YES, DOWN=NO, SELECT=APPLY)
+ ***************************************************************/
+static void show_reset_confirm(void)
+{
+    lcd_line0("Reset To Default?");
+    lcd_line1(reset_confirm_yes ? "YES       Apply>" :
+                                  "NO        Back>");
+}
+
 /* ================================================================
    PART-3
    APPLY FUNCTIONS + MENU SELECT LOGIC
@@ -755,7 +785,7 @@ static void advance_settings_flow(void)
 
 /***************************************************************
  *  MENU SELECT — MAIN NAVIGATION + TIMER FLOW
- *  (FULLY REWRITTEN, smooth working)
+ *  (UPDATED FOR NEW MENU)
  ***************************************************************/
 static void goto_menu_top(void)
 {
@@ -789,24 +819,36 @@ static void menu_select(void)
     }
 
     /* ----------------------------------------------------------
-       MAIN MENU (Timer / Settings / Back)
+       MAIN MENU
+       (Timer Setting / Add New Device / Device Setup / Reset / Back)
        ---------------------------------------------------------- */
     if (ui == UI_MENU)
     {
         switch(menu_idx)
         {
-            case 0:   /* TIMER MODE */
+            case 0:   /* TIMER SETTING */
                 currentSlot = 0;
-                timer_page = 0;
+                timer_page  = 0;
                 ui = UI_TIMER_SLOT_SELECT;
                 screenNeedsRefresh = true;
                 return;
 
-            case 1:   /* SETTINGS */
+            case 1:   /* ADD NEW DEVICE */
+                ui = UI_ADD_DEVICE_INFO;
+                screenNeedsRefresh = true;
+                return;
+
+            case 2:   /* DEVICE SETUP → SETTINGS FLOW */
                 start_settings_edit_flow();
                 return;
 
-            case 2:   /* BACK → DASH */
+            case 3:   /* RESET TO DEFAULT CONFIRM */
+                reset_confirm_yes = false;
+                ui = UI_RESET_CONFIRM;
+                screenNeedsRefresh = true;
+                return;
+
+            case 4:   /* BACK → DASH */
                 ui = UI_DASH;
                 screenNeedsRefresh = true;
                 return;
@@ -849,7 +891,7 @@ static void menu_select(void)
     }
 
     /* ----------------------------------------------------------
-       TIMER EDIT FLOW SEQUENCER (Option-A)
+       TIMER EDIT FLOW SEQUENCER
        ---------------------------------------------------------- */
     switch(ui)
     {
@@ -903,6 +945,7 @@ static void menu_select(void)
 
     screenNeedsRefresh = true;
 }
+
 /* ================================================================
    PART-4
    VALUE EDIT ENGINE + FULL SWITCH HANDLER
@@ -1225,6 +1268,7 @@ void Screen_HandleSwitches(void)
             case BTN_DOWN_LONG: last_repeat_time = now; decrease_edit_value(); break;
             case BTN_SELECT:    menu_select(); break;
             case BTN_RESET:     ui = UI_MENU; break;
+            default:            break;
         }
 
         screenNeedsRefresh = true;
@@ -1263,6 +1307,9 @@ void Screen_HandleSwitches(void)
             case BTN_RESET:
                 ui = UI_TIMER_SLOT_SELECT;
                 break;
+
+            default:
+                break;
         }
 
         screenNeedsRefresh = true;
@@ -1270,7 +1317,7 @@ void Screen_HandleSwitches(void)
     }
 
     /* ============================================================
-       ENABLE / DISABLE SLOT (Option-A: UP=YES, DOWN=NO, SELECT=NEXT)
+       ENABLE / DISABLE SLOT (UP=YES, DOWN=NO, SELECT=NEXT)
        ============================================================ */
     if (ui == UI_TIMER_EDIT_ENABLE)
     {
@@ -1293,6 +1340,69 @@ void Screen_HandleSwitches(void)
             case BTN_RESET:
                 ui = UI_TIMER_SLOT_SELECT;
                 break;
+
+            default:
+                break;
+        }
+
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* ============================================================
+       ADD NEW DEVICE INFO SCREEN
+       ============================================================ */
+    if (ui == UI_ADD_DEVICE_INFO)
+    {
+        switch(b)
+        {
+            case BTN_SELECT:
+            case BTN_SELECT_LONG:
+            case BTN_RESET:
+                ui = UI_MENU;
+                break;
+
+            default:
+                break;
+        }
+
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* ============================================================
+       RESET TO DEFAULT CONFIRM
+       (UP=YES, DOWN=NO, SELECT=APPLY)
+       ============================================================ */
+    if (ui == UI_RESET_CONFIRM)
+    {
+        switch(b)
+        {
+            case BTN_UP:
+            case BTN_UP_LONG:
+                reset_confirm_yes = true;
+                break;
+
+            case BTN_DOWN:
+            case BTN_DOWN_LONG:
+                reset_confirm_yes = false;
+                break;
+
+            case BTN_SELECT:
+            case BTN_SELECT_LONG:
+                if (reset_confirm_yes)
+                {
+                    ModelHandle_FactoryReset();
+                }
+                ui = UI_DASH;
+                break;
+
+            case BTN_RESET:
+                ui = UI_MENU;
+                break;
+
+            default:
+                break;
         }
 
         screenNeedsRefresh = true;
@@ -1308,8 +1418,12 @@ void Screen_HandleSwitches(void)
         {
             case BTN_UP:     if(menu_idx > 0) menu_idx--; break;
             case BTN_DOWN:   if(menu_idx < MAIN_MENU_COUNT-1) menu_idx++; break;
-            case BTN_SELECT: menu_select(); break;
+            case BTN_SELECT:
+            case BTN_SELECT_LONG:
+                menu_select();
+                break;
             case BTN_RESET:  ui = UI_DASH; break;
+            default:         break;
         }
         screenNeedsRefresh = true;
         return;
@@ -1331,11 +1445,15 @@ void Screen_HandleSwitches(void)
                 break;
 
             case BTN_SELECT:
+            case BTN_SELECT_LONG:
                 menu_select();
                 break;
 
             case BTN_RESET:
                 ui = UI_MENU;
+                break;
+
+            default:
                 break;
         }
 
@@ -1400,6 +1518,7 @@ void Screen_HandleSwitches(void)
             return;
     }
 }
+
 /***************************************************************
  *  PART-5 — LCD UPDATE ENGINE + UI DISPATCHER
  ***************************************************************/
@@ -1515,6 +1634,10 @@ void Screen_Update(void)
             case UI_SETTINGS_UL:       show_settings_ul();       break;
             case UI_SETTINGS_MAXRUN:   show_settings_maxrun();   break;
             case UI_SETTINGS_FACTORY:  show_settings_factory();  break;
+
+            /* ---------------- NEW MENU SCREENS -------------- */
+            case UI_ADD_DEVICE_INFO:   show_add_device_info();   break;
+            case UI_RESET_CONFIRM:     show_reset_confirm();     break;
 
             default:
                 break;
