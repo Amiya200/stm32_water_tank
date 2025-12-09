@@ -66,6 +66,7 @@ typedef enum {
     UI_SETTINGS_OL,          // Over Load
     UI_SETTINGS_UL,          // Under Load
     UI_SETTINGS_MAXRUN,      // Set Max Run
+    UI_SETTINGS_PWRREST,     // Power Restore
     UI_SETTINGS_FACTORY,     // Factory Reset (Yes/No)
 
     /* Date / Time / Day editors */
@@ -194,15 +195,21 @@ static uint8_t edit_twist_off_mm = 0;
 static uint16_t edit_countdown_min = 1;
 
 /* SETTINGS (Device Setup) – core values that actually map to model_handle */
-static uint16_t edit_settings_gap_s = 10;   // Dry run gap (s)
-static uint8_t  edit_settings_retry = 3;    // Testing gap / retry count
+/* NOTE: edit_settings_gap_s now holds MINUTES (0=Disable, 1..15)  */
+static uint16_t edit_settings_gap_s = 10;   // Dry run gap (min)
+/* Testing gap / retry count now 0=Disable, 1..180min (UI side)    */
+static uint8_t  edit_settings_retry = 3;
+/* Low / High Volt: 0=Disable, else 150–200 / 250–300V             */
 static uint16_t edit_settings_uv    = 180;  // Low volt
 static uint16_t edit_settings_ov    = 260;  // High volt
 
+/* Over/Under load: 0=Disable, else A (0.1 step) with clamping     */
 static float edit_settings_ol = 6.5f;       // Overload (A)
 static float edit_settings_ul = 0.5f;       // Underload (A)
 
-static uint16_t edit_settings_maxrun = 120; // Max run (min)
+/* Max run in minutes: 0=Disable, 10..300                          */
+static uint16_t edit_settings_maxrun = 120;
+static uint8_t  edit_settings_pwrrest = 0;   // 0=YES,1=NO,2=LAST
 static bool     edit_settings_factory_yes = false;
 
 /* ================================================================
@@ -266,6 +273,7 @@ static const char* const devset_menu_items[] = {
     "Set Date",        // -> UI_DEVSET_EDIT_DATE
     "Set Time",        // -> UI_DEVSET_EDIT_TIME
     "Set Day",         // -> UI_DEVSET_EDIT_DAY
+    "Power Restore",   // -> UI_SETTINGS_PWRREST
     "Factory Reset",   // -> UI_SETTINGS_FACTORY
     "Back"             // -> Back to Main Menu
 };
@@ -702,41 +710,93 @@ static void show_countdown_edit_min(void){
 /***************************************************************
  *  DEVICE SETUP (SETTINGS) UI
  ***************************************************************/
+/* Dry Run: 0=Disable, 1..15 min */
 static void show_settings_gap(void){
     lcd_line0("Set Dry Run");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_settings_gap_s);
+    char buf[17];
+    if (edit_settings_gap_s == 0)
+        snprintf(buf,sizeof(buf),"Disable    Next>");
+    else
+        snprintf(buf,sizeof(buf),"val:%2umin Next>", edit_settings_gap_s);
     lcd_line1(buf);
 }
+
+/* Testing Gap: 0=Disable, 1..180min */
 static void show_settings_retry(void){
     lcd_line0("Testing Gap");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_settings_retry);
+    char buf[17];
+    if (edit_settings_retry == 0)
+        snprintf(buf,sizeof(buf),"Disable    Next>");
+    else
+        snprintf(buf,sizeof(buf),"val:%3umin Next>", edit_settings_retry);
     lcd_line1(buf);
 }
+
+/* Low Volt: 0=Disable, else 150–200V */
 static void show_settings_uv(void){
     lcd_line0("Set Low Volt");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_settings_uv);
+    char buf[17];
+    if (edit_settings_uv == 0)
+        snprintf(buf,sizeof(buf),"Disable    Next>");
+    else
+        snprintf(buf,sizeof(buf),"val:%3uV Next>", edit_settings_uv);
     lcd_line1(buf);
 }
+
+/* High Volt: 0=Disable, else 250–300V */
 static void show_settings_ov(void){
     lcd_line0("Set High Volt");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_settings_ov);
+    char buf[17];
+    if (edit_settings_ov == 0)
+        snprintf(buf,sizeof(buf),"Disable    Next>");
+    else
+        snprintf(buf,sizeof(buf),"val:%3uV Next>", edit_settings_ov);
     lcd_line1(buf);
 }
+
+/* Over Load: 0=Disable, else up to 25A */
 static void show_settings_ol(void){
     lcd_line0("Over Load (A)");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%0.1f Next>",edit_settings_ol);
+    char buf[17];
+    if (edit_settings_ol < 0.05f)
+        snprintf(buf,sizeof(buf),"Disable    Next>");
+    else
+        snprintf(buf,sizeof(buf),"val:%0.1f Next>",edit_settings_ol);
     lcd_line1(buf);
 }
+
+/* Under Load: 0=Disable, else up to 10A */
 static void show_settings_ul(void){
     lcd_line0("Under Load (A)");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%0.1f Next>",edit_settings_ul);
+    char buf[17];
+    if (edit_settings_ul < 0.05f)
+        snprintf(buf,sizeof(buf),"Disable    Next>");
+    else
+        snprintf(buf,sizeof(buf),"val:%0.1f Next>",edit_settings_ul);
     lcd_line1(buf);
 }
+
+/* Max Run: 0=Disable, else 10–300min */
 static void show_settings_maxrun(void){
     lcd_line0("Set Max Run");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_settings_maxrun);
+    char buf[17];
+    if (edit_settings_maxrun == 0)
+        snprintf(buf,sizeof(buf),"Disable    Next>");
+    else
+        snprintf(buf,sizeof(buf),"val:%3umin Next>",edit_settings_maxrun);
     lcd_line1(buf);
 }
+
+/* Power Restore: YES / NO / LAST */
+static void show_settings_pwrrest(void){
+    lcd_line0("Power Restore");
+    const char* text =
+        (edit_settings_pwrrest == 0) ? "YES       Next>" :
+        (edit_settings_pwrrest == 1) ? "NO        Next>" :
+                                       "LAST      Next>";
+    lcd_line1(text);
+}
+
 static void show_settings_factory(void){
     lcd_line0("Factory Reset?");
     lcd_line1(edit_settings_factory_yes ? "YES       Next>" :
@@ -866,8 +926,13 @@ static void apply_auto_settings(void)
 /* Apply current Device Setup core settings into model */
 static void apply_settings_core(void)
 {
+    /* Convert UI dry-run minutes to seconds; 0 = disabled */
+    uint16_t gap_s = 0;
+    if (edit_settings_gap_s > 0)
+        gap_s = (uint16_t)(edit_settings_gap_s * 60U);
+
     ModelHandle_SetUserSettings(
-        edit_settings_gap_s,
+        gap_s,
         edit_settings_retry,
         edit_settings_uv,
         edit_settings_ov,
@@ -885,13 +950,42 @@ static void apply_settings_core(void)
 static void start_settings_edit_flow(void)
 {
     /* Load fresh settings from model */
-    edit_settings_gap_s   = ModelHandle_GetGapTime();
+    uint16_t gap_s = ModelHandle_GetGapTime();
+    if (gap_s == 0) {
+        edit_settings_gap_s = 0;
+    } else {
+        edit_settings_gap_s = gap_s / 60;
+        if (edit_settings_gap_s < 1)  edit_settings_gap_s = 1;
+        if (edit_settings_gap_s > 15) edit_settings_gap_s = 15;
+    }
+
     edit_settings_retry   = ModelHandle_GetRetryCount();
+    if (edit_settings_retry > 180)
+        edit_settings_retry = 180;
+
     edit_settings_uv      = ModelHandle_GetUnderVolt();
+    if (edit_settings_uv != 0) {    // 0=Disable
+        if (edit_settings_uv < 150) edit_settings_uv = 150;
+        if (edit_settings_uv > 200) edit_settings_uv = 200;
+    }
+
     edit_settings_ov      = ModelHandle_GetOverVolt();
+    if (edit_settings_ov != 0) {    // 0=Disable
+        if (edit_settings_ov < 250) edit_settings_ov = 250;
+        if (edit_settings_ov > 300) edit_settings_ov = 300;
+    }
+
     edit_settings_ol      = ModelHandle_GetOverloadLimit();
+    if (edit_settings_ol > 25.0f) edit_settings_ol = 25.0f;
+
     edit_settings_ul      = ModelHandle_GetUnderloadLimit();
+    if (edit_settings_ul > 10.0f) edit_settings_ul = 10.0f;
+
     edit_settings_maxrun  = ModelHandle_GetMaxRunTime();
+    if (edit_settings_maxrun > 300) edit_settings_maxrun = 300;
+
+    /* Power Restore mode from model 0=YES,1=NO,2=LAST */
+    edit_settings_pwrrest = ModelHandle_GetPowerRestoreMode();
 
     edit_settings_factory_yes = 0;
 
@@ -1101,21 +1195,52 @@ void increase_edit_value(void)
             break;
 
         /* SETTINGS / DEVICE SETUP */
-        case UI_SETTINGS_GAP:     edit_settings_gap_s++; break;
-        case UI_SETTINGS_RETRY:   edit_settings_retry++; break;
-        case UI_SETTINGS_UV:      if (edit_settings_uv < 500) edit_settings_uv++; break;
-        case UI_SETTINGS_OV:      if (edit_settings_ov < 500) edit_settings_ov++; break;
+        /* Dry run gap: 0..15 min */
+        case UI_SETTINGS_GAP:
+            if (edit_settings_gap_s < 15) edit_settings_gap_s++;
+            break;
+
+        /* Testing Gap: 0..180min */
+        case UI_SETTINGS_RETRY:
+            if (edit_settings_retry < 180) edit_settings_retry++;
+            break;
+
+        /* Low Volt: 0=Disable, else 150..200V */
+        case UI_SETTINGS_UV:
+            if (edit_settings_uv == 0) edit_settings_uv = 150;
+            else if (edit_settings_uv < 200) edit_settings_uv++;
+            break;
+
+        /* High Volt: 0=Disable, else 250..300V */
+        case UI_SETTINGS_OV:
+            if (edit_settings_ov == 0) edit_settings_ov = 250;
+            else if (edit_settings_ov < 300) edit_settings_ov++;
+            break;
+
+        /* Over Load: 0..25A (0=Disable) */
         case UI_SETTINGS_OL:
             edit_settings_ol += 0.1f;
-            if (edit_settings_ol > 50) edit_settings_ol = 50;
+            if (edit_settings_ol > 25.0f) edit_settings_ol = 25.0f;
             break;
+
+        /* Under Load: 0..10A (0=Disable) */
         case UI_SETTINGS_UL:
             edit_settings_ul += 0.1f;
-            if (edit_settings_ul > 50) edit_settings_ul = 50;
+            if (edit_settings_ul > 10.0f) edit_settings_ul = 10.0f;
             break;
+
+        /* Max Run: 0=Disable, else 10..300min */
         case UI_SETTINGS_MAXRUN:
-            edit_settings_maxrun++;
+            if (edit_settings_maxrun == 0) edit_settings_maxrun = 10;
+            else if (edit_settings_maxrun < 300) edit_settings_maxrun++;
             break;
+
+        /* Power Restore: 0=YES,1=NO,2=LAST */
+        case UI_SETTINGS_PWRREST:
+            if (edit_settings_pwrrest < 2) edit_settings_pwrrest++;
+            else edit_settings_pwrrest = 0;
+            break;
+
         case UI_SETTINGS_FACTORY:
             edit_settings_factory_yes ^= 1;
             break;
@@ -1188,21 +1313,52 @@ void decrease_edit_value(void)
             break;
 
         /* SETTINGS / DEVICE SETUP */
-        case UI_SETTINGS_GAP:     if(edit_settings_gap_s > 0) edit_settings_gap_s--; break;
-        case UI_SETTINGS_RETRY:   if(edit_settings_retry > 0) edit_settings_retry--; break;
-        case UI_SETTINGS_UV:      if(edit_settings_uv > 50)   edit_settings_uv--; break;
-        case UI_SETTINGS_OV:      if(edit_settings_ov > 50)   edit_settings_ov--; break;
+        /* Dry run gap: 0..15, 0=Disable */
+        case UI_SETTINGS_GAP:
+            if(edit_settings_gap_s > 0) edit_settings_gap_s--;
+            break;
+
+        /* Testing Gap: 0..180 */
+        case UI_SETTINGS_RETRY:
+            if(edit_settings_retry > 0) edit_settings_retry--;
+            break;
+
+        /* Low Volt: 0=Disable, else down to 150 */
+        case UI_SETTINGS_UV:
+            if (edit_settings_uv > 150) edit_settings_uv--;
+            else if (edit_settings_uv == 150) edit_settings_uv = 0;
+            break;
+
+        /* High Volt: 0=Disable, else down to 250 */
+        case UI_SETTINGS_OV:
+            if (edit_settings_ov > 250) edit_settings_ov--;
+            else if (edit_settings_ov == 250) edit_settings_ov = 0;
+            break;
+
+        /* Over Load: 0..25A (0=Disable) */
         case UI_SETTINGS_OL:
             edit_settings_ol -= 0.1f;
-            if(edit_settings_ol < 0.1f) edit_settings_ol = 0.1f;
+            if(edit_settings_ol < 0.0f) edit_settings_ol = 0.0f;
             break;
+
+        /* Under Load: 0..10A (0=Disable) */
         case UI_SETTINGS_UL:
             edit_settings_ul -= 0.1f;
-            if(edit_settings_ul < 0.1f) edit_settings_ul = 0.1f;
+            if(edit_settings_ul < 0.0f) edit_settings_ul = 0.0f;
             break;
+
+        /* Max Run: 0=Disable, else 10..300 */
         case UI_SETTINGS_MAXRUN:
-            if(edit_settings_maxrun > 1) edit_settings_maxrun--;
+            if(edit_settings_maxrun > 10) edit_settings_maxrun--;
+            else if (edit_settings_maxrun == 10) edit_settings_maxrun = 0;
             break;
+
+        /* Power Restore: 0=YES,1=NO,2=LAST */
+        case UI_SETTINGS_PWRREST:
+            if (edit_settings_pwrrest == 0) edit_settings_pwrrest = 2;
+            else edit_settings_pwrrest--;
+            break;
+
         case UI_SETTINGS_FACTORY:
             edit_settings_factory_yes ^= 1;
             break;
@@ -1291,6 +1447,9 @@ static UiButton decode_button_press(void)
 /***************************************************************
  *  MAIN SWITCH HANDLER
  ***************************************************************/
+/***************************************************************
+ *  MAIN SWITCH HANDLER
+ ***************************************************************/
 void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
@@ -1330,7 +1489,10 @@ void Screen_HandleSwitches(void)
                 if (devset_idx > 0) devset_idx--;
             }
             else
+            {
+                /* Any edit screen (incl. countdown edit) */
                 increase_edit_value();
+            }
 
             screenNeedsRefresh = true;
         }
@@ -1358,7 +1520,10 @@ void Screen_HandleSwitches(void)
                 if (devset_idx < DEVSET_MENU_COUNT - 1) devset_idx++;
             }
             else
+            {
+                /* Any edit screen (incl. countdown edit) */
                 decrease_edit_value();
+            }
 
             screenNeedsRefresh = true;
         }
@@ -1367,7 +1532,9 @@ void Screen_HandleSwitches(void)
     if (b == BTN_NONE) return;
     refreshInactivityTimer();
 
-    /* GENERIC EDITING MODES */
+    /* ================================
+       GENERIC EDITING MODES
+       ================================ */
     bool editing =
         (ui == UI_TIMER_EDIT_ON_TIME ||
          ui == UI_TIMER_EDIT_OFF_TIME ||
@@ -1381,7 +1548,7 @@ void Screen_HandleSwitches(void)
          ui == UI_TWIST_EDIT_ON_M ||
          ui == UI_TWIST_EDIT_OFF_H ||
          ui == UI_TWIST_EDIT_OFF_M ||
-         ui == UI_COUNTDOWN_EDIT_MIN ||
+         ui == UI_COUNTDOWN_EDIT_MIN ||   /* <<< countdown edit included */
          (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY) ||
          ui == UI_DEVSET_EDIT_DATE ||
          ui == UI_DEVSET_EDIT_TIME ||
@@ -1391,12 +1558,26 @@ void Screen_HandleSwitches(void)
     {
         switch (b)
         {
-            case BTN_UP:        increase_edit_value(); break;
-            case BTN_DOWN:      decrease_edit_value(); break;
-            case BTN_UP_LONG:   last_repeat_time = now; increase_edit_value(); break;
-            case BTN_DOWN_LONG: last_repeat_time = now; decrease_edit_value(); break;
+            case BTN_UP:
+                increase_edit_value();
+                break;
+
+            case BTN_DOWN:
+                decrease_edit_value();
+                break;
+
+            case BTN_UP_LONG:
+                last_repeat_time = now;
+                increase_edit_value();
+                break;
+
+            case BTN_DOWN_LONG:
+                last_repeat_time = now;
+                decrease_edit_value();
+                break;
 
             case BTN_SELECT:
+
                 /* TIMER editing uses linear flow via menu_select() */
                 if (ui == UI_TIMER_EDIT_ON_TIME ||
                     ui == UI_TIMER_EDIT_OFF_TIME ||
@@ -1404,10 +1585,20 @@ void Screen_HandleSwitches(void)
                 {
                     menu_select();
                 }
+                /* COUNTDOWN EDIT — finish and return to DASH */
+                else if (ui == UI_COUNTDOWN_EDIT_MIN)
+                {
+                    ui = UI_DASH;
+                }
                 /* SETTINGS from Device Setup: apply and go back to DEVSET menu */
                 else if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_MAXRUN)
                 {
                     apply_settings_core();
+                    ui = UI_DEVSET_MENU;
+                }
+                else if (ui == UI_SETTINGS_PWRREST)
+                {
+                    ModelHandle_SetPowerRestoreMode(edit_settings_pwrrest);
                     ui = UI_DEVSET_MENU;
                 }
                 else if (ui == UI_SETTINGS_FACTORY)
@@ -1499,14 +1690,25 @@ void Screen_HandleSwitches(void)
                 break;
 
             case BTN_RESET:
-                if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY)
+                if (ui == UI_COUNTDOWN_EDIT_MIN)
+                {
+                    /* Cancel countdown edit and return to DASH */
+                    ui = UI_DASH;
+                }
+                else if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY)
+                {
                     ui = UI_DEVSET_MENU;
+                }
                 else if (ui == UI_DEVSET_EDIT_DATE ||
                          ui == UI_DEVSET_EDIT_TIME ||
                          ui == UI_DEVSET_EDIT_DAY)
+                {
                     ui = UI_DEVSET_MENU;
+                }
                 else
+                {
                     ui = UI_MENU;
+                }
                 break;
 
             default:
@@ -1517,7 +1719,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* TIMER DAYS SELECTION */
+    /* ===============================
+       TIMER DAYS SELECTION
+       =============================== */
     if (ui == UI_TIMER_EDIT_DAYS)
     {
         switch (b)
@@ -1556,7 +1760,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* TIMER ENABLE / DISABLE */
+    /* ===============================
+       TIMER ENABLE / DISABLE
+       =============================== */
     if (ui == UI_TIMER_EDIT_ENABLE)
     {
         switch (b)
@@ -1587,7 +1793,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ADD NEW DEVICE — MAIN MENU */
+    /* ===============================
+       ADD NEW DEVICE — MAIN MENU
+       =============================== */
     if (ui == UI_ADD_DEVICE_MENU)
     {
         switch (b)
@@ -1708,7 +1916,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* RESET TO DEFAULT CONFIRM (from Main Menu) */
+    /* ===============================
+       RESET TO DEFAULT CONFIRM
+       =============================== */
     if (ui == UI_RESET_CONFIRM)
     {
         switch (b)
@@ -1744,7 +1954,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* DEVICE SETUP MENU (scroll) */
+    /* ===============================
+       DEVICE SETUP MENU (scroll)
+       =============================== */
     if (ui == UI_DEVSET_MENU)
     {
         switch (b)
@@ -1763,18 +1975,19 @@ void Screen_HandleSwitches(void)
             case BTN_SELECT_LONG:
                 switch (devset_idx)
                 {
-                    case 0: ui = UI_SETTINGS_GAP;     break;
-                    case 1: ui = UI_SETTINGS_RETRY;   break;
-                    case 2: ui = UI_SETTINGS_UV;      break;
-                    case 3: ui = UI_SETTINGS_OV;      break;
-                    case 4: ui = UI_SETTINGS_OL;      break;
-                    case 5: ui = UI_SETTINGS_UL;      break;
-                    case 6: ui = UI_SETTINGS_MAXRUN;  break;
-                    case 7: ui = UI_DEVSET_EDIT_DATE; break;
-                    case 8: ui = UI_DEVSET_EDIT_TIME; break;
-                    case 9: ui = UI_DEVSET_EDIT_DAY;  break;
-                    case 10: ui = UI_SETTINGS_FACTORY; break;
-                    case 11: ui = UI_MENU;            break;
+                    case 0:  ui = UI_SETTINGS_GAP;        break;
+                    case 1:  ui = UI_SETTINGS_RETRY;      break;
+                    case 2:  ui = UI_SETTINGS_UV;         break;
+                    case 3:  ui = UI_SETTINGS_OV;         break;
+                    case 4:  ui = UI_SETTINGS_OL;         break;
+                    case 5:  ui = UI_SETTINGS_UL;         break;
+                    case 6:  ui = UI_SETTINGS_MAXRUN;     break;
+                    case 7:  ui = UI_DEVSET_EDIT_DATE;    break;
+                    case 8:  ui = UI_DEVSET_EDIT_TIME;    break;
+                    case 9:  ui = UI_DEVSET_EDIT_DAY;     break;
+                    case 10: ui = UI_SETTINGS_PWRREST;    break;
+                    case 11: ui = UI_SETTINGS_FACTORY;    break;
+                    case 12: ui = UI_MENU;                break;
                     default: break;
                 }
                 break;
@@ -1791,25 +2004,40 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* MAIN MENU */
+    /* ===============================
+       MAIN MENU
+       =============================== */
     if (ui == UI_MENU)
     {
         switch (b)
         {
-            case BTN_UP:     if (menu_idx > 0) menu_idx--; break;
-            case BTN_DOWN:   if (menu_idx < MAIN_MENU_COUNT - 1) menu_idx++; break;
+            case BTN_UP:
+                if (menu_idx > 0) menu_idx--;
+                break;
+
+            case BTN_DOWN:
+                if (menu_idx < MAIN_MENU_COUNT - 1) menu_idx++;
+                break;
+
             case BTN_SELECT:
             case BTN_SELECT_LONG:
                 menu_select();
                 break;
-            case BTN_RESET:  ui = UI_DASH; break;
-            default:         break;
+
+            case BTN_RESET:
+                ui = UI_DASH;
+                break;
+
+            default:
+                break;
         }
         screenNeedsRefresh = true;
         return;
     }
 
-    /* TIMER SLOT SELECT */
+    /* ===============================
+       TIMER SLOT SELECT
+       =============================== */
     if (ui == UI_TIMER_SLOT_SELECT)
     {
         switch (b)
@@ -1817,16 +2045,20 @@ void Screen_HandleSwitches(void)
             case BTN_UP:
                 if (currentSlot > 0) currentSlot--;
                 break;
+
             case BTN_DOWN:
                 if (currentSlot < 5) currentSlot++;
                 break;
+
             case BTN_SELECT:
             case BTN_SELECT_LONG:
                 menu_select();
                 break;
+
             case BTN_RESET:
                 ui = UI_MENU;
                 break;
+
             default:
                 break;
         }
@@ -1838,23 +2070,30 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* DASHBOARD BUTTON ACTIONS */
+    /* ===============================
+       DASHBOARD BUTTON ACTIONS
+       =============================== */
     switch (b)
     {
         case BTN_RESET:
+            /* Restart pump / test-run */
             reset();
             ui = UI_DASH;
             screenNeedsRefresh = true;
             return;
 
         case BTN_SELECT:
+            /* Auto mode toggle from DASH */
             if (ui != UI_DASH) return;
-            if (!autoActive) ModelHandle_StartAuto(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
-            else             ModelHandle_StopAuto();
+            if (!autoActive)
+                ModelHandle_StartAuto(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
+            else
+                ModelHandle_StopAuto();
             screenNeedsRefresh = true;
             return;
 
         case BTN_SELECT_LONG:
+            /* Open Main Menu */
             ui = UI_MENU;
             menu_idx = 0;
             menu_view_top = 0;
@@ -1862,20 +2101,27 @@ void Screen_HandleSwitches(void)
             return;
 
         case BTN_UP:
-            if (!timerActive) ModelHandle_StartTimerNearestSlot();
-            else              ModelHandle_StopTimer();
+            /* Timer mode toggle (nearest slot) */
+            if (!timerActive)
+                ModelHandle_StartTimerNearestSlot();
+            else
+                ModelHandle_StopTimer();
             ui = UI_DASH;
             screenNeedsRefresh = true;
             return;
 
         case BTN_UP_LONG:
-            if (!semiAutoActive) ModelHandle_StartSemiAuto();
-            else                 ModelHandle_StopSemiAuto();
+            /* Semi-auto toggle */
+            if (!semiAutoActive)
+                ModelHandle_StartSemiAuto();
+            else
+                ModelHandle_StopSemiAuto();
             ui = UI_DASH;
             screenNeedsRefresh = true;
             return;
 
         case BTN_DOWN:
+            /* Countdown RUN / STOP */
             if (!countdownActive)
             {
                 ModelHandle_StartCountdown(edit_countdown_min * 60);
@@ -1887,6 +2133,15 @@ void Screen_HandleSwitches(void)
                 ui = UI_DASH;
             }
             screenNeedsRefresh = true;
+            return;
+
+        case BTN_DOWN_LONG:
+            /* Long press to EDIT countdown time (when not running) */
+            if (!countdownActive)
+            {
+                ui = UI_COUNTDOWN_EDIT_MIN;
+                screenNeedsRefresh = true;
+            }
             return;
 
         default:
@@ -1996,6 +2251,7 @@ void Screen_Update(void)
             case UI_SETTINGS_OL:          show_settings_ol();          break;
             case UI_SETTINGS_UL:          show_settings_ul();          break;
             case UI_SETTINGS_MAXRUN:      show_settings_maxrun();      break;
+            case UI_SETTINGS_PWRREST:     show_settings_pwrrest();     break;
             case UI_SETTINGS_FACTORY:     show_settings_factory();     break;
 
             case UI_DEVSET_EDIT_DATE:     show_devset_edit_date();     break;

@@ -14,7 +14,7 @@ typedef struct {
     uint8_t offHour;
     uint8_t offMinute;
     uint8_t dayMask;
-    uint8_t gapMinutes;   // <--- ADD THIS LINE
+    uint8_t gapMinutes;   // per-slot dry-run gap override (minutes, 0 = use global)
     bool    enabled;
 } TimerSlot;
 

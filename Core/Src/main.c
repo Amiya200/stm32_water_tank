@@ -123,15 +123,18 @@ int main(void)
     /* USER CODE BEGIN 1 */
     /* USER CODE END 1 */
 
-     HAL_Init();
+    HAL_Init();
     SystemClock_Config();
+
+    /* ===== POWER-UP REFERENCE (for 7s motor lockout) ===== */
+    ModelHandle_OnPowerUp();     // <-- NEW
 
     /* Initialize HAL peripherals */
     MX_GPIO_Init();
     MX_ADC1_Init();
     MX_SPI1_Init();
     MX_USART1_UART_Init();
-    MX_I2C2_Init();            // MUST COME BEFORE ANY I2C DEVICE
+    MX_I2C2_Init();              // MUST COME BEFORE ANY I2C DEVICE
     MX_TIM3_Init();
 
     /* ========== FIRST: INIT RTC BEFORE LCD ========== */
@@ -147,13 +150,18 @@ int main(void)
     /* ========== Then other modules ========== */
     ADC_Init(&hadc1);
     LoRa_Init();
+
+    /* Load system/device settings */
     ModelHandle_LoadSettingsFromEEPROM();
+    ModelHandle_LoadAutoSettings();   // <-- NEW: load AUTO gap/maxrun/retry
     HAL_Delay(70);
+
+    /* Load last mode / power-restore state */
     ModelHandle_LoadModeState();
     HAL_Delay(70);
 
+    /* UI + I/O */
     Screen_Init();
-
     UART_Init();
     Switches_Init();
     Relay_Init();
@@ -181,7 +189,7 @@ int main(void)
         /* == Recalculate timer engine == */
         ModelHandle_TimerRecalculateNow();
 
-        /* == NEW LOGIC — AUTO TIMER ACTIVATION == */
+        /* == Auto Timer Activation == */
         ModelHandle_CheckAutoTimerActivation();
 
         /* == UART Commands == */
