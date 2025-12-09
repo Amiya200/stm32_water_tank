@@ -56,31 +56,27 @@ typedef enum {
     UI_COUNTDOWN,
     UI_COUNTDOWN_EDIT_MIN,
 
-    /* Device Setup main menu + extra edit states */
-    UI_DEVSET_MENU,
+    /* Device Setup (Settings) – scroll menu + per-item editors */
+    UI_DEVSET_MENU,          // Scrollable list inside Device Setup
+
+    UI_SETTINGS_GAP,         // Set Dry Run
+    UI_SETTINGS_RETRY,       // Set Testing Gap
+    UI_SETTINGS_UV,          // Set Low Volt
+    UI_SETTINGS_OV,          // Set High Volt
+    UI_SETTINGS_OL,          // Over Load
+    UI_SETTINGS_UL,          // Under Load
+    UI_SETTINGS_MAXRUN,      // Set Max Run
+    UI_SETTINGS_FACTORY,     // Factory Reset (Yes/No)
+
+    /* Date / Time / Day editors */
     UI_DEVSET_EDIT_DATE,
     UI_DEVSET_EDIT_TIME,
     UI_DEVSET_EDIT_DAY,
-    UI_DEVSET_EDIT_POWERRESTORE,
-    UI_DEVSET_EDIT_GROUNDTANK,
-    UI_DEVSET_EDIT_GT_ON_DELAY,
-    UI_DEVSET_EDIT_GT_OFF_DELAY,
-    UI_DEVSET_BUZZER_SELECT,
-
-    /* Device Setup (Settings) re-used for values */
-    UI_SETTINGS_GAP,      // Set Dry Run
-    UI_SETTINGS_RETRY,    // Set Testing Gap
-    UI_SETTINGS_UV,       // Set Low Volt
-    UI_SETTINGS_OV,       // Set High Volt
-    UI_SETTINGS_OL,       // Over Load
-    UI_SETTINGS_UL,       // Under Load
-    UI_SETTINGS_MAXRUN,   // Set Max Run
-    UI_SETTINGS_FACTORY,  // Factory Reset (Device Setup)
 
     /* Add New Device Submenus */
     UI_ADD_DEVICE_MENU,        // Pair / Remove
-    UI_ADD_DEVICE_PAIR,        // Choose WiFi/Rx/Tx to pair
-    UI_ADD_DEVICE_REMOVE,      // Choose WiFi/Rx/Tx to remove
+    UI_ADD_DEVICE_PAIR,        // Choose Wi-Fi/Receiver/Tx to pair
+    UI_ADD_DEVICE_REMOVE,      // Choose Wi-Fi/Receiver/Tx to remove
     UI_ADD_DEVICE_PAIR_DONE,   // Paired OK
     UI_ADD_DEVICE_REMOVE_DONE, // Removed OK
 
@@ -138,11 +134,12 @@ static uint32_t last_repeat_time = 0;
 static bool reset_confirm_yes = false;
 
 /* ================================================================
-   EXTERNAL STATES (from model_handle)
+   EXTERNAL STATES (from model_handle / rtc_i2c)
    ================================================================ */
 extern ADC_Data adcData;
 extern TimerSlot timerSlots[5];
 extern TwistSettings twistSettings;
+extern RTC_Time_t time;   /* global RTC time struct from rtc_i2c.c */
 
 extern volatile bool manualActive;
 extern volatile bool semiAutoActive;
@@ -196,15 +193,35 @@ static uint8_t edit_twist_off_mm = 0;
 
 static uint16_t edit_countdown_min = 1;
 
-/* SETTINGS (Device Setup core – stored via ModelHandle_SetUserSettings) */
-static uint16_t edit_settings_gap_s = 10;   // Dry run (min)
-static uint8_t  edit_settings_retry = 3;    // Testing gap (min)
+/* SETTINGS (Device Setup) – core values that actually map to model_handle */
+static uint16_t edit_settings_gap_s = 10;   // Dry run gap (s)
+static uint8_t  edit_settings_retry = 3;    // Testing gap / retry count
 static uint16_t edit_settings_uv    = 180;  // Low volt
 static uint16_t edit_settings_ov    = 260;  // High volt
-static float    edit_settings_ol    = 6.5f; // Overload (A)
-static float    edit_settings_ul    = 0.5f; // Underload (A)
+
+static float edit_settings_ol = 6.5f;       // Overload (A)
+static float edit_settings_ul = 0.5f;       // Underload (A)
+
 static uint16_t edit_settings_maxrun = 120; // Max run (min)
 static bool     edit_settings_factory_yes = false;
+
+/* ================================================================
+   DATE / TIME / DAY EDIT (Device Setup)
+   ================================================================ */
+static uint8_t  edit_date_dd    = 1;
+static uint8_t  edit_date_mm    = 1;
+static uint16_t edit_date_yyyy  = 2025;
+static uint8_t  edit_date_field = 0;  // 0=DD,1=MM,2=YY
+
+static uint8_t  edit_time_hh    = 0;
+static uint8_t  edit_time_min   = 0;
+static uint8_t  edit_time_field = 0;  // 0=HH,1=MM
+
+/* Day index 0..6 -> Sun..Sat */
+static uint8_t  edit_day_idx2   = 0;
+static const char* const dowNames[7] = {
+    "Sun","Mon","Tue","Wed","Thu","Fri","Sat"
+};
 
 /* ================================================================
    ADD NEW DEVICE STATE
@@ -221,77 +238,6 @@ static const char* const addDevTypeNames[] = {
 };
 
 /* ================================================================
-   DEVICE SETUP MENU STATE
-   ================================================================ */
-static const char* const devset_menu[] = {
-    "Set Dry Run",       // 0 -> UI_SETTINGS_GAP
-    "Set Max Run",       // 1 -> UI_SETTINGS_MAXRUN
-    "Set Testing Gap",   // 2 -> UI_SETTINGS_RETRY
-    "Set Date",          // 3 -> UI_DEVSET_EDIT_DATE
-    "Set Time",          // 4 -> UI_DEVSET_EDIT_TIME
-    "Set Day",           // 5 -> UI_DEVSET_EDIT_DAY
-    "Power Restore",     // 6 -> UI_DEVSET_EDIT_POWERRESTORE
-    "Set High Volt",     // 7 -> UI_SETTINGS_OV
-    "Set Low Volt",      // 8 -> UI_SETTINGS_UV
-    "Ground Tank",       // 9 -> UI_DEVSET_EDIT_GROUNDTANK
-    "GT On Delay",       // 10 -> UI_DEVSET_EDIT_GT_ON_DELAY
-    "GT Off Delay",      // 11 -> UI_DEVSET_EDIT_GT_OFF_DELAY
-    "Over Load",         // 12 -> UI_SETTINGS_OL
-    "Under Load",        // 13 -> UI_SETTINGS_UL
-    "Buzzer Sound",      // 14 -> UI_DEVSET_BUZZER_SELECT
-    "Factory Reset",     // 15 -> UI_SETTINGS_FACTORY
-    "Back"               // 16 -> back to main menu
-};
-#define DEVSET_MENU_COUNT 17
-
-static uint8_t devset_idx      = 0;
-static uint8_t devset_view_top = 0;
-
-/* ================================================================
-   DEVICE SETUP EXTRA VARIABLES
-   ================================================================ */
-/* Date / Time / Day (UI only, no RTC calls here) */
-static uint8_t  edit_date_dd   = 7;
-static uint8_t  edit_date_mm   = 9;
-static uint16_t edit_date_yyyy = 2025;
-static uint8_t  edit_date_field = 0; // 0=DD,1=MM,2=YYYY
-
-static uint8_t edit_time_hh    = 16;
-static uint8_t edit_time_min   = 0;
-static uint8_t edit_time_field = 0; // 0=HH,1=MM
-
-static const char* const dayNamesFull[] = {
-    "Sun","Mon","Tue","Wed","Thu","Fri","Sat"
-};
-static uint8_t edit_day_idx2 = 0;
-
-/* Power restore: 0=No,1=Yes,2=Last (default Yes) */
-static uint8_t edit_power_restore = 1;
-static const char* const powerRestoreOptions[] = {
-    "No","Yes","Last"
-};
-
-/* Ground tank + delays */
-static bool     edit_ground_tank   = false;
-static uint8_t  edit_gt_on_delay   = 1;  // 1-20 min
-static uint8_t  edit_gt_off_delay  = 2;  // 1-20 min
-
-/* Buzzer per-event mask: bit0=Tank Full,1=Tank Empty,2=Motor Run,3=Dry Run,4=Max Run */
-static uint8_t buzzer_mask = 0x1F; // all enabled by default
-static uint8_t edit_buzzer_index = 0;
-
-static const char* const buzzerItems[] = {
-    "Tank Full",
-    "Tank Empty",
-    "Motor Run",
-    "Dry Run",
-    "Max Run",
-    "Enable All",
-    "Disable All"
-};
-#define BUZZER_ITEM_COUNT 7
-
-/* ================================================================
    MAIN MENU ITEMS (as per document)
    ================================================================ */
 static const char* const main_menu[] = {
@@ -306,8 +252,30 @@ static uint8_t menu_idx      = 0;
 static uint8_t menu_view_top = 0;
 
 /* ================================================================
-   HELPERS
+   DEVICE SETUP SCROLL MENU
+   (Mapped to individual edit screens)
    ================================================================ */
+static const char* const devset_menu_items[] = {
+    "Set Dry Run",     // -> UI_SETTINGS_GAP
+    "Set Testing Gap", // -> UI_SETTINGS_RETRY
+    "Set Low Volt",    // -> UI_SETTINGS_UV
+    "Set High Volt",   // -> UI_SETTINGS_OV
+    "Set Over Load",   // -> UI_SETTINGS_OL
+    "Set Under Load",  // -> UI_SETTINGS_UL
+    "Set Max Run",     // -> UI_SETTINGS_MAXRUN
+    "Set Date",        // -> UI_DEVSET_EDIT_DATE
+    "Set Time",        // -> UI_DEVSET_EDIT_TIME
+    "Set Day",         // -> UI_DEVSET_EDIT_DAY
+    "Factory Reset",   // -> UI_SETTINGS_FACTORY
+    "Back"             // -> Back to Main Menu
+};
+#define DEVSET_MENU_COUNT  (sizeof(devset_menu_items)/sizeof(devset_menu_items[0]))
+
+static uint8_t devset_idx      = 0;
+static uint8_t devset_view_top = 0;
+
+/* ================================================================ */
+
 void Screen_Init(void)
 {
     lcd_init();
@@ -320,6 +288,9 @@ void Screen_Init(void)
     lastUserAction = HAL_GetTick();
 }
 
+/* ================================================================
+   LCD Helpers — Safe, clean
+   ================================================================ */
 static inline void refreshInactivityTimer(void){
     lastUserAction = HAL_GetTick();
 }
@@ -427,37 +398,38 @@ static void show_menu(void)
 }
 
 /***************************************************************
- *  DEVICE SETUP MENU DRAW
+ *  DEVICE SETUP MENU DRAW (scrolling cursor)
  ***************************************************************/
 static void show_devset_menu(void)
 {
     char l0[17], l1[17];
 
+    /* Adjust top-of-view */
     if (devset_idx < devset_view_top)
         devset_view_top = devset_idx;
     else if (devset_idx > devset_view_top + 1)
         devset_view_top = devset_idx - 1;
 
-    snprintf(l0, sizeof(l0), " %-15.15s", devset_menu[devset_view_top]);
+    /* Line 0 */
+    uint8_t idx0 = devset_view_top;
+    uint8_t idx1 = devset_view_top + 1;
 
-    if (devset_view_top + 1 < DEVSET_MENU_COUNT)
-        snprintf(l1, sizeof(l1), " %-15.15s", devset_menu[devset_view_top + 1]);
+    if (idx0 < DEVSET_MENU_COUNT)
+        snprintf(l0, sizeof(l0), "%c%-15.15s",
+                 (devset_idx == idx0 ? '>' : ' '),
+                 devset_menu_items[idx0]);
+    else
+        snprintf(l0, sizeof(l0), "                ");
+
+    if (idx1 < DEVSET_MENU_COUNT)
+        snprintf(l1, sizeof(l1), "%c%-15.15s",
+                 (devset_idx == idx1 ? '>' : ' '),
+                 devset_menu_items[idx1]);
     else
         snprintf(l1, sizeof(l1), "                ");
 
     lcd_line0(l0);
     lcd_line1(l1);
-
-    /* small cursor on left like main menu */
-    for (int row = 0; row < 2; row++)
-    {
-        uint8_t idx = devset_view_top + row;
-        lcd_put_cur(row, 0);
-        if (idx == devset_idx)
-            lcd_send_data('>');
-        else
-            lcd_send_data(' ');
-    }
 }
 
 /***************************************************************
@@ -598,7 +570,7 @@ static void show_timer_enable(void)
 }
 
 /***************************************************************
- *  TIMER — SUMMARY (kept but normal flow skips it)
+ *  TIMER — SUMMARY
  ***************************************************************/
 static void show_timer_summary(void)
 {
@@ -728,7 +700,7 @@ static void show_countdown_edit_min(void){
 }
 
 /***************************************************************
- *  DEVICE SETUP CORE SETTINGS (reused)
+ *  DEVICE SETUP (SETTINGS) UI
  ***************************************************************/
 static void show_settings_gap(void){
     lcd_line0("Set Dry Run");
@@ -772,86 +744,43 @@ static void show_settings_factory(void){
 }
 
 /***************************************************************
- *  DEVICE SETUP EXTRA SCREENS
+ *  DEVICE SETUP — DATE/TIME/DAY SCREENS
  ***************************************************************/
-static void show_devset_date(void)
+static void show_devset_edit_date(void)
 {
     lcd_line0("Set Date");
+
+    uint8_t yy2 = (uint8_t)(edit_date_yyyy % 100);
     char buf[17];
+
     if (edit_date_field == 0)
-        snprintf(buf,sizeof(buf),"[%02u]-%02u-%04u",edit_date_dd,edit_date_mm,edit_date_yyyy);
+        snprintf(buf,sizeof(buf),"[%02u]-%02u-%02u", edit_date_dd, edit_date_mm, yy2);
     else if (edit_date_field == 1)
-        snprintf(buf,sizeof(buf),"%02u-[%02u]-%04u",edit_date_dd,edit_date_mm,edit_date_yyyy);
+        snprintf(buf,sizeof(buf),"%02u-[%02u]-%02u", edit_date_dd, edit_date_mm, yy2);
     else
-        snprintf(buf,sizeof(buf),"%02u-%02u-[%04u]",edit_date_dd,edit_date_mm,edit_date_yyyy);
+        snprintf(buf,sizeof(buf),"%02u-%02u-[%02u]", edit_date_dd, edit_date_mm, yy2);
+
     lcd_line1(buf);
 }
 
-static void show_devset_time(void)
+static void show_devset_edit_time(void)
 {
     lcd_line0("Set Time");
     char buf[17];
+
     if (edit_time_field == 0)
-        snprintf(buf,sizeof(buf),"[%02u]:%02u      ",edit_time_hh,edit_time_min);
+        snprintf(buf,sizeof(buf),"[%02u]:%02u", edit_time_hh, edit_time_min);
     else
-        snprintf(buf,sizeof(buf),"%02u:[%02u]      ",edit_time_hh,edit_time_min);
+        snprintf(buf,sizeof(buf),"%02u:[%02u]", edit_time_hh, edit_time_min);
+
     lcd_line1(buf);
 }
 
-static void show_devset_day(void)
+static void show_devset_edit_day(void)
 {
     lcd_line0("Set Day");
     char buf[17];
-    snprintf(buf,sizeof(buf),"> %s", dayNamesFull[edit_day_idx2]);
-    lcd_line1(buf);
-}
-
-static void show_devset_power_restore(void)
-{
-    lcd_line0("Power Restore");
-    char buf[17];
-    snprintf(buf,sizeof(buf),"> %s", powerRestoreOptions[edit_power_restore]);
-    lcd_line1(buf);
-}
-
-static void show_devset_ground_tank(void)
-{
-    lcd_line0("Ground Tank");
-    lcd_line1(edit_ground_tank ? "> Yes" : "> No");
-}
-
-static void show_devset_gt_on_delay(void)
-{
-    lcd_line0("GT On Delay");
-    char buf[17];
-    snprintf(buf,sizeof(buf),"val:%02u min Next>", edit_gt_on_delay);
-    lcd_line1(buf);
-}
-
-static void show_devset_gt_off_delay(void)
-{
-    lcd_line0("GT Off Delay");
-    char buf[17];
-    snprintf(buf,sizeof(buf),"val:%02u min Next>", edit_gt_off_delay);
-    lcd_line1(buf);
-}
-
-static void show_devset_buzzer_select(void)
-{
-    lcd_line0("Buzzer Sound");
-    char buf[17];
-
-    if (edit_buzzer_index < 5)
-    {
-        uint8_t bit = (buzzer_mask >> edit_buzzer_index) & 0x1;
-        snprintf(buf,sizeof(buf),"> %s (%s)",
-                 buzzerItems[edit_buzzer_index],
-                 bit ? "ON" : "OFF");
-    }
-    else
-    {
-        snprintf(buf,sizeof(buf),"> %s", buzzerItems[edit_buzzer_index]);
-    }
+    snprintf(buf,sizeof(buf),"> %s", dowNames[edit_day_idx2 % 7]);
     lcd_line1(buf);
 }
 
@@ -934,7 +863,7 @@ static void apply_auto_settings(void)
     );
 }
 
-/* core apply for user settings, NO factory reset */
+/* Apply current Device Setup core settings into model */
 static void apply_settings_core(void)
 {
     ModelHandle_SetUserSettings(
@@ -948,16 +877,10 @@ static void apply_settings_core(void)
     );
 }
 
-/* keep for factory reset path if ever used linearly */
-static void apply_settings_all(void)
-{
-    apply_settings_core();
-    if (edit_settings_factory_yes)
-        ModelHandle_FactoryReset();
-}
-
 /***************************************************************
- *  SETTINGS FLOW — LOAD VALUES ONLY
+ *  SETTINGS FLOW — START (Device Setup)
+ *  Load all values + RTC into local edit variables and go to
+ *  Device Setup scroll menu.
  ***************************************************************/
 static void start_settings_edit_flow(void)
 {
@@ -972,7 +895,29 @@ static void start_settings_edit_flow(void)
 
     edit_settings_factory_yes = 0;
 
-    /* Other Device Setup defaults are kept from static init. */
+    /* Load current RTC date/time/day */
+    RTC_GetTimeDate();
+
+    edit_date_dd    = time.dom;
+    edit_date_mm    = time.month;
+    edit_date_yyyy  = time.year;
+    edit_date_field = 0;
+
+    edit_time_hh    = time.hour;
+    edit_time_min   = time.min;
+    edit_time_field = 0;
+
+    /* DS1307 dow: 1..7; map to 0..6 index (Sun..Sat) */
+    if (time.dow >= 1 && time.dow <= 7)
+        edit_day_idx2 = (uint8_t)((time.dow - 1) % 7);
+    else
+        edit_day_idx2 = 0;
+
+    devset_idx      = 0;
+    devset_view_top = 0;
+
+    ui = UI_DEVSET_MENU;
+    screenNeedsRefresh = true;
 }
 
 /***************************************************************
@@ -1024,15 +969,11 @@ static void menu_select(void)
                 screenNeedsRefresh = true;
                 return;
 
-            case 2:   /* DEVICE SETUP → scrolling submenu */
-                start_settings_edit_flow();
-                devset_idx      = 0;
-                devset_view_top = 0;
-                ui = UI_DEVSET_MENU;
-                screenNeedsRefresh = true;
+            case 2:   /* DEVICE SETUP */
+                start_settings_edit_flow();  /* sets ui = UI_DEVSET_MENU */
                 return;
 
-            case 3:   /* RESET TO DEFAULT CONFIRM (system level) */
+            case 3:   /* RESET TO DEFAULT CONFIRM */
                 reset_confirm_yes = false;
                 ui = UI_RESET_CONFIRM;
                 screenNeedsRefresh = true;
@@ -1040,7 +981,7 @@ static void menu_select(void)
         }
     }
 
-    /* TIMER SLOT SELECT → LOAD TIMER FOR EDIT */
+    /* TIMER SLOT SELECT → LOAD TIMER */
     if (ui == UI_TIMER_SLOT_SELECT)
     {
         if (currentSlot == 5)
@@ -1069,7 +1010,7 @@ static void menu_select(void)
         return;
     }
 
-    /* TIMER EDIT FLOW SEQUENCE (ON/OFF/DAYS/GAP/ENABLE) */
+    /* TIMER EDIT FLOW SEQUENCE */
     switch(ui)
     {
         case UI_TIMER_EDIT_ON_TIME:
@@ -1102,14 +1043,12 @@ static void menu_select(void)
             break;
 
         case UI_TIMER_EDIT_ENABLE:
-            /* normal flow: save slot & back to slot list */
-            apply_timer_slot();
-            ui = UI_TIMER_SLOT_SELECT;
+            ui = UI_TIMER_EDIT_SUMMARY;
             break;
 
         case UI_TIMER_EDIT_SUMMARY:
             apply_timer_slot();
-            ui = UI_TIMER_SLOT_SELECT;
+            ui = UI_TIMER_SLOT_SELECT;   /* after summary → back to slot select */
             break;
 
         default:
@@ -1161,37 +1100,27 @@ void increase_edit_value(void)
             if (edit_countdown_min < 999) edit_countdown_min++;
             break;
 
-        /* DEVICE SETUP core (through ModelHandle_SetUserSettings) */
+        /* SETTINGS / DEVICE SETUP */
         case UI_SETTINGS_GAP:     edit_settings_gap_s++; break;
         case UI_SETTINGS_RETRY:   edit_settings_retry++; break;
-
-        case UI_SETTINGS_UV:
-            if (edit_settings_uv < 500) edit_settings_uv++;
-            break;
-
-        case UI_SETTINGS_OV:
-            if (edit_settings_ov < 500) edit_settings_ov++;
-            break;
-
+        case UI_SETTINGS_UV:      if (edit_settings_uv < 500) edit_settings_uv++; break;
+        case UI_SETTINGS_OV:      if (edit_settings_ov < 500) edit_settings_ov++; break;
         case UI_SETTINGS_OL:
             edit_settings_ol += 0.1f;
             if (edit_settings_ol > 50) edit_settings_ol = 50;
             break;
-
         case UI_SETTINGS_UL:
             edit_settings_ul += 0.1f;
             if (edit_settings_ul > 50) edit_settings_ul = 50;
             break;
-
         case UI_SETTINGS_MAXRUN:
             edit_settings_maxrun++;
             break;
-
         case UI_SETTINGS_FACTORY:
             edit_settings_factory_yes ^= 1;
             break;
 
-        /* Device Setup extra */
+        /* DEVSET DATE/TIME/DAY */
         case UI_DEVSET_EDIT_DATE:
             if (edit_date_field == 0) {
                 if (edit_date_dd < 31) edit_date_dd++;
@@ -1211,23 +1140,7 @@ void increase_edit_value(void)
             break;
 
         case UI_DEVSET_EDIT_DAY:
-            edit_day_idx2 = (edit_day_idx2 + 1) % 7;
-            break;
-
-        case UI_DEVSET_EDIT_POWERRESTORE:
-            if (edit_power_restore < 2) edit_power_restore++;
-            break;
-
-        case UI_DEVSET_EDIT_GROUNDTANK:
-            edit_ground_tank = !edit_ground_tank;
-            break;
-
-        case UI_DEVSET_EDIT_GT_ON_DELAY:
-            if (edit_gt_on_delay < 20) edit_gt_on_delay++;
-            break;
-
-        case UI_DEVSET_EDIT_GT_OFF_DELAY:
-            if (edit_gt_off_delay < 20) edit_gt_off_delay++;
+            edit_day_idx2 = (uint8_t)((edit_day_idx2 + 1) % 7);
             break;
 
         default:
@@ -1274,44 +1187,34 @@ void decrease_edit_value(void)
             if (edit_countdown_min > 1) edit_countdown_min--;
             break;
 
-        /* DEVICE SETUP core */
+        /* SETTINGS / DEVICE SETUP */
         case UI_SETTINGS_GAP:     if(edit_settings_gap_s > 0) edit_settings_gap_s--; break;
         case UI_SETTINGS_RETRY:   if(edit_settings_retry > 0) edit_settings_retry--; break;
-
-        case UI_SETTINGS_UV:
-            if(edit_settings_uv > 50)   edit_settings_uv--;
-            break;
-
-        case UI_SETTINGS_OV:
-            if(edit_settings_ov > 50)   edit_settings_ov--;
-            break;
-
+        case UI_SETTINGS_UV:      if(edit_settings_uv > 50)   edit_settings_uv--; break;
+        case UI_SETTINGS_OV:      if(edit_settings_ov > 50)   edit_settings_ov--; break;
         case UI_SETTINGS_OL:
             edit_settings_ol -= 0.1f;
             if(edit_settings_ol < 0.1f) edit_settings_ol = 0.1f;
             break;
-
         case UI_SETTINGS_UL:
             edit_settings_ul -= 0.1f;
             if(edit_settings_ul < 0.1f) edit_settings_ul = 0.1f;
             break;
-
         case UI_SETTINGS_MAXRUN:
             if(edit_settings_maxrun > 1) edit_settings_maxrun--;
             break;
-
         case UI_SETTINGS_FACTORY:
             edit_settings_factory_yes ^= 1;
             break;
 
-        /* Device Setup extra */
+        /* DEVSET DATE/TIME/DAY */
         case UI_DEVSET_EDIT_DATE:
             if (edit_date_field == 0) {
                 if (edit_date_dd > 1) edit_date_dd--;
             } else if (edit_date_field == 1) {
                 if (edit_date_mm > 1) edit_date_mm--;
             } else {
-                if (edit_date_yyyy > 2000) edit_date_yyyy--;
+                if (edit_date_yyyy > 2020) edit_date_yyyy--;
             }
             break;
 
@@ -1324,23 +1227,7 @@ void decrease_edit_value(void)
             break;
 
         case UI_DEVSET_EDIT_DAY:
-            edit_day_idx2 = (edit_day_idx2 + 6) % 7;  // -1 mod 7
-            break;
-
-        case UI_DEVSET_EDIT_POWERRESTORE:
-            if (edit_power_restore > 0) edit_power_restore--;
-            break;
-
-        case UI_DEVSET_EDIT_GROUNDTANK:
-            edit_ground_tank = !edit_ground_tank;
-            break;
-
-        case UI_DEVSET_EDIT_GT_ON_DELAY:
-            if (edit_gt_on_delay > 1) edit_gt_on_delay--;
-            break;
-
-        case UI_DEVSET_EDIT_GT_OFF_DELAY:
-            if (edit_gt_off_delay > 1) edit_gt_off_delay--;
+            edit_day_idx2 = (uint8_t)((edit_day_idx2 + 6) % 7);
             break;
 
         default:
@@ -1480,109 +1367,7 @@ void Screen_HandleSwitches(void)
     if (b == BTN_NONE) return;
     refreshInactivityTimer();
 
-    /* ============================================================
-       DEVICE SETUP MENU (SCROLLING)
-       ============================================================ */
-    if (ui == UI_DEVSET_MENU)
-    {
-        switch (b)
-        {
-            case BTN_UP:
-            case BTN_UP_LONG:
-                if (devset_idx > 0) devset_idx--;
-                break;
-
-            case BTN_DOWN:
-            case BTN_DOWN_LONG:
-                if (devset_idx < DEVSET_MENU_COUNT - 1) devset_idx++;
-                break;
-
-            case BTN_SELECT:
-            case BTN_SELECT_LONG:
-                switch(devset_idx)
-                {
-                    case 0:  ui = UI_SETTINGS_GAP;       break;  // Dry Run
-                    case 1:  ui = UI_SETTINGS_MAXRUN;    break;  // Max Run
-                    case 2:  ui = UI_SETTINGS_RETRY;     break;  // Testing Gap
-                    case 3:  ui = UI_DEVSET_EDIT_DATE;   break;  // Date
-                    case 4:  ui = UI_DEVSET_EDIT_TIME;   break;  // Time
-                    case 5:  ui = UI_DEVSET_EDIT_DAY;    break;  // Day
-                    case 6:  ui = UI_DEVSET_EDIT_POWERRESTORE; break;
-                    case 7:  ui = UI_SETTINGS_OV;        break;  // High Volt
-                    case 8:  ui = UI_SETTINGS_UV;        break;  // Low Volt
-                    case 9:  ui = UI_DEVSET_EDIT_GROUNDTANK;    break;
-                    case 10: ui = UI_DEVSET_EDIT_GT_ON_DELAY;   break;
-                    case 11: ui = UI_DEVSET_EDIT_GT_OFF_DELAY;  break;
-                    case 12: ui = UI_SETTINGS_OL;        break;  // Over Load
-                    case 13: ui = UI_SETTINGS_UL;        break;  // Under Load
-                    case 14: ui = UI_DEVSET_BUZZER_SELECT;      break;
-                    case 15: ui = UI_SETTINGS_FACTORY;   break;  // Factory Reset
-                    case 16: ui = UI_MENU;               break;  // Back
-                    default: break;
-                }
-                break;
-
-            case BTN_RESET:
-                ui = UI_MENU;    // BACK to main menu
-                break;
-
-            default:
-                break;
-        }
-
-        screenNeedsRefresh = true;
-        return;
-    }
-
-    /* ============================================================
-       BUZZER SOUND SELECTION (similar to days menu)
-       ============================================================ */
-    if (ui == UI_DEVSET_BUZZER_SELECT)
-    {
-        switch (b)
-        {
-            case BTN_UP:
-            case BTN_UP_LONG:
-                if (edit_buzzer_index == 0) edit_buzzer_index = BUZZER_ITEM_COUNT - 1;
-                else edit_buzzer_index--;
-                break;
-
-            case BTN_DOWN:
-            case BTN_DOWN_LONG:
-                edit_buzzer_index = (edit_buzzer_index + 1) % BUZZER_ITEM_COUNT;
-                break;
-
-            case BTN_SELECT:
-            case BTN_SELECT_LONG:
-                if (edit_buzzer_index < 5)
-                {
-                    buzzer_mask ^= (1u << edit_buzzer_index);
-                }
-                else if (edit_buzzer_index == 5)
-                {
-                    buzzer_mask = 0x1F;   // Enable all
-                }
-                else if (edit_buzzer_index == 6)
-                {
-                    buzzer_mask = 0x00;   // Disable all
-                }
-                break;
-
-            case BTN_RESET:
-                ui = UI_DEVSET_MENU;
-                break;
-
-            default:
-                break;
-        }
-
-        screenNeedsRefresh = true;
-        return;
-    }
-
-    /* ============================================================
-       GENERIC EDITING MODES
-       ============================================================ */
+    /* GENERIC EDITING MODES */
     bool editing =
         (ui == UI_TIMER_EDIT_ON_TIME ||
          ui == UI_TIMER_EDIT_OFF_TIME ||
@@ -1600,11 +1385,7 @@ void Screen_HandleSwitches(void)
          (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY) ||
          ui == UI_DEVSET_EDIT_DATE ||
          ui == UI_DEVSET_EDIT_TIME ||
-         ui == UI_DEVSET_EDIT_DAY ||
-         ui == UI_DEVSET_EDIT_POWERRESTORE ||
-         ui == UI_DEVSET_EDIT_GROUNDTANK ||
-         ui == UI_DEVSET_EDIT_GT_ON_DELAY ||
-         ui == UI_DEVSET_EDIT_GT_OFF_DELAY);
+         ui == UI_DEVSET_EDIT_DAY);
 
     if (editing)
     {
@@ -1623,7 +1404,7 @@ void Screen_HandleSwitches(void)
                 {
                     menu_select();
                 }
-                /* DEVICE SETUP core settings: apply & back to Device Setup menu */
+                /* SETTINGS from Device Setup: apply and go back to DEVSET menu */
                 else if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_MAXRUN)
                 {
                     apply_settings_core();
@@ -1635,55 +1416,97 @@ void Screen_HandleSwitches(void)
                         ModelHandle_FactoryReset();
                     ui = UI_DEVSET_MENU;
                 }
-                /* Device setup extra simple editors: just back to menu */
+                /* Device setup: Set Date */
                 else if (ui == UI_DEVSET_EDIT_DATE)
                 {
-                    /* next field on SELECT (like timer time) */
-                    if (edit_date_field < 2) edit_date_field++;
-                    else {
+                    if (edit_date_field < 2)
+                    {
+                        edit_date_field++;  // DD -> MM -> YY
+                    }
+                    else
+                    {
+                        /* Finished editing → write to RTC */
+                        RTC_GetTimeDate();
+
+                        uint8_t sec   = time.sec;
+                        uint8_t min   = time.min;
+                        uint8_t hour  = time.hour;
+                        uint8_t dow   = time.dow;
+                        uint8_t dom   = edit_date_dd;
+                        uint8_t month = edit_date_mm;
+                        uint16_t year = edit_date_yyyy;
+
+                        RTC_SetTimeDate(sec, min, hour, dow, dom, month, year);
+                        RTC_GetTimeDate();
+
                         edit_date_field = 0;
                         ui = UI_DEVSET_MENU;
                     }
                 }
+                /* Device setup: Set Time */
                 else if (ui == UI_DEVSET_EDIT_TIME)
                 {
-                    if (edit_time_field == 0) edit_time_field = 1;
-                    else {
+                    if (edit_time_field == 0)
+                    {
+                        edit_time_field = 1;   // HH -> MM
+                    }
+                    else
+                    {
+                        RTC_GetTimeDate();
+
+                        uint8_t sec   = time.sec;
+                        uint8_t dow   = time.dow;
+                        uint8_t dom   = time.dom;
+                        uint8_t month = time.month;
+                        uint16_t year = time.year;
+
+                        RTC_SetTimeDate(sec,
+                                        edit_time_min,
+                                        edit_time_hh,
+                                        dow, dom, month, year);
+
+                        RTC_GetTimeDate();
+
                         edit_time_field = 0;
                         ui = UI_DEVSET_MENU;
                     }
                 }
+                /* Device setup: Set Day */
+                else if (ui == UI_DEVSET_EDIT_DAY)
+                {
+                    RTC_GetTimeDate();
+
+                    uint8_t sec   = time.sec;
+                    uint8_t min   = time.min;
+                    uint8_t hour  = time.hour;
+                    uint8_t dom   = time.dom;
+                    uint8_t month = time.month;
+                    uint16_t year = time.year;
+
+                    /* DS1307 DOW 1..7 */
+                    uint8_t dow   = (uint8_t)((edit_day_idx2 % 7) + 1);
+
+                    RTC_SetTimeDate(sec, min, hour, dow, dom, month, year);
+                    RTC_GetTimeDate();
+
+                    ui = UI_DEVSET_MENU;
+                }
                 else
                 {
-                    /* Other devset extra fields: one-screen edit, then back */
+                    /* Fallback: just go back to Device Setup menu */
                     ui = UI_DEVSET_MENU;
                 }
                 break;
 
             case BTN_RESET:
-                /* TIMER edit back to slot list */
-                if (ui == UI_TIMER_EDIT_ON_TIME ||
-                    ui == UI_TIMER_EDIT_OFF_TIME ||
-                    ui == UI_TIMER_EDIT_GAP)
-                {
-                    ui = UI_TIMER_SLOT_SELECT;
-                }
-                /* DEVICE SETUP editing back to Device Setup menu */
-                else if ((ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY) ||
-                         ui == UI_DEVSET_EDIT_DATE ||
-                         ui == UI_DEVSET_EDIT_TIME ||
-                         ui == UI_DEVSET_EDIT_DAY ||
-                         ui == UI_DEVSET_EDIT_POWERRESTORE ||
-                         ui == UI_DEVSET_EDIT_GROUNDTANK ||
-                         ui == UI_DEVSET_EDIT_GT_ON_DELAY ||
-                         ui == UI_DEVSET_EDIT_GT_OFF_DELAY)
-                {
+                if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY)
                     ui = UI_DEVSET_MENU;
-                }
+                else if (ui == UI_DEVSET_EDIT_DATE ||
+                         ui == UI_DEVSET_EDIT_TIME ||
+                         ui == UI_DEVSET_EDIT_DAY)
+                    ui = UI_DEVSET_MENU;
                 else
-                {
                     ui = UI_MENU;
-                }
                 break;
 
             default:
@@ -1694,9 +1517,7 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ============================================================
-       TIMER DAYS SELECTION
-       ============================================================ */
+    /* TIMER DAYS SELECTION */
     if (ui == UI_TIMER_EDIT_DAYS)
     {
         switch (b)
@@ -1735,9 +1556,7 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ============================================================
-       TIMER ENABLE / DISABLE (UP=YES, DOWN=NO, SELECT=SAVE+BACK)
-       ============================================================ */
+    /* TIMER ENABLE / DISABLE */
     if (ui == UI_TIMER_EDIT_ENABLE)
     {
         switch (b)
@@ -1753,8 +1572,7 @@ void Screen_HandleSwitches(void)
                 break;
 
             case BTN_SELECT:
-                apply_timer_slot();
-                ui = UI_TIMER_SLOT_SELECT;
+                ui = UI_TIMER_EDIT_SUMMARY;
                 break;
 
             case BTN_RESET:
@@ -1769,9 +1587,7 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ============================================================
-       ADD NEW DEVICE — MAIN MENU
-       ============================================================ */
+    /* ADD NEW DEVICE — MAIN MENU */
     if (ui == UI_ADD_DEVICE_MENU)
     {
         switch (b)
@@ -1892,9 +1708,7 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ============================================================
-       RESET TO DEFAULT CONFIRM (MAIN MENU)
-       ============================================================ */
+    /* RESET TO DEFAULT CONFIRM (from Main Menu) */
     if (ui == UI_RESET_CONFIRM)
     {
         switch (b)
@@ -1930,9 +1744,54 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ============================================================
-       MAIN MENU
-       ============================================================ */
+    /* DEVICE SETUP MENU (scroll) */
+    if (ui == UI_DEVSET_MENU)
+    {
+        switch (b)
+        {
+            case BTN_UP:
+            case BTN_UP_LONG:
+                if (devset_idx > 0) devset_idx--;
+                break;
+
+            case BTN_DOWN:
+            case BTN_DOWN_LONG:
+                if (devset_idx < DEVSET_MENU_COUNT - 1) devset_idx++;
+                break;
+
+            case BTN_SELECT:
+            case BTN_SELECT_LONG:
+                switch (devset_idx)
+                {
+                    case 0: ui = UI_SETTINGS_GAP;     break;
+                    case 1: ui = UI_SETTINGS_RETRY;   break;
+                    case 2: ui = UI_SETTINGS_UV;      break;
+                    case 3: ui = UI_SETTINGS_OV;      break;
+                    case 4: ui = UI_SETTINGS_OL;      break;
+                    case 5: ui = UI_SETTINGS_UL;      break;
+                    case 6: ui = UI_SETTINGS_MAXRUN;  break;
+                    case 7: ui = UI_DEVSET_EDIT_DATE; break;
+                    case 8: ui = UI_DEVSET_EDIT_TIME; break;
+                    case 9: ui = UI_DEVSET_EDIT_DAY;  break;
+                    case 10: ui = UI_SETTINGS_FACTORY; break;
+                    case 11: ui = UI_MENU;            break;
+                    default: break;
+                }
+                break;
+
+            case BTN_RESET:
+                ui = UI_MENU;
+                break;
+
+            default:
+                break;
+        }
+
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* MAIN MENU */
     if (ui == UI_MENU)
     {
         switch (b)
@@ -1950,9 +1809,7 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ============================================================
-       TIMER SLOT SELECT
-       ============================================================ */
+    /* TIMER SLOT SELECT */
     if (ui == UI_TIMER_SLOT_SELECT)
     {
         switch (b)
@@ -1981,9 +1838,7 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ============================================================
-       DASHBOARD BUTTON ACTIONS
-       ============================================================ */
+    /* DASHBOARD BUTTON ACTIONS */
     switch (b)
     {
         case BTN_RESET:
@@ -2046,7 +1901,7 @@ void Screen_Update(void)
 {
     uint32_t now = HAL_GetTick();
 
-    /* CURSOR BLINK ONLY IN MAIN MENU (Device Setup menu draws its own) */
+    /* CURSOR BLINK ONLY IN MAIN MENU */
     bool cursorBlinkActive = (ui == UI_MENU);
 
     if (cursorBlinkActive && (now - lastCursorToggle >= CURSOR_BLINK_MS))
@@ -2131,18 +1986,9 @@ void Screen_Update(void)
             case UI_COUNTDOWN:            show_countdown();            break;
             case UI_COUNTDOWN_EDIT_MIN:   show_countdown_edit_min();   break;
 
-            /* DEVICE SETUP MENU + SUBSCREENS */
+            /* DEVICE SETUP (SCROLL MENU + EDITORS) */
             case UI_DEVSET_MENU:          show_devset_menu();          break;
-            case UI_DEVSET_EDIT_DATE:     show_devset_date();          break;
-            case UI_DEVSET_EDIT_TIME:     show_devset_time();          break;
-            case UI_DEVSET_EDIT_DAY:      show_devset_day();           break;
-            case UI_DEVSET_EDIT_POWERRESTORE: show_devset_power_restore(); break;
-            case UI_DEVSET_EDIT_GROUNDTANK:   show_devset_ground_tank();   break;
-            case UI_DEVSET_EDIT_GT_ON_DELAY:  show_devset_gt_on_delay();   break;
-            case UI_DEVSET_EDIT_GT_OFF_DELAY: show_devset_gt_off_delay();  break;
-            case UI_DEVSET_BUZZER_SELECT:     show_devset_buzzer_select(); break;
 
-            /* DEVICE SETUP CORE SETTINGS */
             case UI_SETTINGS_GAP:         show_settings_gap();         break;
             case UI_SETTINGS_RETRY:       show_settings_retry();       break;
             case UI_SETTINGS_UV:          show_settings_uv();          break;
@@ -2151,6 +1997,10 @@ void Screen_Update(void)
             case UI_SETTINGS_UL:          show_settings_ul();          break;
             case UI_SETTINGS_MAXRUN:      show_settings_maxrun();      break;
             case UI_SETTINGS_FACTORY:     show_settings_factory();     break;
+
+            case UI_DEVSET_EDIT_DATE:     show_devset_edit_date();     break;
+            case UI_DEVSET_EDIT_TIME:     show_devset_edit_time();     break;
+            case UI_DEVSET_EDIT_DAY:      show_devset_edit_day();      break;
 
             /* ADD NEW DEVICE FLOWS */
             case UI_ADD_DEVICE_MENU:        show_add_device_menu();        break;
