@@ -204,8 +204,8 @@ static uint16_t edit_settings_uv    = 180;  // Low volt
 static uint16_t edit_settings_ov    = 260;  // High volt
 
 /* Over/Under load: 0=Disable, else A (0.1 step) with clamping     */
-static float edit_settings_ol = 6.5f;       // Overload (A)
-static float edit_settings_ul = 0.5f;       // Underload (A)
+static int edit_settings_ol = 6;       // Overload (A) change to int
+static int edit_settings_ul = 0;       // Underload (A) change to int
 
 /* Max run in minutes: 0=Disable, 10..300                          */
 static uint16_t edit_settings_maxrun = 120;
@@ -755,24 +755,25 @@ static void show_settings_ov(void){
 }
 
 /* Over Load: 0=Disable, else up to 25A */
+/* Over Load: 0=Disable, else up to 25A */
 static void show_settings_ol(void){
     lcd_line0("Over Load (A)");
     char buf[17];
-    if (edit_settings_ol < 0.05f)
-        snprintf(buf,sizeof(buf),"Disable    Next>");
+    if (edit_settings_ol < 1)
+        snprintf(buf, sizeof(buf), "Disable    Next>");
     else
-        snprintf(buf,sizeof(buf),"val:%0.1f Next>",edit_settings_ol);
+        snprintf(buf, sizeof(buf), "val:%3d Next>", edit_settings_ol);
     lcd_line1(buf);
 }
-
+/* Under Load: 0=Disable, else up to 10A */
 /* Under Load: 0=Disable, else up to 10A */
 static void show_settings_ul(void){
     lcd_line0("Under Load (A)");
     char buf[17];
-    if (edit_settings_ul < 0.05f)
-        snprintf(buf,sizeof(buf),"Disable    Next>");
+    if (edit_settings_ul < 1)
+        snprintf(buf, sizeof(buf), "Disable    Next>");
     else
-        snprintf(buf,sizeof(buf),"val:%0.1f Next>",edit_settings_ul);
+        snprintf(buf, sizeof(buf), "val:%3d Next>", edit_settings_ul);
     lcd_line1(buf);
 }
 
@@ -1219,15 +1220,12 @@ void increase_edit_value(void)
 
         /* Over Load: 0..25A (0=Disable) */
         case UI_SETTINGS_OL:
-            edit_settings_ol += 0.1f;
-            if (edit_settings_ol > 25.0f) edit_settings_ol = 25.0f;
-            break;
+        	if (edit_settings_ol < 25) edit_settings_ol++;  // Increment by 1
+        	break;
 
-        /* Under Load: 0..10A (0=Disable) */
         case UI_SETTINGS_UL:
-            edit_settings_ul += 0.1f;
-            if (edit_settings_ul > 10.0f) edit_settings_ul = 10.0f;
-            break;
+        	if (edit_settings_ul < 10) edit_settings_ul++;  // Increment by 1
+        	break;
 
         /* Max Run: 0=Disable, else 10..300min */
         case UI_SETTINGS_MAXRUN:
@@ -1335,17 +1333,12 @@ void decrease_edit_value(void)
             else if (edit_settings_ov == 250) edit_settings_ov = 0;
             break;
 
-        /* Over Load: 0..25A (0=Disable) */
         case UI_SETTINGS_OL:
-            edit_settings_ol -= 0.1f;
-            if(edit_settings_ol < 0.0f) edit_settings_ol = 0.0f;
-            break;
-
-        /* Under Load: 0..10A (0=Disable) */
+        	if (edit_settings_ol > 0) edit_settings_ol--;  // Decrement by 1
+        	break;
         case UI_SETTINGS_UL:
-            edit_settings_ul -= 0.1f;
-            if(edit_settings_ul < 0.0f) edit_settings_ul = 0.0f;
-            break;
+        	if (edit_settings_ul > 0) edit_settings_ul--;  // Decrement by 1
+        	break;
 
         /* Max Run: 0=Disable, else 10..300 */
         case UI_SETTINGS_MAXRUN:
@@ -1452,6 +1445,8 @@ static UiButton decode_button_press(void)
  ***************************************************************/
 void Screen_HandleSwitches(void)
 {
+    static bool prev_sw_down_edit = false;   /* track DOWN state in countdown edit */
+
     UiButton b = decode_button_press();
     uint32_t now = HAL_GetTick();
 
@@ -1468,7 +1463,7 @@ void Screen_HandleSwitches(void)
     }
 
     /* CONTINUOUS UP (HOLD) */
-    if (sw_up && sw_long_issued[2])
+    if (sw_up && sw_long_issued[2] && ui != UI_COUNTDOWN_EDIT_MIN)
     {
         if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
         {
@@ -1490,7 +1485,7 @@ void Screen_HandleSwitches(void)
             }
             else
             {
-                /* Any edit screen (incl. countdown edit) */
+                /* Any edit screen (excluding countdown edit) */
                 increase_edit_value();
             }
 
@@ -1499,7 +1494,7 @@ void Screen_HandleSwitches(void)
     }
 
     /* CONTINUOUS DOWN (HOLD) */
-    if (sw_down && sw_long_issued[3])
+    if (sw_down && sw_long_issued[3] && ui != UI_COUNTDOWN_EDIT_MIN)
     {
         if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
         {
@@ -1521,12 +1516,54 @@ void Screen_HandleSwitches(void)
             }
             else
             {
-                /* Any edit screen (incl. countdown edit) */
+                /* Any edit screen (excluding countdown edit) */
                 decrease_edit_value();
             }
 
             screenNeedsRefresh = true;
         }
+    }
+
+    /* ============================================
+       COUNTDOWN EDIT: single DOWN button, press & hold
+       - Entered via BTN_DOWN_LONG from DASH.
+       - While DOWN is held: increase value periodically.
+       - On release of DOWN: exit back to DASH.
+       ============================================ */
+    if (ui == UI_COUNTDOWN_EDIT_MIN)
+    {
+        if (sw_down)
+        {
+            /* first press → immediate step + start repeat timer */
+            if (!prev_sw_down_edit)
+            {
+                last_repeat_time = now;
+                increase_edit_value();
+                screenNeedsRefresh = true;
+            }
+            else if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
+            {
+                /* continuous increase while holding */
+                last_repeat_time = now;
+                increase_edit_value();
+                screenNeedsRefresh = true;
+            }
+        }
+
+        /* detect release → leave edit mode */
+        if (!sw_down && prev_sw_down_edit)
+        {
+            ui = UI_DASH;
+            screenNeedsRefresh = true;
+        }
+
+        prev_sw_down_edit = sw_down;
+        return;
+    }
+    else
+    {
+        /* not in countdown edit → reset tracking flag */
+        prev_sw_down_edit = false;
     }
 
     if (b == BTN_NONE) return;
@@ -1548,7 +1585,7 @@ void Screen_HandleSwitches(void)
          ui == UI_TWIST_EDIT_ON_M ||
          ui == UI_TWIST_EDIT_OFF_H ||
          ui == UI_TWIST_EDIT_OFF_M ||
-         ui == UI_COUNTDOWN_EDIT_MIN ||   /* <<< countdown edit included */
+         /* NOTE: UI_COUNTDOWN_EDIT_MIN is handled separately above */
          (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY) ||
          ui == UI_DEVSET_EDIT_DATE ||
          ui == UI_DEVSET_EDIT_TIME ||
@@ -1584,11 +1621,6 @@ void Screen_HandleSwitches(void)
                     ui == UI_TIMER_EDIT_GAP)
                 {
                     menu_select();
-                }
-                /* COUNTDOWN EDIT — finish and return to DASH */
-                else if (ui == UI_COUNTDOWN_EDIT_MIN)
-                {
-                    ui = UI_DASH;
                 }
                 /* SETTINGS from Device Setup: apply and go back to DEVSET menu */
                 else if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_MAXRUN)
@@ -1690,12 +1722,7 @@ void Screen_HandleSwitches(void)
                 break;
 
             case BTN_RESET:
-                if (ui == UI_COUNTDOWN_EDIT_MIN)
-                {
-                    /* Cancel countdown edit and return to DASH */
-                    ui = UI_DASH;
-                }
-                else if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY)
+                if (ui >= UI_SETTINGS_GAP && ui <= UI_SETTINGS_FACTORY)
                 {
                     ui = UI_DEVSET_MENU;
                 }

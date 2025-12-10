@@ -1261,7 +1261,7 @@ static void auto_tick(void)
         case AUTO_DRY_CHECK:
             ModelHandle_CheckDryRun();
 
-            if (senseDryRun)   /* DRY → stop → gap wait */
+            if (!senseDryRun)   /* DRY → stop → gap wait */
             {
                 stop_motor();
                 autoState    = AUTO_OFF_WAIT;

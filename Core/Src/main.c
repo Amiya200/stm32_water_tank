@@ -175,6 +175,7 @@ int main(void)
     /* Infinite loop */
     while (1)
     {
+
         /* == Sensor Updates == */
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
