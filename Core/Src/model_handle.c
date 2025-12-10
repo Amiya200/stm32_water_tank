@@ -809,6 +809,11 @@ void ModelHandle_StopAllModesAndMotor(void)
  *  Voltage <= 0.01f → WATER PRESENT → senseDryRun = false
  *  Voltage >  0.01f → DRY          → senseDryRun = true
  ***************************************************************/
+/***************************************************************
+ *  DRY-RUN SENSOR CHECK
+ *  Voltage <= 0.01f → WATER PRESENT → senseDryRun = false
+ *  Voltage >  0.01f → DRY          → senseDryRun = true
+ ***************************************************************/
 void ModelHandle_CheckDryRun(void)
 {
     /* Manual, Semi-Auto, Countdown ignore dry-run feature */
@@ -820,11 +825,12 @@ void ModelHandle_CheckDryRun(void)
 
     float v = adcData.voltages[0];
 
-    if (v > 0.01f)
+    if (v < 0.01f)
         senseDryRun = true;   /* DRY */
     else
         senseDryRun = false;  /* WATER OK */
 }
+
 
 /***************************************************************
  *  SOFT DRY-RUN FSM
@@ -858,11 +864,13 @@ void ModelHandle_SoftDryRunHandler(void)
         }
     }
 
+    /* Always update raw sensor flag first */
+    ModelHandle_CheckDryRun();
+
     if (effective_gap_s == 0)
     {
-        /* Dry-run fully disabled */
-        senseDryRun = false;
-        return;
+        /* Dry-run FSM disabled, but flag still reflects sensor */
+        return;    // no timing / auto-start-stop, just keep senseDryRun as-is
     }
 
     dryOffGapMs = (uint32_t)effective_gap_s * 1000UL;
@@ -876,7 +884,7 @@ void ModelHandle_SoftDryRunHandler(void)
         dryConfirming   = false;
         dryDeadline     = 0;
         dryConfirmStart = 0;
-        senseDryRun     = false;
+        // senseDryRun already set by ModelHandle_CheckDryRun()
         return;
     }
 
