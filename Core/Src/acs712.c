@@ -3,13 +3,15 @@
 
 float g_currentA = 0.0f;
 float g_voltageV = 0.0f;
-
+float g_powerW;
 static ADC_HandleTypeDef *hAdc;
 float adc_rms;
 static float acs_zero_offset = 0.0f;
 static float zmpt_offset = 1.65f;
 static float last_voltage = 0.0f;
 static float last_current = 0.0f;
+static float current_zero_correction = 0.0f;
+#define ACS712_GAIN_CORR  1.25f
 
 /* -------------------------------------------------------
    ADC READER
@@ -43,6 +45,15 @@ static void zmpt_calibrate_offset(void)
 
     zmpt_offset = sum / ZMPT_OFFSET_SAMPLES;
 }
+void ACS712_ZeroCurrentCalibrate(void)
+{
+    float sum = 0.0f;
+
+    for (int i = 0; i < 200; i++)
+        sum += ACS712_ReadCurrent();
+
+    current_zero_correction = sum / 200.0f;
+}
 
 /* -------------------------------------------------------
    OFFSET CALIBRATION (Current)
@@ -63,11 +74,15 @@ void ACS712_Init(ADC_HandleTypeDef *hadc)
 {
     hAdc = hadc;
 
-    HAL_Delay(300);
+    HAL_Delay(500);
 
-    zmpt_calibrate_offset();
+    /* VERY IMPORTANT:
+       NO LOAD must be connected here
+    */
     acs_calibrate_offset();
+    zmpt_calibrate_offset();
 }
+
 
 /* -------------------------------------------------------
    TRUE RMS VOLTAGE READ (ZMPT101B)
@@ -116,14 +131,57 @@ float ZMPT_ReadVoltageRMS(void)
 -------------------------------------------------------- */
 float ACS712_ReadCurrent(void)
 {
-    float v = adc_read(ACS712_ADC_CHANNEL);
-    float diff = v - acs_zero_offset;
+    const uint16_t SAMPLES = 2000;
 
-    float amp = diff / ACS712_SENS_30A;
+    float sum_dc = 0.0f;
+    float sum_sq = 0.0f;
 
-    last_current =
-        last_current * (1.0f - ACS712_FILTER_ALPHA) +
-        (amp * ACS712_FILTER_ALPHA);
+    /* -------- ADC sampling -------- */
+    for (uint16_t i = 0; i < SAMPLES; i++)
+    {
+        float v = adc_read(ACS712_ADC_CHANNEL);
+        sum_dc += v;
+
+        float ac = v - acs_zero_offset;
+        sum_sq += ac * ac;
+    }
+
+    /* -------- Adaptive offset correction --------
+       Tracks slow temperature / supply drift
+       Does NOT follow AC waveform
+    */
+    float new_offset = sum_dc / SAMPLES;
+    acs_zero_offset = (acs_zero_offset * 0.995f) + (new_offset * 0.005f);
+
+    /* -------- True RMS calculation -------- */
+    float adc_rms = sqrtf(sum_sq / SAMPLES);
+
+    /* -------- Convert to Amperes -------- */
+    float current = (adc_rms / ACS712_SENS_30A) * ACS712_GAIN_CORR;
+
+
+    /* -------- Remove zero-load bias --------
+       Your system shows ~0.7 A offset at no load
+       This removes it permanently
+    */
+    static float zero_current_corr = 0.0f;
+    static uint8_t zero_cal_done = 0;
+
+    if (!zero_cal_done)
+    {
+        /* Auto-zero once at startup (NO LOAD required) */
+        zero_current_corr = current;
+        zero_cal_done = 1;
+    }
+
+    current -= zero_current_corr;
+
+    /* -------- Deadband (noise kill) -------- */
+    if (current < 0.05f)
+        current = 0.0f;
+
+    /* -------- Output smoothing -------- */
+    last_current = (last_current * 0.87f) + (current * 0.05f);
 
     g_currentA = last_current;
     return g_currentA;
@@ -136,4 +194,5 @@ void ACS712_Update(void)
 {
     ACS712_ReadCurrent();
     ZMPT_ReadVoltageRMS();
+    g_powerW = g_currentA * g_voltageV;
 }

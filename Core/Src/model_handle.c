@@ -669,6 +669,7 @@ static inline uint32_t get_load_lock_duration_ms(void)
     return (uint32_t)sys.retry_count * 60UL * 1000UL;
 }
 
+
 void ModelHandle_CheckLoadFault(void)
 {
     float    I  = g_currentA;
@@ -677,12 +678,12 @@ void ModelHandle_CheckLoadFault(void)
     float    ul = ModelHandle_GetUnderloadLimit();
     uint16_t uv = ModelHandle_GetUnderVolt();
     uint16_t ov = ModelHandle_GetOverVolt();
-
+    senseOverUnderVolt = false;
     uint32_t now = HAL_GetTick();
 
     /* Enable / disable protections based on configured values */
     bool overloadEnabled  = (ol > 0.1f);
-    bool underloadEnabled = (ul > 0.1f);
+    bool underloadEnabled = (ul < 0.001f);
     bool voltEnabled      = (uv > 0 || ov > 0);
 
     bool overload  = overloadEnabled  && (I > ol);
@@ -1774,7 +1775,7 @@ void ModelHandle_SetOverLoad(bool on)
     if (!on)
         sys.overload = 0.0f;
     else if (sys.overload <= 0.1f)
-        sys.overload = 6.0f;   /* sensible default */
+        sys.overload = 9.0f;   /* sensible default */
 }
 
 void ModelHandle_SetOverUnderVolt(bool on)
