@@ -27,8 +27,8 @@ typedef struct {
     uint8_t  retry_count;
     uint16_t uv_limit;
     uint16_t ov_limit;
-    float    overload;
-    float    underload;
+    int16_t  overload;    // ✅ Amperes
+    int16_t  underload;   // ✅ Amperes
     uint16_t maxrun_min;
 } SystemSettings;
 

@@ -181,7 +181,9 @@ float ACS712_ReadCurrent(void)
         current = 0.0f;
 
     /* -------- Output smoothing -------- */
-    last_current = (last_current * 0.87f) + (current * 0.05f);
+    last_current = (last_current * 0.878f) + (current * 0.054f);
+
+
 
     g_currentA = last_current;
     return g_currentA;

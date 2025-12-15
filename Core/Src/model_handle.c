@@ -251,20 +251,23 @@ void ModelHandle_SetUserSettings(
     uint8_t  retry,
     uint16_t uv,
     uint16_t ov,
-    float    overload,
-    float    underload,
-    uint16_t maxrun_min
-){
-    sys.gap_time_s  = gap_s;       // Dry-run gap (0 = disable dry-run)
-    sys.retry_count = retry;       // Testing Gap (min), 0 = disabled
-    sys.uv_limit    = uv;          // Low volt limit (0 = disabled)
-    sys.ov_limit    = ov;          // High volt limit (0 = disabled)
-    sys.overload    = overload;    // Overload current (A) (0 = disabled)
-    sys.underload   = underload;   // Underload current (A) (0 = disabled)
-    sys.maxrun_min  = maxrun_min;  // Global max run (0 = disabled)
+    int16_t  overload,
+    int16_t  underload,
+    uint16_t maxrun
+)
+{
+    sys.gap_time_s  = gap_s;
+    sys.retry_count = retry;
+    sys.uv_limit    = uv;
+    sys.ov_limit    = ov;
+    sys.overload    = overload;   // ✅ REQUIRED
+    sys.underload   = underload;  // ✅ REQUIRED
+    sys.maxrun_min  = maxrun;
 
-    ModelHandle_SaveSettingsToEEPROM();
+    EEPROM_WriteBuffer(EE_ADDR_OVERLOAD,  (uint8_t*)&sys.overload,  sizeof(int16_t));
+    EEPROM_WriteBuffer(EE_ADDR_UNDERLOAD, (uint8_t*)&sys.underload, sizeof(int16_t));
 }
+
 
 /* Full factory reset for settings (as per document defaults) */
 void ModelHandle_FactoryReset(void)

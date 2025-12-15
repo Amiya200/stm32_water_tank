@@ -927,7 +927,6 @@ static void apply_auto_settings(void)
 /* Apply current Device Setup core settings into model */
 static void apply_settings_core(void)
 {
-    /* Convert UI dry-run minutes to seconds; 0 = disabled */
     uint16_t gap_s = 0;
     if (edit_settings_gap_s > 0)
         gap_s = (uint16_t)(edit_settings_gap_s * 60U);
@@ -937,11 +936,13 @@ static void apply_settings_core(void)
         edit_settings_retry,
         edit_settings_uv,
         edit_settings_ov,
-        edit_settings_ol,
-        edit_settings_ul,
+        edit_settings_ol,   // int16
+        edit_settings_ul,   // int16
         edit_settings_maxrun
     );
 }
+
+
 
 /***************************************************************
  *  SETTINGS FLOW — START (Device Setup)
@@ -976,11 +977,17 @@ static void start_settings_edit_flow(void)
         if (edit_settings_ov > 300) edit_settings_ov = 300;
     }
 
-    edit_settings_ol      = ModelHandle_GetOverloadLimit();
-    if (edit_settings_ol > 25.0f) edit_settings_ol = 25.0f;
+    edit_settings_ol = (int)(ModelHandle_GetOverloadLimit() + 0.5f);
 
-    edit_settings_ul      = ModelHandle_GetUnderloadLimit();
-    if (edit_settings_ul > 10.0f) edit_settings_ul = 10.0f;
+    if (edit_settings_ol < 0)  edit_settings_ol = 0;
+    if (edit_settings_ol > 25) edit_settings_ol = 25;
+
+
+    edit_settings_ul = (int)(ModelHandle_GetUnderloadLimit() + 0.5f);
+
+    if (edit_settings_ul < 0)  edit_settings_ul = 0;
+    if (edit_settings_ul > 10) edit_settings_ul = 10;
+
 
     edit_settings_maxrun  = ModelHandle_GetMaxRunTime();
     if (edit_settings_maxrun > 300) edit_settings_maxrun = 300;

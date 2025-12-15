@@ -6,10 +6,10 @@
 #define EE_ADDR_RETRY_COUNT     0x02   // uint8
 #define EE_ADDR_UV_LIMIT        0x03   // uint16
 #define EE_ADDR_OV_LIMIT        0x05   // uint16
-#define EE_ADDR_OVERLOAD        0x07   // float (4 bytes)
-#define EE_ADDR_UNDERLOAD       0x0B   // float (4 bytes)
-#define EE_ADDR_MAXRUN          0x0F   // uint16
-#define EE_ADDR_SIGNATURE       0x20   // uint16 (EEPROM valid marker)
+#define EE_ADDR_OVERLOAD        0x07   // int16 (2 bytes)
+#define EE_ADDR_UNDERLOAD       0x09   // int16 (2 bytes)
+#define EE_ADDR_MAXRUN          0x0B   // uint16 (2 bytes)
+#define EE_ADDR_SIGNATURE       0x20
 #define SETTINGS_SIGNATURE      0x55AA
 
 HAL_StatusTypeDef EEPROM_WriteByte(uint16_t addr, uint8_t data);
