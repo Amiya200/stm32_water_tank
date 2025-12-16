@@ -111,29 +111,25 @@ void UART_HandleCommand(const char *pkt)
         ack("MANUAL_OK");
     }
     /* ---- AUTO ---- */
-    else if (!strcmp(cmd, "AUTO"))
-    {
-        char *state = next_token(&ctx);
-        if (!state) { err("PARAM"); return; }
 
-        if (!strcmp(state, "ON"))
-        {
-//            clear_all_modes();
-            autoActive = true;
-//            start_motor();      // Auto mode immediately runs dry-run FSM
-            ack("AUTO_ON");
+    else if (!strcmp(cmd, "AUTO")) {
+        char *s = next_token(&ctx);
+        if (!s) { err("ERR:AUTO"); return; }
+
+        if (!strcmp(s, "ON")) {
+            ModelHandle_StartAuto(
+                ModelHandle_GetGapTime(),
+                ModelHandle_GetMaxRunTime(),
+                ModelHandle_GetRetryCount()
+            );
+        } else {
+            ModelHandle_StopAllModesAndMotor();
         }
-        else if (!strcmp(state, "OFF"))
-        {
-            autoActive = false;
-//            stop_motor();
-            ack("AUTO_OFF");
-        }
-        else
-        {
-            err("FORMAT");
-        }
+
+        ack(!strcmp(s, "ON") ? "AUTO_ON" : "AUTO_OFF");
     }
+
+
 
 
     /* ---- TWIST ---- */
@@ -259,6 +255,86 @@ void UART_HandleCommand(const char *pkt)
             ModelHandle_StopCountdown();
             ack("COUNTDOWN_OFF");
         } else err("FORMAT");
+    }
+
+    /* ================= SETTINGS (CORRECT & SAFE) ================= */
+    else if (!strcmp(cmd, "SETTINGS"))
+    {
+        uint16_t dryRun  = 0;
+        uint16_t maxRun  = 0;
+        uint16_t lowV    = 190;
+        uint16_t highV   = 270;
+
+        int16_t  overLoad_i  = 0;
+        int16_t  underLoad_i = 0;
+
+        uint8_t  retry       = 0;
+        uint8_t  pwrRestore  = 0;
+
+        bool gotOverLoad  = false;
+        bool gotUnderLoad = false;
+
+        char *save;
+        char *kv = strtok_r(ctx, ":", &save);   // token stream
+
+        while (kv)
+        {
+            if      (sscanf(kv, "dryRunGap=%hu",  &dryRun)  == 1) {}
+            else if (sscanf(kv, "testingGap=%hhu",&retry)   == 1) {}
+            else if (sscanf(kv, "maxRun=%hu",     &maxRun)  == 1) {}
+            else if (sscanf(kv, "lowVolt=%hu",    &lowV)    == 1) {}
+            else if (sscanf(kv, "highVolt=%hu",   &highV)   == 1) {}
+
+            else if (sscanf(kv, "overLoad=%hd",   &overLoad_i) == 1)
+            {
+                gotOverLoad = true;
+            }
+            else if (sscanf(kv, "underLoad=%hd",  &underLoad_i) == 1)
+            {
+                gotUnderLoad = true;
+            }
+            else if (sscanf(kv, "powerRestore=%hhu", &pwrRestore) == 1) {}
+
+            kv = strtok_r(NULL, ":", &save);
+        }
+
+        /* ================== CLAMP VALUES ================== */
+
+        if (gotOverLoad)
+        {
+            if (overLoad_i < 0)  overLoad_i = 0;
+            if (overLoad_i > 25) overLoad_i = 25;   // max 25A
+        }
+
+        if (gotUnderLoad)
+        {
+            if (underLoad_i < 0)  underLoad_i = 0;
+            if (underLoad_i > 25) underLoad_i = 25;
+        }
+
+        /* ================== APPLY SETTINGS ================== */
+
+        ModelHandle_SetUserSettings(
+            dryRun * 60,   // minutes → seconds
+            retry,
+            lowV,
+            highV,
+            gotOverLoad  ? overLoad_i  : ModelHandle_GetOverloadLimit(),
+            gotUnderLoad ? underLoad_i : ModelHandle_GetUnderloadLimit(),
+            maxRun
+        );
+
+        ModelHandle_SetPowerRestoreMode(pwrRestore);
+
+        /* ================== ACK (FIXED) ================== */
+
+        char dbg[64];
+        snprintf(dbg, sizeof(dbg),
+                 "ACK:UL=%d OL=%d",
+                 gotUnderLoad ? underLoad_i : ModelHandle_GetUnderloadLimit(),
+                 gotOverLoad  ? overLoad_i  : ModelHandle_GetOverloadLimit());
+
+        UART_TransmitPacket(dbg);
     }
 
     /* ---- STATUS ---- */
