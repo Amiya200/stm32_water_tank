@@ -20,6 +20,20 @@ typedef struct {
     uint8_t motorStatus;
     char mode[12];
 } StatusSnapshot;
+static uint8_t parseDays(const char *daysStr)
+{
+    uint8_t mask = 0;
+
+    if (strstr(daysStr, "mon")) mask |= (1 << 0);
+    if (strstr(daysStr, "tue")) mask |= (1 << 1);
+    if (strstr(daysStr, "wed")) mask |= (1 << 2);
+    if (strstr(daysStr, "thu")) mask |= (1 << 3);
+    if (strstr(daysStr, "fri")) mask |= (1 << 4);
+    if (strstr(daysStr, "sat")) mask |= (1 << 5);
+    if (strstr(daysStr, "sun")) mask |= (1 << 6);
+
+    return mask;
+}
 
 static StatusSnapshot lastSent = {255, 255, "INIT"};
 
@@ -164,66 +178,80 @@ void UART_HandleCommand(const char *pkt)
         }
     }
 
-    /* ---- TIMER (multi-slot support) ---- */
+    /* ---- TIMER (slot-based) ---- */
     else if (!strcmp(cmd, "TIMER")) {
+
         char *sub = next_token(&ctx);
         if (sub && !strcmp(sub, "SET")) {
-            uint8_t slotIndex = 0;
-            bool ok = true;
 
-            // Loop through multiple timer packets in the input buffer
-            while (slotIndex < 5) {
-                char *h1s = next_token(&ctx);
-                char *m1s = next_token(&ctx);
-                char *h2s = next_token(&ctx);
-                char *m2s = next_token(&ctx);
+            // Parse the command parameters
+            char *slotStr = next_token(&ctx);    // Slot number
+            char *daysStr = next_token(&ctx);    // Days (mon,tue,wed,...)
+            char *h1s = next_token(&ctx);        // On Hour
+            char *m1s = next_token(&ctx);        // On Minute
+            char *h2s = next_token(&ctx);        // Off Hour
+            char *m2s = next_token(&ctx);        // Off Minute
+            char *gapStr = next_token(&ctx);     // Gap Minutes
 
-                if (!h1s || !m1s || !h2s || !m2s)
-                    break; // no more slots
-
-                int h1 = atoi(h1s);
-                int m1 = atoi(m1s);
-                int h2 = atoi(h2s);
-                int m2 = atoi(m2s);
-
-                if (h1 < 0 || h1 > 23 || h2 < 0 || h2 > 23 ||
-                    m1 < 0 || m1 > 59 || m2 < 0 || m2 > 59)
-                {
-                    ok = false;
-                    break;
-                }
-
-                timerSlots[slotIndex].enabled = true;
-                timerSlots[slotIndex].onHour  = h1;
-                timerSlots[slotIndex].onMinute = m1;
-                timerSlots[slotIndex].offHour  = h2;
-                timerSlots[slotIndex].offMinute = m2;
-                slotIndex++;
-            }
-
-            // Disable remaining slots
-            for (; slotIndex < 5; slotIndex++) {
-                timerSlots[slotIndex].enabled = false;
-            }
-
-            if (ok){
-            	ack("TIMER_OK");
-            	ModelHandle_StartTimer();
-            }
-
-
-            else
+            if (!slotStr || !daysStr || !h1s || !m1s || !h2s || !m2s || !gapStr) {
                 err("TIMER_FORMAT");
+                return;
+            }
+
+            // Convert each part to integers
+            int slot = atoi(slotStr);
+            int h1 = atoi(h1s); // On Hour
+            int m1 = atoi(m1s); // On Minute
+            int h2 = atoi(h2s); // Off Hour
+            int m2 = atoi(m2s); // Off Minute
+            int gap = atoi(gapStr); // Gap Minutes
+
+            // Validate the parsed values
+            if (slot < 1 || slot > 5 ||
+                h1 < 0 || h1 > 23 ||
+                m1 < 0 || m1 > 59 ||
+                h2 < 0 || h2 > 23 ||
+                m2 < 0 || m2 > 59 ||
+                gap < 0 || gap > 60)  // Ensure gap is within 0-60 range
+            {
+                err("TIMER_RANGE");
+                return;
+            }
+
+            // Get the slot index (0-based)
+            uint8_t idx = slot - 1;
+
+            // Store the parsed values into the corresponding TimerSlot
+            timerSlots[idx].enabled     = true;
+            timerSlots[idx].dayMask     = parseDays(daysStr);  // Parse days into a bitmask
+            timerSlots[idx].onHour      = h1;
+            timerSlots[idx].onMinute    = m1;
+            timerSlots[idx].offHour     = h2;
+            timerSlots[idx].offMinute   = m2;
+            timerSlots[idx].gapMinutes  = gap;  // Store the gapMinutes in the TimerSlot
+
+            // Start the timer (or whatever functionality you want to trigger)
+            ModelHandle_StartTimer();
+
+            // Send acknowledgment
+            ack("TIMER_OK");
         }
 
         else if (sub && !strcmp(sub, "STOP")) {
-            for (int i=0; i<5; i++)
+            // Disable all timers
+            for (int i = 0; i < 5; i++)
                 timerSlots[i].enabled = false;
+
+            // Stop all modes and motor
             ModelHandle_StopAllModesAndMotor();
+
+            // Acknowledge stop
             ack("TIMER_STOP");
         }
-
-        else err("FORMAT");
+        else {
+            // If the format is invalid
+            err("FORMAT");
+        }
     }
 
 
