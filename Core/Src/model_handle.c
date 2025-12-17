@@ -109,6 +109,11 @@ typedef struct {
     bool    motor_on;
     uint8_t power_restore_mode; /* 0=YES, 1=NO, 2=LAST */
 } ModeState;
+#define EE_ADDR_TIMER_SLOT_1  0x1000  // Address for Timer Slot 1
+#define EE_ADDR_TIMER_SLOT_2  0x1040  // Address for Timer Slot 2
+#define EE_ADDR_TIMER_SLOT_3  0x1080  // Address for Timer Slot 3
+#define EE_ADDR_TIMER_SLOT_4  0x10C0  // Address for Timer Slot 4
+#define EE_ADDR_TIMER_SLOT_5  0x1100  // Address for Timer Slot 5
 
 ModeState modeState;
 
@@ -217,6 +222,24 @@ void ModelHandle_LoadModeState(void)
         if (modeState.motor_on) start_motor();
     } else { // 2 = LAST: modes only, motor stays OFF
         stop_motor();
+    }
+}
+void ModelHandle_SaveTimerToEEPROM(void) {
+    for (int i = 0; i < 5; i++) {
+        uint16_t addr = EE_ADDR_TIMER_SLOT_1 + (i * sizeof(TimerSlot));  // Adjust address for each slot
+        HAL_StatusTypeDef status = EEPROM_WriteBuffer(addr, (uint8_t*)&timerSlots[i], sizeof(TimerSlot));
+        if (status != HAL_OK) {
+            printf("Error saving Timer Slot %d to EEPROM\n", i + 1);
+        }
+    }
+}
+void ModelHandle_LoadTimerFromEEPROM(void) {
+    for (int i = 0; i < 5; i++) {
+        uint16_t addr = EE_ADDR_TIMER_SLOT_1 + (i * sizeof(TimerSlot));  // Adjust address for each slot
+        HAL_StatusTypeDef status = EEPROM_ReadBuffer(addr, (uint8_t*)&timerSlots[i], sizeof(TimerSlot));
+        if (status != HAL_OK) {
+            printf("Error loading Timer Slot %d from EEPROM\n", i + 1);
+        }
     }
 }
 
@@ -1145,7 +1168,7 @@ void ModelHandle_StartTimer(void)
 {
     clear_all_modes();
     timerActive = true;
-
+    ModelHandle_SaveTimerToEEPROM();
     ModelHandle_TimerRecalculateNow();
 }
 

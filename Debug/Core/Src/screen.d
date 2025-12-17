@@ -31,9 +31,9 @@ Core/Src/screen.o: ../Core/Src/screen.c ../Core/Inc/screen.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h \
- ../Core/Inc/adc.h ../Core/Inc/model_handle.h ../Core/Inc/lcd_i2c.h \
- ../Core/Inc/switches.h ../Core/Inc/model_handle.h ../Core/Inc/adc.h \
- ../Core/Inc/rtc_i2c.h
+ ../Core/Inc/adc.h ../Core/Inc/model_handle.h ../Core/Inc/eeprom_i2c.h \
+ ../Core/Inc/lcd_i2c.h ../Core/Inc/switches.h ../Core/Inc/model_handle.h \
+ ../Core/Inc/adc.h ../Core/Inc/rtc_i2c.h
 ../Core/Inc/screen.h:
 ../Core/Inc/lcd_i2c.h:
 ../Core/Inc/main.h:
@@ -70,6 +70,7 @@ Core/Src/screen.o: ../Core/Src/screen.c ../Core/Inc/screen.h \
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h:
 ../Core/Inc/adc.h:
 ../Core/Inc/model_handle.h:
+../Core/Inc/eeprom_i2c.h:
 ../Core/Inc/lcd_i2c.h:
 ../Core/Inc/switches.h:
 ../Core/Inc/model_handle.h:

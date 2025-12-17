@@ -439,7 +439,6 @@ static void show_devset_menu(void)
     lcd_line0(l0);
     lcd_line1(l1);
 }
-
 /***************************************************************
  *  TIMER MODE — TIMER SELECT
  ***************************************************************/
@@ -592,6 +591,77 @@ static void show_timer_summary(void)
     else
         lcd_line1("Disabled    Next>");
 }
+
+/***************************************************************
+ *  Update Timer Data and Save to EEPROM
+ ***************************************************************/
+void ModelHandle_UpdateTimerFromScreen(void) {
+    // Update the current slot with the user input
+    timerSlots[currentSlot].onHour = edit_on_h;
+    timerSlots[currentSlot].onMinute = edit_on_m;
+    timerSlots[currentSlot].offHour = edit_off_h;
+    timerSlots[currentSlot].offMinute = edit_off_m;
+    timerSlots[currentSlot].gapMinutes = edit_gap_min;
+    timerSlots[currentSlot].dayMask = edit_day_mask;
+    timerSlots[currentSlot].enabled = edit_slot_enabled;
+
+    // Save the updated timer settings to EEPROM
+    ModelHandle_SaveTimerToEEPROM();
+}
+
+/***************************************************************
+ *  Timer Mode — Selecting Slot
+ ***************************************************************/
+//static void show_timer_slot_select(void)
+//{
+//    lcd_clear();
+//
+//    /* Map page → timer indexes */
+//    int item1 = timer_page * 2;
+//    int item2 = item1 + 1;
+//
+//    char l0[17], l1[17];
+//
+//    /* Line0 */
+//    if (item1 == 5) {
+//        snprintf(l0, sizeof(l0), "%c Back",
+//                 (currentSlot == 5 ? '>' : ' '));
+//    }
+//    else {
+//        snprintf(l0, sizeof(l0), "%c Timer %d",
+//                 (currentSlot == item1 ? '>' : ' '),
+//                 item1 + 1);
+//    }
+//
+//    /* Line1 */
+//    if (item2 <= 5)
+//    {
+//        if (item2 == 5) {
+//            snprintf(l1, sizeof(l1), "%c Back",
+//                     (currentSlot == 5 ? '>' : ' '));
+//        } else {
+//            snprintf(l1, sizeof(l1), "%c Timer %d",
+//                     (currentSlot == item2 ? '>' : ' '),
+//                     item2 + 1);
+//        }
+//    }
+//    else {
+//        snprintf(l1, sizeof(l1), "                ");
+//    }
+//
+//    lcd_line0(l0);
+//    lcd_line1(l1);
+//}
+
+/***************************************************************
+ *  Main Timer Edit Flow (Handle Confirmation for Saving)
+ ***************************************************************/
+/* Call this after the user confirms the edit */
+void ModelHandle_SaveTimerData(void) {
+    // After the user confirms changes, save the timer slot data to EEPROM
+    ModelHandle_UpdateTimerFromScreen();
+}
+
 
 /***************************************************************
  *  AUTO MODE (kept)

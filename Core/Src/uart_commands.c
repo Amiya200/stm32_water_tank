@@ -146,38 +146,6 @@ void UART_HandleCommand(const char *pkt)
 
 
 
-    /* ---- TWIST ---- */
-    else if (!strcmp(cmd, "TWIST"))
-    {
-        char *sub = next_token(&ctx);
-
-        if (sub && !strcmp(sub, "SET"))
-        {
-            uint16_t onDur  = atoi(next_token(&ctx));
-            uint16_t offDur = atoi(next_token(&ctx));
-
-            uint8_t onH  = atoi(next_token(&ctx));
-            uint8_t onM  = atoi(next_token(&ctx));
-            uint8_t offH = atoi(next_token(&ctx));
-            uint8_t offM = atoi(next_token(&ctx));
-
-            // Ignore days (skip tokens until NULL)
-            while (next_token(&ctx) != NULL);
-
-            ModelHandle_StartTwist(onDur, offDur, onH, onM, offH, offM);
-            ack("TWIST_OK");
-        }
-        else if (sub && !strcmp(sub, "STOP"))
-        {
-            ModelHandle_StopTwist();
-            ack("TWIST_STOP");
-        }
-        else
-        {
-            err("FORMAT");
-        }
-    }
-
     /* ---- TIMER (slot-based) ---- */
     else if (!strcmp(cmd, "TIMER")) {
 

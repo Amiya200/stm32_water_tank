@@ -154,7 +154,7 @@ int main(void)
     ModelHandle_LoadSettingsFromEEPROM();
     ModelHandle_LoadAutoSettings();   // <-- NEW: load AUTO gap/maxrun/retry
     HAL_Delay(70);
-
+    ModelHandle_LoadTimerFromEEPROM();
     /* Load last mode / power-restore state */
     ModelHandle_LoadModeState();
     HAL_Delay(70);

@@ -32,7 +32,7 @@ Core/Src/adc.o: ../Core/Src/adc.c ../Core/Inc/adc.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h \
  ../Core/Inc/main.h ../Core/Inc/uart.h ../Core/Inc/main.h \
  ../Core/Inc/global.h ../Core/Inc/led.h ../Core/Inc/model_handle.h \
- ../Core/Inc/adc.h
+ ../Core/Inc/adc.h ../Core/Inc/eeprom_i2c.h
 ../Core/Inc/adc.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h:
 ../Core/Inc/stm32f1xx_hal_conf.h:
@@ -72,3 +72,4 @@ Core/Src/adc.o: ../Core/Src/adc.c ../Core/Inc/adc.h \
 ../Core/Inc/led.h:
 ../Core/Inc/model_handle.h:
 ../Core/Inc/adc.h:
+../Core/Inc/eeprom_i2c.h:
