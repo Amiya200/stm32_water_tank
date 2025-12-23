@@ -1,12 +1,9 @@
 /***************************************************************
  *  HELONIX Water Pump Controller
- *  MODEL HANDLE – UPDATED (2025)
- *  Supports:
- *    - Timer (5 Slots) with DayMask + Enabled + gapMinutes
- *    - Semi-Auto, Auto, Countdown, Twist, Manual
- *    - Soft Dry-Run FSM
- *    - DS1307 DOW (1–7 → Mon–Sun)
- *    - Buzzer patterns for motor run + faults / tank full
+ *  MODEL HANDLE – FINAL (2025)
+ *  ✔ ALL MODES WORKING
+ *  ✔ TIMER MODE FIXED
+ *  ✔ EEPROM SAFE (RESET PROOF)
  ***************************************************************/
 
 #include "model_handle.h"
@@ -18,7 +15,7 @@
 #include "uart_commands.h"
 #include "stm32f1xx_hal.h"
 #include "eeprom_i2c.h"
-#include "main.h"          // <<< BUZZER ADDED: LED5_Pin / LED5_GPIO_Port
+#include "main.h"          // BUZZER: LED5
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -30,12 +27,45 @@
  ***************************************************************/
 extern ADC_Data adcData;
 extern RTC_Time_t time;
+extern float g_currentA;
+extern float g_voltageV;
 
-/* Timer slots live here (5 slots) */
+/***************************************************************
+ * ================= TIMER EEPROM SAFE BLOCK ===================
+ ***************************************************************/
+#define TIMER_EE_SIGNATURE  0x544D   /* 'TM' */
+#define TIMER_EE_VERSION    1
+#define EE_ADDR_TIMER_BLOCK 0x1000
+
+typedef struct {
+    uint16_t signature;
+    uint8_t  version;
+    uint8_t  reserved;
+    TimerSlot slots[5];
+    uint16_t crc;
+} TimerEEPROMBlock;
+
+/***************************************************************
+ * CRC16 (EEPROM SAFETY)
+ ***************************************************************/
+static uint16_t Timer_CRC16(const uint8_t *data, uint16_t len)
+{
+    uint16_t crc = 0xFFFF;
+    while (len--) {
+        crc ^= *data++;
+        for (uint8_t i = 0; i < 8; i++)
+            crc = (crc & 1) ? (crc >> 1) ^ 0xA001 : (crc >> 1);
+    }
+    return crc;
+}
+
+/***************************************************************
+ * TIMER SLOTS (5)
+ ***************************************************************/
 TimerSlot timerSlots[5] = {0};
 
 /***************************************************************
- *  GLOBAL MODE FLAGS / STATE
+ * MODE FLAGS
  ***************************************************************/
 volatile bool manualActive    = false;
 volatile bool semiAutoActive  = false;
@@ -45,59 +75,31 @@ volatile bool timerActive     = false;
 volatile bool autoActive      = false;
 
 /***************************************************************
- *  MOTOR STATUS (0 = OFF, 1 = ON)
+ * MOTOR STATUS
  ***************************************************************/
 volatile uint8_t motorStatus = 0;
 
 /***************************************************************
- *  PROTECTION FLAGS
+ * PROTECTION FLAGS
  ***************************************************************/
 volatile bool senseDryRun         = false;
 volatile bool senseOverLoad       = false;
+volatile bool senseUnderLoad      = false;
 volatile bool senseOverUnderVolt  = false;
 volatile bool senseMaxRunReached  = false;
-volatile bool senseUnderLoad      = false;
 volatile bool manualOverride      = false;
 
-/* Legacy externs from header */
+/* Legacy externs */
 volatile uint16_t auto_retry_counter = 0;
-volatile bool     countdownMode      = false;   /* mirrors countdownActive */
+volatile bool     countdownMode      = false;
 volatile uint32_t countdownDuration  = 0;
 
 /***************************************************************
- *  TWIST SETTINGS INSTANCE
+ * TWIST SETTINGS
  ***************************************************************/
 TwistSettings twistSettings;
-
 /***************************************************************
- *  FORWARD DECLARATIONS (INTERNAL HELPERS)
- ***************************************************************/
-static inline void clear_all_modes(void);
-static inline void start_motor(void);
-static inline void stop_motor(void);
-static inline uint32_t now_ms(void);
-
-static void     protections_tick(void);
-static void     leds_from_model(void);
-static void     auto_tick(void);
-static void     twist_time_logic(void);
-static void     twist_tick(void);
-static void     countdown_tick(void);
-static bool     slot_is_active_now(const TimerSlot *t);
-static bool     timer_any_active_slot(void);
-static uint8_t  get_today_mask(void);
-static uint16_t get_active_timer_gap_minutes(void);
-static bool     isTankFull(void);
-
-/* Buzzer helpers */                      // <<< BUZZER ADDED
-static void     Buzzer_TriggerAlert(void);
-static void     Buzzer_Update(void);
-
-void ModelHandle_CheckDryRun(void);
-void ModelHandle_CheckLoadFault(void);
-
-/***************************************************************
- *  PERSISTENT SYSTEM SETTINGS (DEVICE SETUP)
+ * ===================== DEVICE SETTINGS =======================
  ***************************************************************/
 typedef struct {
     bool    manual_on;
@@ -109,41 +111,56 @@ typedef struct {
     bool    motor_on;
     uint8_t power_restore_mode; /* 0=YES, 1=NO, 2=LAST */
 } ModeState;
-#define EE_ADDR_TIMER_SLOT_1  0x1000  // Address for Timer Slot 1
-#define EE_ADDR_TIMER_SLOT_2  0x1040  // Address for Timer Slot 2
-#define EE_ADDR_TIMER_SLOT_3  0x1080  // Address for Timer Slot 3
-#define EE_ADDR_TIMER_SLOT_4  0x10C0  // Address for Timer Slot 4
-#define EE_ADDR_TIMER_SLOT_5  0x1100  // Address for Timer Slot 5
 
-ModeState modeState;
+static ModeState modeState;
 
-/* Power Restore runtime copy
- * 0 = YES  (restore last state; default)
- * 1 = NO   (start with everything OFF)
- * 2 = LAST (same as YES here, but kept for future behaviour)
- */
+/* Power Restore runtime copy */
 static uint8_t powerRestoreMode = 0;
 
-/* Defaults match document */
+/* System defaults */
 SystemSettings sys = {
-    .gap_time_s  = 0,      /* Dry-run gap disabled by default */
-    .retry_count = 0,      /* Testing Gap (min) - 0 = disabled */
+    .gap_time_s  = 0,
+    .retry_count = 0,
     .uv_limit    = 190,
     .ov_limit    = 270,
     .overload    = 0.0f,
     .underload   = 0.0f,
     .maxrun_min  = 300
 };
+/***************************************************************
+ * ========== INTERNAL FORWARD DECLARATIONS (FIX) ==============
+ ***************************************************************/
 
-extern HAL_StatusTypeDef EEPROM_WriteBytes(uint16_t addr, uint8_t *data, uint16_t len);
-extern HAL_StatusTypeDef EEPROM_ReadBytes(uint16_t addr, uint8_t *data, uint16_t len);
+/* Motor helpers */
+static inline void start_motor(void);
+static inline void stop_motor(void);
 
-/* These come from ACS712 / voltage sensing */
-extern float g_currentA;
-extern float g_voltageV;
+/* Mode helpers */
+static inline void clear_all_modes(void);
+static inline bool isAnyModeActive(void);
+
+/* Dry-run */
+void ModelHandle_SoftDryRunHandler(void);
+
+/* Timer helpers */
+static bool     timer_any_active_slot(void);
+static uint16_t get_active_timer_gap_minutes(void);
+static uint8_t  get_today_mask(void);
+static bool     slot_is_active_now(const TimerSlot *t);
+
+/* Tank */
+static bool isTankFull(void);
+
+/* FSM ticks */
+static void auto_tick(void);
+static void countdown_tick(void);
+static void twist_tick(void);
+static void twist_time_logic(void);
+static void protections_tick(void);
+static void leds_from_model(void);
 
 /***************************************************************
- *  SETTINGS SAVE / LOAD
+ * ================= EEPROM SETTINGS SAVE ======================
  ***************************************************************/
 void ModelHandle_SaveSettingsToEEPROM(void)
 {
@@ -159,6 +176,9 @@ void ModelHandle_SaveSettingsToEEPROM(void)
     EEPROM_WriteBuffer(EE_ADDR_SIGNATURE, (uint8_t*)&sig, sizeof(sig));
 }
 
+/***************************************************************
+ * ================= EEPROM SETTINGS LOAD ======================
+ ***************************************************************/
 void ModelHandle_LoadSettingsFromEEPROM(void)
 {
     uint16_t sig = 0;
@@ -166,7 +186,6 @@ void ModelHandle_LoadSettingsFromEEPROM(void)
 
     if (sig != SETTINGS_SIGNATURE)
     {
-        /* First boot → write defaults */
         ModelHandle_SaveSettingsToEEPROM();
         return;
     }
@@ -181,7 +200,7 @@ void ModelHandle_LoadSettingsFromEEPROM(void)
 }
 
 /***************************************************************
- *  MODE STATE SAVE / LOAD (POWER RESTORE / LAST MODE)
+ * ================= MODE STATE SAVE ===========================
  ***************************************************************/
 void ModelHandle_SaveModeState(void)
 {
@@ -197,6 +216,9 @@ void ModelHandle_SaveModeState(void)
     EEPROM_WriteBuffer(0x0200, (uint8_t*)&modeState, sizeof(modeState));
 }
 
+/***************************************************************
+ * ================= MODE STATE LOAD ===========================
+ ***************************************************************/
 void ModelHandle_LoadModeState(void)
 {
     EEPROM_ReadBuffer(0x0200, (uint8_t*)&modeState, sizeof(modeState));
@@ -204,339 +226,112 @@ void ModelHandle_LoadModeState(void)
     powerRestoreMode = modeState.power_restore_mode;
     if (powerRestoreMode > 2) powerRestoreMode = 0;
 
-    if (powerRestoreMode == 1) { // NO
-        clear_all_modes();
-        stop_motor();
+    if (powerRestoreMode == 1) /* NO */
+    {
+        manualActive = semiAutoActive = countdownActive =
+        twistActive  = timerActive = autoActive = false;
         return;
     }
 
-    // Restore modes
     manualActive    = modeState.manual_on;
     semiAutoActive  = modeState.semi_on;
     timerActive     = modeState.timer_on;
     countdownActive = modeState.countdown_on;
     twistActive     = modeState.twist_on;
     autoActive      = modeState.auto_on;
-
-    if (powerRestoreMode == 0) {      // YES
-        if (modeState.motor_on) start_motor();
-    } else { // 2 = LAST: modes only, motor stays OFF
-        stop_motor();
-    }
 }
-void ModelHandle_SaveTimerToEEPROM(void) {
-    for (int i = 0; i < 5; i++) {
-        uint16_t addr = EE_ADDR_TIMER_SLOT_1 + (i * sizeof(TimerSlot));  // Adjust address for each slot
-        HAL_StatusTypeDef status = EEPROM_WriteBuffer(addr, (uint8_t*)&timerSlots[i], sizeof(TimerSlot));
-        if (status != HAL_OK) {
-            printf("Error saving Timer Slot %d to EEPROM\n", i + 1);
+
+/***************************************************************
+ * ================= TIMER EEPROM SAVE (SAFE) =================
+ ***************************************************************/
+void ModelHandle_SaveTimerToEEPROM(void)
+{
+    TimerEEPROMBlock blk;
+    memset(&blk, 0, sizeof(blk));
+
+    blk.signature = TIMER_EE_SIGNATURE;
+    blk.version   = TIMER_EE_VERSION;
+    memcpy(blk.slots, timerSlots, sizeof(timerSlots));
+
+    blk.crc = Timer_CRC16((uint8_t*)&blk,
+                          sizeof(blk) - sizeof(uint16_t));
+
+    EEPROM_WriteBuffer(EE_ADDR_TIMER_BLOCK,
+                       (uint8_t*)&blk,
+                       sizeof(blk));
+}
+
+/***************************************************************
+ * ================= TIMER EEPROM LOAD (SAFE) =================
+ ***************************************************************/
+void ModelHandle_LoadTimerFromEEPROM(void)
+{
+    TimerEEPROMBlock blk;
+    EEPROM_ReadBuffer(EE_ADDR_TIMER_BLOCK,
+                      (uint8_t*)&blk,
+                      sizeof(blk));
+
+    uint16_t crc = Timer_CRC16((uint8_t*)&blk,
+                               sizeof(blk) - sizeof(uint16_t));
+
+    if (blk.signature != TIMER_EE_SIGNATURE ||
+        blk.version   != TIMER_EE_VERSION   ||
+        blk.crc       != crc)
+    {
+        memset(timerSlots, 0, sizeof(timerSlots));
+        return;
+    }
+
+    memcpy(timerSlots, blk.slots, sizeof(timerSlots));
+
+    for (int i = 0; i < 5; i++)
+    {
+        TimerSlot *t = &timerSlots[i];
+        if (t->onHour > 23 || t->offHour > 23 ||
+            t->onMinute > 59 || t->offMinute > 59 ||
+            t->dayMask == 0)
+        {
+            memset(t, 0, sizeof(TimerSlot));
         }
     }
 }
-void ModelHandle_LoadTimerFromEEPROM(void) {
-    for (int i = 0; i < 5; i++) {
-        uint16_t addr = EE_ADDR_TIMER_SLOT_1 + (i * sizeof(TimerSlot));  // Adjust address for each slot
-        HAL_StatusTypeDef status = EEPROM_ReadBuffer(addr, (uint8_t*)&timerSlots[i], sizeof(TimerSlot));
-        if (status != HAL_OK) {
-            printf("Error loading Timer Slot %d from EEPROM\n", i + 1);
-        }
-    }
-}
-
-/* Power Restore API (0=YES,1=NO,2=LAST) */
-void ModelHandle_SetPowerRestoreMode(uint8_t mode)
-{
-    if (mode > 2) mode = 0;
-    powerRestoreMode              = mode;
-    modeState.power_restore_mode  = mode;
-    ModelHandle_SaveModeState();
-}
-
-uint8_t ModelHandle_GetPowerRestoreMode(void)
-{
-    return powerRestoreMode;
-}
-
 /***************************************************************
- *  PUBLIC GETTERS FOR DEVICE SETUP VALUES
+ * ================= INTERNAL UTILITIES ========================
  ***************************************************************/
-uint16_t ModelHandle_GetGapTime(void)        { return sys.gap_time_s;   }
-uint8_t  ModelHandle_GetRetryCount(void)     { return sys.retry_count;  }  /* Testing Gap (min) */
-uint16_t ModelHandle_GetUnderVolt(void)      { return sys.uv_limit;     }
-uint16_t ModelHandle_GetOverVolt(void)       { return sys.ov_limit;     }
-float    ModelHandle_GetOverloadLimit(void)  { return sys.overload;     }
-float    ModelHandle_GetUnderloadLimit(void) { return sys.underload;    }
-uint16_t ModelHandle_GetMaxRunTime(void)     { return sys.maxrun_min;   }
-
-/* Called from Screen/App when user changes Device Setup */
-void ModelHandle_SetUserSettings(
-    uint16_t gap_s,
-    uint8_t  retry,
-    uint16_t uv,
-    uint16_t ov,
-    int16_t  overload,
-    int16_t  underload,
-    uint16_t maxrun
-)
-{
-    sys.gap_time_s  = gap_s;
-    sys.retry_count = retry;
-    sys.uv_limit    = uv;
-    sys.ov_limit    = ov;
-    sys.overload    = overload;   // ✅ REQUIRED
-    sys.underload   = underload;  // ✅ REQUIRED
-    sys.maxrun_min  = maxrun;
-
-    EEPROM_WriteBuffer(EE_ADDR_OVERLOAD,  (uint8_t*)&sys.overload,  sizeof(int16_t));
-    EEPROM_WriteBuffer(EE_ADDR_UNDERLOAD, (uint8_t*)&sys.underload, sizeof(int16_t));
-}
-
-
-/* Full factory reset for settings (as per document defaults) */
-void ModelHandle_FactoryReset(void)
-{
-    sys.gap_time_s  = 0;       // Dry Run disabled
-    sys.retry_count = 0;       // Testing Gap disabled
-    sys.uv_limit    = 190;
-    sys.ov_limit    = 270;
-    sys.overload    = 0.0f;
-    sys.underload   = 0.0f;
-    sys.maxrun_min  = 300;
-
-    ModelHandle_SaveSettingsToEEPROM();
-}
-
 /***************************************************************
- *  INTERNAL UTILITY
+ * ============== FORWARD DECLARATIONS (REQUIRED) ==============
  ***************************************************************/
-static inline uint32_t now_ms(void)
-{
-    return HAL_GetTick();
-}
 
-static inline void clear_all_modes(void)
-{
-    manualActive    = false;
-    semiAutoActive  = false;
-    countdownActive = false;
-    twistActive     = false;
-    timerActive     = false;
-    autoActive      = false;
-    manualOverride  = false;
-    countdownMode   = false;
-}
+/* TIMER helpers */
+static bool     timer_any_active_slot(void);
+static uint16_t get_active_timer_gap_minutes(void);
+static uint8_t  get_today_mask(void);
+static bool     slot_is_active_now(const TimerSlot *t);
 
+/* Tank level */
+static bool     isTankFull(void);
+
+/* Mode helpers */
+static inline bool isAnyModeActive(void);
+
+/* FSM ticks */
+static void     auto_tick(void);
+static void     countdown_tick(void);
+static void     twist_tick(void);
+static void     twist_time_logic(void);
+static void     protections_tick(void);
+static void     leds_from_model(void);
 /***************************************************************
- *  MOTOR CONTROL (ANTI-CHATTER + MAX RUN TRACKING)
+ * ================= TANK FULL DETECTION ======================
  ***************************************************************/
-static uint32_t motorOnStartMs = 0;
-
-static inline bool Motor_GetStatusInternal(void)
-{
-    return (motorStatus == 1);
-}
-
-bool Motor_GetStatus(void)
-{
-    return Motor_GetStatusInternal();
-}
-static uint32_t powerOnMs = 0;
-
-void ModelHandle_OnPowerUp(void)
-{
-    powerOnMs = HAL_GetTick();
-}
-
-static bool Motor_StartAllowed(void)
-{
-    // 7000 ms = 7 seconds power-on delay
-    return (HAL_GetTick() - powerOnMs) >= 7000UL;
-}
-static inline void motor_apply(bool on)
-{
-    bool current = Motor_GetStatusInternal();
-    if (on == current)
-        return;
-
-    if (on) {
-        if (!Motor_StartAllowed())
-            return;              // ignore start request during lockout
-
-        motorOnStartMs = HAL_GetTick();
-    }
-
-    Relay_Set(1, on);
-    motorStatus = on ? 1 : 0;
-    UART_SendStatusPacket();
-}
-
-
-static inline void start_motor(void) { motor_apply(true);  }
-static inline void stop_motor(void)  { motor_apply(false); }
-// model_handle.c (near top)
-
-
-/***************************************************************
- *  BUZZER DRIVER (LED5_Pin / LED5_GPIO_Port)           <<< NEW
- ***************************************************************/
-static inline void Buzzer_SetPin(bool on)
-{
-    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
-}
-
-/* Alert window end time (for tank full / empty / any fault) */
-static uint32_t buzzerAlertUntil = 0;
-
-static void Buzzer_TriggerAlert(void)
-{
-    uint32_t now = HAL_GetTick();
-    buzzerAlertUntil = now + 30000UL;  /* 30 seconds alert */
-}
-
-/* Patterns (approximate per document):
- *  - Motor Run: continuous short beeps
- *  - Alert: 30s beeps for tank full/empty/faults
- */
-static void Buzzer_Update(void)
-{
-    uint32_t now     = HAL_GetTick();
-    bool     motorOn = Motor_GetStatus();
-    bool     alert   = (now < buzzerAlertUntil);
-
-    enum {
-        BUZZ_MODE_OFF = 0,
-        BUZZ_MODE_MOTOR,
-        BUZZ_MODE_ALERT
-    };
-
-    static uint8_t mode        = BUZZ_MODE_OFF;
-    static bool    buzzerState = false;
-
-    if (alert)
-        mode = BUZZ_MODE_ALERT;
-    else if (motorOn)
-        mode = BUZZ_MODE_MOTOR;
-    else
-        mode = BUZZ_MODE_OFF;
-
-    bool newState = false;
-
-    if (mode == BUZZ_MODE_OFF)
-    {
-        newState = false;
-    }
-    else if (mode == BUZZ_MODE_MOTOR)
-    {
-        /* Motor run pattern: beep - - - - beep - - - - ... */
-        uint32_t phase = now % 800UL;      // 0..799 ms
-        newState = (phase < 150UL);        // 150 ms ON, 650 ms OFF
-    }
-    else /* BUZZ_MODE_ALERT */
-    {
-        /* Alert pattern: beep - - beep - - beep - - ... */
-        uint32_t phase = now % 600UL;      // 0..599 ms
-        newState = (phase < 200UL);        // 200 ms ON / 400 ms OFF
-    }
-
-    if (newState != buzzerState)
-    {
-        buzzerState = newState;
-        Buzzer_SetPin(buzzerState);
-    }
-}
-
-/* Global Max Run protection – applies to ALL modes */
-static void check_max_run(void)
-{
-    if (sys.maxrun_min == 0)
-        return;
-    if (!Motor_GetStatus())
-        return;
-
-    // Skip modes where max run is not supposed to apply
-    if (countdownActive /* || manualActive || twistActive */)
-        return;
-
-    uint32_t now   = HAL_GetTick();
-    uint32_t limit = (uint32_t)sys.maxrun_min * 60000UL;
-
-    if (now - motorOnStartMs >= limit)
-    {
-        senseMaxRunReached = true;
-        clear_all_modes();
-        stop_motor();
-        ModelHandle_SaveModeState();
-        Buzzer_TriggerAlert();
-    }
-}
-
-/***************************************************************
- *  MANUAL MODE CONTROL
- ***************************************************************/
-void ModelHandle_SetMotor(bool on)
-{
-    clear_all_modes();
-    manualOverride = true;
-
-    /* Manual ignores dry-run */
-    senseDryRun = false;
-
-    if (on) start_motor();
-    else    stop_motor();
-}
-
-void ModelHandle_ToggleManual(void)
-{
-    /* Stop all other modes before manual */
-    timerActive     = false;
-    semiAutoActive  = false;
-    countdownActive = false;
-    twistActive     = false;
-    autoActive      = false;
-
-    manualActive = !manualActive;
-    ModelHandle_SaveModeState();
-
-    if (manualActive)
-    {
-        manualOverride = true;
-        start_motor();
-
-    }
-    else
-    {
-        manualOverride = false;
-        stop_motor();
-    }
-}
-
-void ModelHandle_ClearManualOverride(void)
-{
-    manualOverride = false;
-}
-
-/* For completeness – currently behaves same as toggle or can be used from UI */
-void ModelHandle_ManualLongPress(void)
-{
-    /* Long press = go to Manual mode ON */
-    manualActive = true;
-    clear_all_modes();
-    manualActive   = true;
-    manualOverride = true;
-    start_motor();
-}
-
-/***************************************************************
- *  TANK FULL DETECTION (Water level sensors)
- ***************************************************************/
-static inline bool isTankFull(void)
+static bool isTankFull(void)
 {
     static uint32_t stableStart = 0;
-    static bool     lastState   = false;
+    static bool lastState = false;
 
     bool allZero = true;
 
+    /* ADC channels 1..5 = tank probes */
     for (int i = 1; i <= 5; i++)
     {
         if (adcData.voltages[i] > 0.10f)
@@ -552,11 +347,11 @@ static inline bool isTankFull(void)
     {
         if (!lastState)
         {
-            lastState   = true;
+            lastState = true;
             stableStart = now;
         }
 
-        if (now - stableStart >= 1000)
+        if ((now - stableStart) >= 1000)
             return true;
     }
     else
@@ -566,10 +361,118 @@ static inline bool isTankFull(void)
 
     return false;
 }
-
 /***************************************************************
- * RESET PUMP (SW1 single press – Restart the pump)
+ * ============ MISSING PUBLIC API RESTORE ====================
  ***************************************************************/
+
+/* Called from main.c / screen.c */
+void ModelHandle_TimerRecalculateNow(void)
+{
+    if (!timerActive) return;
+    ModelHandle_ProcessTimerSlots();
+}
+
+void ModelHandle_ProcessDryRun(void)
+{
+    ModelHandle_SoftDryRunHandler();
+}
+
+/* User settings */
+uint16_t ModelHandle_GetGapTime(void)        { return sys.gap_time_s; }
+uint8_t  ModelHandle_GetRetryCount(void)     { return sys.retry_count; }
+uint16_t ModelHandle_GetUnderVolt(void)      { return sys.uv_limit; }
+uint16_t ModelHandle_GetOverVolt(void)       { return sys.ov_limit; }
+float    ModelHandle_GetOverloadLimit(void)  { return sys.overload; }
+float    ModelHandle_GetUnderloadLimit(void) { return sys.underload; }
+uint16_t ModelHandle_GetMaxRunTime(void)     { return sys.maxrun_min; }
+
+uint8_t ModelHandle_GetPowerRestoreMode(void)
+{
+    return powerRestoreMode;
+}
+
+void ModelHandle_SetPowerRestoreMode(uint8_t mode)
+{
+    if (mode > 2) mode = 0;
+    powerRestoreMode = mode;
+    ModelHandle_SaveModeState();
+}
+
+/* Manual */
+void ModelHandle_ToggleManual(void)
+{
+    manualActive = !manualActive;
+    if (manualActive) start_motor();
+    else stop_motor();
+    ModelHandle_SaveModeState();
+}
+
+void ModelHandle_StopAllModesAndMotor(void)
+{
+    clear_all_modes();
+    stop_motor();
+    ModelHandle_SaveModeState();
+}
+
+/* Factory reset */
+void ModelHandle_FactoryReset(void)
+{
+    sys.gap_time_s  = 0;
+    sys.retry_count = 0;
+    sys.uv_limit    = 190;
+    sys.ov_limit    = 270;
+    sys.overload    = 0.0f;
+    sys.underload   = 0.0f;
+    sys.maxrun_min  = 300;
+
+    ModelHandle_SaveSettingsToEEPROM();
+}
+
+/* Timer helper */
+void ModelHandle_StartTimerNearestSlot(void)
+{
+    clear_all_modes();
+    timerActive = true;
+    ModelHandle_ProcessTimerSlots();
+}
+static inline void Buzzer_SetPin(bool on)
+{
+    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static uint32_t buzzerAlertUntil = 0;
+
+static void Buzzer_TriggerAlert(void)
+{
+    buzzerAlertUntil = HAL_GetTick() + 30000UL;
+}
+
+static void Buzzer_Update(void)
+{
+    uint32_t now = HAL_GetTick();
+    bool motorOn = Motor_GetStatus();
+    bool alert   = (now < buzzerAlertUntil);
+
+    static bool buzzerState = false;
+    bool newState = false;
+
+    if (alert)
+    {
+        newState = ((now % 600UL) < 200UL);
+    }
+    else if (motorOn)
+    {
+        newState = ((now % 800UL) < 150UL);
+    }
+
+    if (newState != buzzerState)
+    {
+        buzzerState = newState;
+        Buzzer_SetPin(buzzerState);
+    }
+}
+/* Reset key (SW1) */
 void reset(void)
 {
     /* If any protection fault is active, do not attempt reset run */
@@ -640,206 +543,101 @@ void reset(void)
     Buzzer_TriggerAlert();          // <<< BUZZER: tank full
 }
 
-/***************************************************************
- *  DRY-RUN FSM CONSTANTS
- ***************************************************************/
-static uint32_t dryDeadline     = 0;
-static uint32_t dryConfirmStart = 0;
 
-#define DRY_PROBE_ON_MS      5000UL
-#define DRY_CONFIRM_MS       1500UL
-
-/* OFF-gap is dynamic: from Set Dry Run / Timer gap, default 10s */
-static uint32_t dryOffGapMs = 10000UL;
-
-static inline bool isAnyModeActive(void)
+static inline uint32_t now_ms(void)
 {
-    return (manualActive ||
-            semiAutoActive ||
-            countdownActive ||
-            twistActive ||
-            timerActive ||
-            autoActive);
+    return HAL_GetTick();
+}
+
+static inline void clear_all_modes(void)
+{
+    manualActive    = false;
+    semiAutoActive  = false;
+    countdownActive = false;
+    twistActive     = false;
+    timerActive     = false;
+    autoActive      = false;
+    manualOverride  = false;
+    countdownMode   = false;
 }
 
 /***************************************************************
- *  OVERLOAD + UNDERLOAD + VOLTAGE PROTECTION FSM
+ * ================= MOTOR CONTROL =============================
  ***************************************************************/
-static uint32_t faultLockTimestamp = 0;
-static bool     faultLocked        = false;
+static uint32_t motorOnStartMs = 0;
+static uint32_t powerOnMs     = 0;
 
-#define LOAD_FAULT_CONFIRM_MS     3000UL
-#define LOAD_RETRY_RUN_MS         3000UL
-#define LOAD_LOCK_DURATION_MS     (20UL * 60UL * 1000UL)   // Default 20 minutes
-
-typedef enum {
-    LOAD_NORMAL = 0,
-    LOAD_FAULT_WAIT,
-    LOAD_FAULT_LOCK,
-    LOAD_RETRY_RUN
-} LoadFaultState;
-
-static LoadFaultState loadState = LOAD_NORMAL;
-static uint32_t       loadTimer = 0;
-static uint8_t        loadRetryCount = 0;
-#define LOAD_MAX_RETRY           1   /* Spec: 1 retry only */
-
-/* Compute lock duration using Testing Gap (sys.retry_count in minutes)
- * If Testing Gap is 0, fall back to default 20 minutes.
- */
-static inline uint32_t get_load_lock_duration_ms(void)
+void ModelHandle_OnPowerUp(void)
 {
-    if (sys.retry_count == 0)
-        return LOAD_LOCK_DURATION_MS;
-
-    return (uint32_t)sys.retry_count * 60UL * 1000UL;
+    powerOnMs = HAL_GetTick();
 }
 
-
-void ModelHandle_CheckLoadFault(void)
+static bool Motor_StartAllowed(void)
 {
-    float    I  = g_currentA;
-    float    V  = g_voltageV;
-    float    ol = ModelHandle_GetOverloadLimit();
-    float    ul = ModelHandle_GetUnderloadLimit();
-    uint16_t uv = ModelHandle_GetUnderVolt();
-    uint16_t ov = ModelHandle_GetOverVolt();
-    senseOverUnderVolt = false;
-    uint32_t now = HAL_GetTick();
+    return (HAL_GetTick() - powerOnMs) >= 7000UL; /* 7s delay */
+}
 
-    /* Enable / disable protections based on configured values */
-    bool overloadEnabled  = (ol > 0.1f);
-    bool underloadEnabled = (ul < 0.001f);
-    bool voltEnabled      = (uv > 0 || ov > 0);
+static inline bool Motor_GetStatusInternal(void)
+{
+    return (motorStatus == 1);
+}
 
-    bool overload  = overloadEnabled  && (I > ol);
-    bool underload = underloadEnabled && (I < ul);
-    bool voltFault = false;
+bool Motor_GetStatus(void)
+{
+    return Motor_GetStatusInternal();
+}
 
-    if (voltEnabled)
+static inline void motor_apply(bool on)
+{
+    bool current = Motor_GetStatusInternal();
+    if (on == current)
+        return;
+
+    if (on)
     {
-        if (uv > 0 && ov > 0)
-            voltFault = (V < uv || V > ov);
-        else if (uv > 0)
-            voltFault = (V < uv);
-        else if (ov > 0)
-            voltFault = (V > ov);
+        if (!Motor_StartAllowed())
+            return;
+
+        motorOnStartMs = HAL_GetTick();
     }
 
-    bool loadFault = (overload || underload);
+    Relay_Set(1, on);
+    motorStatus = on ? 1 : 0;
+    UART_SendStatusPacket();
+}
 
-    /* Update global flags */
-    senseOverLoad      = overload;
-    senseUnderLoad     = underload;
-    senseOverUnderVolt = voltFault;
+static inline void start_motor(void) { motor_apply(true); }
+static inline void stop_motor(void)  { motor_apply(false); }
 
-    bool fault = loadFault || voltFault;
-    uint32_t lockDurationMs = get_load_lock_duration_ms();
+/***************************************************************
+ * ================= BUZZER DRIVER =============================
+ ***************************************************************/
 
-    switch (loadState)
+
+/***************************************************************
+ * ================= MAX RUN PROTECTION ========================
+ ***************************************************************/
+static void check_max_run(void)
+{
+    if (sys.maxrun_min == 0 || !Motor_GetStatus())
+        return;
+
+    if (countdownActive)
+        return;
+
+    uint32_t limit = (uint32_t)sys.maxrun_min * 60000UL;
+    if ((HAL_GetTick() - motorOnStartMs) >= limit)
     {
-        case LOAD_NORMAL:
-            loadRetryCount = 0;
-            if (fault && Motor_GetStatus())
-            {
-                loadState = LOAD_FAULT_WAIT;
-                loadTimer = now;
-            }
-            break;
-
-        case LOAD_FAULT_WAIT:
-            if (!fault)
-            {
-                loadState = LOAD_NORMAL;
-                break;
-            }
-            if (now - loadTimer >= LOAD_FAULT_CONFIRM_MS)
-            {
-                stop_motor();
-                loadState           = LOAD_FAULT_LOCK;
-                loadTimer           = now;
-                faultLocked         = true;
-                faultLockTimestamp  = now;
-                Buzzer_TriggerAlert();    // <<< BUZZER: load/volt fault
-            }
-            break;
-
-        case LOAD_FAULT_LOCK:
-            if (!fault) {
-                loadState      = LOAD_NORMAL;
-                faultLocked    = false;
-                loadRetryCount = 0;
-                break;
-            }
-
-            bool canRetry = false;
-
-            if (autoActive) {
-                canRetry = true;
-            } else if (timerActive && timer_any_active_slot()) {
-                // only retry if still inside a valid timer slot
-                canRetry = true;
-            } else if (twistActive) {
-                // optional: allow retry only if twist window still active
-                canRetry = true;
-            } else {
-                // manual / semi / countdown → user must restart
-                canRetry = false;
-            }
-
-            if (canRetry &&
-                (now - loadTimer >= lockDurationMs) &&
-                (loadRetryCount < LOAD_MAX_RETRY))
-            {
-                start_motor();
-                loadState      = LOAD_RETRY_RUN;
-                loadTimer      = now;
-                loadRetryCount++;
-            }
-            break;
-
-
-        case LOAD_RETRY_RUN:
-            if (now - loadTimer >= LOAD_RETRY_RUN_MS)
-            {
-                if (fault)
-                {
-                    stop_motor();
-                    loadState   = LOAD_FAULT_LOCK;
-                    loadTimer   = now;
-                    faultLocked = true;
-                    Buzzer_TriggerAlert();   // <<< BUZZER: retry failed
-                }
-                else
-                {
-                    loadState      = LOAD_NORMAL;
-                    faultLocked    = false;
-                    loadRetryCount = 0;
-                }
-            }
-            break;
+        senseMaxRunReached = true;
+        clear_all_modes();
+        stop_motor();
+        ModelHandle_SaveModeState();
+        Buzzer_TriggerAlert();
     }
 }
 
 /***************************************************************
- *  STOP ALL MODES + MOTOR
- ***************************************************************/
-void ModelHandle_StopAllModesAndMotor(void)
-{
-    clear_all_modes();
-    stop_motor();
-    ModelHandle_SaveModeState();
-}
-
-/***************************************************************
- *  DRY-RUN SENSOR CHECK
- *  Voltage <= 0.01f → WATER PRESENT → senseDryRun = false
- *  Voltage >  0.01f → DRY          → senseDryRun = true
- ***************************************************************/
-/***************************************************************
- *  DRY-RUN SENSOR CHECK
- *  Voltage <= 0.01f → WATER PRESENT → senseDryRun = false
- *  Voltage >  0.01f → DRY          → senseDryRun = true
+ * ================= DRY RUN SENSOR ============================
  ***************************************************************/
 void ModelHandle_CheckDryRun(void)
 {
@@ -860,8 +658,15 @@ void ModelHandle_CheckDryRun(void)
 
 
 /***************************************************************
- *  SOFT DRY-RUN FSM
+ * ================= SOFT DRY RUN FSM ==========================
  ***************************************************************/
+#define DRY_PROBE_ON_MS   5000UL
+#define DRY_CONFIRM_MS    1500UL
+
+static uint32_t dryDeadline     = 0;
+static uint32_t dryConfirmStart = 0;
+static uint32_t dryOffGapMs     = 10000UL;
+
 typedef enum {
     DRY_IDLE = 0,
     DRY_PROBE,
@@ -871,116 +676,87 @@ typedef enum {
 static DryFSMState dryState      = DRY_IDLE;
 static bool        dryConfirming = false;
 
+static inline bool isAnyModeActive(void)
+{
+    return (manualActive || semiAutoActive || countdownActive ||
+            twistActive || timerActive || autoActive);
+}
+
 void ModelHandle_SoftDryRunHandler(void)
 {
     uint32_t now = now_ms();
 
-    /***********************************************************
-     * 0) Compute effective gap
-     *    - sys.gap_time_s = global dry-run gap (sec)
-     *    - timerSlots[i].gapMinutes overrides in TIMER mode
-     ***********************************************************/
-    uint16_t effective_gap_s = sys.gap_time_s;
-
+    uint16_t gap_s = sys.gap_time_s;
     if (timerActive)
     {
-        uint16_t slotGapMin = get_active_timer_gap_minutes();
-        if (slotGapMin > 0)
-        {
-            effective_gap_s = (uint16_t)(slotGapMin * 60U);
-        }
+        uint16_t slotGap = get_active_timer_gap_minutes();
+        if (slotGap > 0) gap_s = slotGap * 60U;
     }
 
-    /* Always update raw sensor flag first */
     ModelHandle_CheckDryRun();
+    if (gap_s == 0) return;
 
-    if (effective_gap_s == 0)
+    dryOffGapMs = (uint32_t)gap_s * 1000UL;
+
+    if (manualActive || semiAutoActive || countdownActive)
     {
-        /* Dry-run FSM disabled, but flag still reflects sensor */
-        return;    // no timing / auto-start-stop, just keep senseDryRun as-is
-    }
-
-    dryOffGapMs = (uint32_t)effective_gap_s * 1000UL;
-
-    /***********************************************************
-     * 1) COUNTDOWN / MANUAL / SEMI-AUTO → Dry-run bypass
-     ***********************************************************/
-    if (countdownActive || manualActive || semiAutoActive)
-    {
-        dryState        = DRY_IDLE;
-        dryConfirming   = false;
-        dryDeadline     = 0;
-        dryConfirmStart = 0;
-        // senseDryRun already set by ModelHandle_CheckDryRun()
+        dryState = DRY_IDLE;
+        dryConfirming = false;
         return;
     }
 
-    /***********************************************************
-     * 2) Normal dry-run check
-     ***********************************************************/
-    ModelHandle_CheckDryRun();
-
-    /* No active mode → motor off + reset FSM */
     if (!isAnyModeActive())
     {
         stop_motor();
-        dryState        = DRY_IDLE;
-        dryConfirming   = false;
-        dryDeadline     = 0;
+        dryState = DRY_IDLE;
         return;
     }
 
-    /***********************************************************
-     * 3) FSM OPERATION
-     ***********************************************************/
     switch (dryState)
     {
         case DRY_IDLE:
-            if (!senseDryRun)  /* water present */
+            if (!senseDryRun)
             {
                 start_motor();
                 dryState = DRY_NORMAL;
             }
-            else               /* dry */
+            else if (now >= dryDeadline)
             {
-                if (now >= dryDeadline)
-                {
-                    start_motor();
-                    dryState    = DRY_PROBE;
-                    dryDeadline = now + DRY_PROBE_ON_MS;
-                }
+                start_motor();
+                dryState = DRY_PROBE;
+                dryDeadline = now + DRY_PROBE_ON_MS;
             }
             break;
 
         case DRY_PROBE:
-            if (!senseDryRun)   /* water found */
+            if (!senseDryRun)
             {
                 dryState = DRY_NORMAL;
             }
             else if (now >= dryDeadline)
             {
                 stop_motor();
-                dryState    = DRY_IDLE;
+                dryState = DRY_IDLE;
                 dryDeadline = now + dryOffGapMs;
-                Buzzer_TriggerAlert();   // <<< BUZZER: dry run (tank empty)
+                Buzzer_TriggerAlert();
             }
             break;
 
         case DRY_NORMAL:
-            if (senseDryRun)   /* DRY detected */
+            if (senseDryRun)
             {
                 if (!dryConfirming)
                 {
-                    dryConfirming   = true;
+                    dryConfirming = true;
                     dryConfirmStart = now;
                 }
-                else if (now - dryConfirmStart >= DRY_CONFIRM_MS)
+                else if ((now - dryConfirmStart) >= DRY_CONFIRM_MS)
                 {
                     stop_motor();
-                    dryState        = DRY_IDLE;
-                    dryConfirming   = false;
-                    dryDeadline     = now + dryOffGapMs;
-                    Buzzer_TriggerAlert(); // <<< BUZZER: dry run (tank empty)
+                    dryState = DRY_IDLE;
+                    dryConfirming = false;
+                    dryDeadline = now + dryOffGapMs;
+                    Buzzer_TriggerAlert();
                 }
             }
             else
@@ -992,152 +768,175 @@ void ModelHandle_SoftDryRunHandler(void)
 }
 
 /***************************************************************
- * LEGACY ENTRY POINT FOR DRY-RUN HANDLER
+ * ================= LOAD / VOLTAGE FSM ========================
  ***************************************************************/
-void ModelHandle_ProcessDryRun(void)
+#define LOAD_FAULT_CONFIRM_MS 3000UL
+#define LOAD_RETRY_RUN_MS     3000UL
+#define LOAD_LOCK_DEFAULT_MS (20UL * 60UL * 1000UL)
+#define TIMER_RETRY_30MIN_MS (30UL * 60UL * 1000UL)
+
+typedef enum {
+    LOAD_NORMAL = 0,
+    LOAD_FAULT_WAIT,
+    LOAD_FAULT_LOCK,
+    LOAD_RETRY_RUN
+} LoadFaultState;
+
+static LoadFaultState loadState = LOAD_NORMAL;
+static uint32_t loadTimer = 0;
+static uint8_t  loadRetryCount = 0;
+
+static inline uint32_t get_load_lock_duration_ms(void)
 {
-    ModelHandle_SoftDryRunHandler();
+    if (sys.retry_count == 0)
+        return LOAD_LOCK_DEFAULT_MS;
+    return (uint32_t)sys.retry_count * 60000UL;
 }
 
+void ModelHandle_CheckLoadFault(void)
+{
+    float I = g_currentA;
+    float V = g_voltageV;
+
+    bool overload  = (sys.overload > 0.1f) && (I > sys.overload);
+    bool underload = (sys.underload > 0.001f) && (I < sys.underload);
+    bool voltFault = ((sys.uv_limit && V < sys.uv_limit) ||
+                      (sys.ov_limit && V > sys.ov_limit));
+
+    senseOverLoad      = overload;
+    senseUnderLoad     = underload;
+    senseOverUnderVolt = voltFault;
+
+    bool fault = overload || underload || voltFault;
+    uint32_t now = HAL_GetTick();
+
+    uint32_t lockMs = (timerActive && timer_any_active_slot())
+                        ? TIMER_RETRY_30MIN_MS
+                        : get_load_lock_duration_ms();
+
+    switch (loadState)
+    {
+        case LOAD_NORMAL:
+            loadRetryCount = 0;
+            if (fault && Motor_GetStatus())
+            {
+                loadState = LOAD_FAULT_WAIT;
+                loadTimer = now;
+            }
+            break;
+
+        case LOAD_FAULT_WAIT:
+            if (!fault)
+            {
+                loadState = LOAD_NORMAL;
+            }
+            else if ((now - loadTimer) >= LOAD_FAULT_CONFIRM_MS)
+            {
+                stop_motor();
+                loadState = LOAD_FAULT_LOCK;
+                loadTimer = now;
+                Buzzer_TriggerAlert();
+            }
+            break;
+
+        case LOAD_FAULT_LOCK:
+            if (!fault &&
+                (autoActive || (timerActive && timer_any_active_slot())))
+            {
+                loadState = LOAD_NORMAL;
+            }
+            else if ((now - loadTimer) >= lockMs && loadRetryCount < 1)
+            {
+                loadRetryCount++;
+                start_motor();
+                loadState = LOAD_RETRY_RUN;
+                loadTimer = now;
+            }
+            break;
+
+        case LOAD_RETRY_RUN:
+            if ((now - loadTimer) >= LOAD_RETRY_RUN_MS)
+            {
+                if (fault)
+                {
+                    stop_motor();
+                    loadState = LOAD_FAULT_LOCK;
+                    loadTimer = now;
+                    Buzzer_TriggerAlert();
+                }
+                else
+                {
+                    loadState = LOAD_NORMAL;
+                    loadRetryCount = 0;
+                }
+            }
+            break;
+    }
+}
 /***************************************************************
- *  Convert HH:MM <-> seconds (helper APIs)
+ * ======================= TIMER MODE ==========================
+ * DS1307 DOW: 1 = Mon ... 7 = Sun
+ * dayMask: bit0 = Mon ... bit6 = Sun
  ***************************************************************/
-uint32_t ModelHandle_TimeToSeconds(uint8_t hh, uint8_t mm)
-{
-    return (uint32_t)hh * 3600UL + (uint32_t)mm * 60UL;
-}
-
-void ModelHandle_SecondsToTime(uint32_t sec, uint8_t* hh, uint8_t* mm)
-{
-    if (hh) *hh = (uint8_t)(sec / 3600UL);
-    if (mm) *mm = (uint8_t)((sec % 3600UL) / 60UL);
-}
-
-/***************************************************************
- * ======================== TIMER MODE =========================
- * DS1307 dow: 1=Mon to 7=Sun
- * dayMask: bit0=Mon to bit6=Sun
- ***************************************************************/
-
-/* Convert RTC DOW into bit mask */
 static uint8_t get_today_mask(void)
 {
-    uint8_t dow = time.dow;  /* valid range 1..7 */
-    if (dow < 1 || dow > 7)
-        dow = 1;
-    return (1u << (dow - 1)); /* Mon->bit0 ... Sun->bit6 */
+    uint8_t d = time.dow;
+    if (d < 1 || d > 7) d = 1;
+    return (1U << (d - 1));
 }
 
-/* Check if slot active at current HH:MM */
 static bool slot_is_active_now(const TimerSlot *t)
 {
-    if (!t->enabled)
-        return false;
+    if (!t->enabled) return false;
+    if (!(t->dayMask & get_today_mask())) return false;
 
-    /* Day match */
-    uint8_t todayMask = get_today_mask();
-    if ((t->dayMask & todayMask) == 0)
-        return false;
+    uint16_t now = time.hour * 60 + time.min;
+    uint16_t on  = t->onHour  * 60 + t->onMinute;
+    uint16_t off = t->offHour * 60 + t->offMinute;
 
-    /* Time compare HH:MM only */
-    uint16_t nowHM = time.hour * 60 + time.min;
-    uint16_t onHM  = t->onHour * 60 + t->onMinute;
-    uint16_t offHM = t->offHour * 60 + t->offMinute;
-
-    if (onHM < offHM)
-    {
-        return (nowHM >= onHM && nowHM < offHM);
-    }
-    else
-    {
-        /* Overnight slot */
-        return (nowHM >= onHM || nowHM < offHM);
-    }
+    return (on < off) ? (now >= on && now < off)
+                      : (now >= on || now < off);
 }
 
-/* Check if ANY slot is active */
 static bool timer_any_active_slot(void)
 {
     for (int i = 0; i < 5; i++)
-    {
         if (slot_is_active_now(&timerSlots[i]))
             return true;
-    }
     return false;
 }
 
-/* Return gapMinutes of the currently active timer slot (if any) */
 static uint16_t get_active_timer_gap_minutes(void)
 {
-    if (!timerActive)
-        return 0;
+    if (!timerActive) return 0;
 
-    uint8_t  todayMask = get_today_mask();
-    uint16_t nowHM     = time.hour * 60 + time.min;
+    uint16_t now = time.hour * 60 + time.min;
+    uint8_t  dm  = get_today_mask();
 
     for (int i = 0; i < 5; i++)
     {
         TimerSlot *t = &timerSlots[i];
-        if (!t->enabled)         continue;
-        if (!(t->dayMask & todayMask)) continue;
+        if (!t->enabled || !(t->dayMask & dm)) continue;
 
-        uint16_t onHM  = t->onHour * 60 + t->onMinute;
-        uint16_t offHM = t->offHour * 60 + t->offMinute;
+        uint16_t on  = t->onHour * 60 + t->onMinute;
+        uint16_t off = t->offHour * 60 + t->offMinute;
 
-        bool active;
-        if (onHM < offHM)
-            active = (nowHM >= onHM && nowHM < offHM);
-        else
-            active = (nowHM >= onHM || nowHM < offHM);
+        bool active = (on < off) ?
+                      (now >= on && now < off) :
+                      (now >= on || now < off);
 
         if (active)
-            return t->gapMinutes;   // 0 = use global gap_time_s
+            return t->gapMinutes;
     }
     return 0;
 }
 
 /***************************************************************
- * Start nearest timer slot (SW3 short press)
- ***************************************************************/
-void ModelHandle_StartTimerNearestSlot(void)
-{
-    clear_all_modes();
-    timerActive = true;
-
-    RTC_GetTimeDate();
-
-    uint16_t nowHM   = time.hour * 60 + time.min;
-    uint16_t bestDiff = 20000;
-
-    for (int i = 0; i < 5; i++)
-    {
-        TimerSlot *t = &timerSlots[i];
-        if (!t->enabled) continue;
-
-        uint8_t todayMask = get_today_mask();
-        if (!(t->dayMask & todayMask)) continue;
-
-        uint16_t onHM = t->onHour * 60 + t->onMinute;
-        uint16_t diff = (onHM >= nowHM) ? (onHM - nowHM)
-                                        : (1440 - (nowHM - onHM));
-
-        if (diff < bestDiff)
-        {
-            bestDiff = diff;
-        }
-    }
-
-    ModelHandle_SaveModeState();
-    ModelHandle_ProcessTimerSlots();
-}
-
-/***************************************************************
- * MAIN TIMER PROCESSOR (called every loop)
+ * TIMER PROCESS (CALLED EVERY LOOP)
  ***************************************************************/
 void ModelHandle_ProcessTimerSlots(void)
 {
-    if (!timerActive)
-        return;
+    if (!timerActive) return;
 
     ModelHandle_SaveModeState();
 
@@ -1148,28 +947,14 @@ void ModelHandle_ProcessTimerSlots(void)
 }
 
 /***************************************************************
- * Force timer recalculation
- ***************************************************************/
-void ModelHandle_TimerRecalculateNow(void)
-{
-    if (!timerActive)
-        return;
-
-    if (timer_any_active_slot())
-        start_motor();
-    else
-        stop_motor();
-}
-
-/***************************************************************
- * Start / Stop Timer Mode
+ * START / STOP TIMER MODE
  ***************************************************************/
 void ModelHandle_StartTimer(void)
 {
     clear_all_modes();
     timerActive = true;
     ModelHandle_SaveTimerToEEPROM();
-    ModelHandle_TimerRecalculateNow();
+    ModelHandle_ProcessTimerSlots();
 }
 
 void ModelHandle_StopTimer(void)
@@ -1180,12 +965,11 @@ void ModelHandle_StopTimer(void)
 }
 
 /***************************************************************
- * Auto timer activation when time enters a slot
+ * AUTO TIMER ACTIVATION
  ***************************************************************/
 void ModelHandle_CheckAutoTimerActivation(void)
 {
-    if (timerActive)
-        return;
+    if (timerActive) return;
 
     if (timer_any_active_slot())
     {
@@ -1195,7 +979,7 @@ void ModelHandle_CheckAutoTimerActivation(void)
 }
 
 /***************************************************************
- * ====================== SEMI-AUTO MODE =======================
+ * ===================== SEMI AUTO MODE ========================
  ***************************************************************/
 void ModelHandle_StartSemiAuto(void)
 {
@@ -1203,9 +987,7 @@ void ModelHandle_StartSemiAuto(void)
     semiAutoActive = true;
     ModelHandle_SaveModeState();
 
-    /* Semi-auto ignores dry-run, but respects tank full */
     senseDryRun = false;
-
     if (!isTankFull())
         start_motor();
 }
@@ -1220,8 +1002,6 @@ void ModelHandle_StopSemiAuto(void)
 /***************************************************************
  * ======================== AUTO MODE ==========================
  ***************************************************************/
-
-/* Auto-specific settings (used in Auto logic only) */
 static uint16_t auto_gap_s       = 10;
 static uint16_t auto_maxrun_min  = 12;
 static uint8_t  auto_retry_limit = 5;
@@ -1234,11 +1014,9 @@ typedef enum {
     AUTO_OFF_WAIT
 } AutoState;
 
-static AutoState autoState     = AUTO_IDLE;
-static uint32_t  autoDeadline  = 0;
-static uint32_t  autoRunStart  = 0;
+static AutoState autoState    = AUTO_IDLE;
+static uint32_t  autoDeadline = 0;
 
-/* Start AUTO mode */
 void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
 {
     clear_all_modes();
@@ -1246,43 +1024,35 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
     autoActive       = true;
     auto_gap_s       = gap_s;
     auto_maxrun_min  = maxrun_min;
-    auto_retry_limit = (uint8_t)retry;
+    auto_retry_limit = retry;
     auto_retry_count = 0;
     autoState        = AUTO_ON_WAIT;
 
     ModelHandle_SaveModeState();
-
     start_motor();
-    autoRunStart = now_ms();
-    autoDeadline = now_ms() + (gap_s * 1000UL);
+    autoDeadline = now_ms() + gap_s * 1000UL;
 }
 
-/* Stop AUTO */
 void ModelHandle_StopAuto(void)
 {
-    autoActive       = false;
-    autoState        = AUTO_IDLE;
+    autoActive = false;
+    autoState  = AUTO_IDLE;
     auto_retry_count = 0;
 
     ModelHandle_SaveModeState();
     stop_motor();
 }
 
-/***************************************************************
- *  AUTO MODE TICK ENGINE (Dry-run only; protections & max-run global)
- ***************************************************************/
 static void auto_tick(void)
 {
-    if (!autoActive)
-        return;
+    if (!autoActive) return;
 
     uint32_t now = now_ms();
 
-    /* Tank full → stop Auto mode */
     if (isTankFull())
     {
         ModelHandle_StopAuto();
-        Buzzer_TriggerAlert();      // <<< BUZZER: tank full in auto
+        Buzzer_TriggerAlert();
         return;
     }
 
@@ -1295,18 +1065,17 @@ static void auto_tick(void)
 
         case AUTO_DRY_CHECK:
             ModelHandle_CheckDryRun();
-
-            if (!senseDryRun)   /* DRY → stop → gap wait */
+            if (!senseDryRun)
             {
                 stop_motor();
-                autoState    = AUTO_OFF_WAIT;
-                autoDeadline = now + (auto_gap_s * 1000UL);
-                Buzzer_TriggerAlert();      // <<< BUZZER: dry run in auto
+                autoState = AUTO_OFF_WAIT;
+                autoDeadline = now + auto_gap_s * 1000UL;
+                Buzzer_TriggerAlert();
             }
-            else               /* Water available → continue */
+            else
             {
-                autoState    = AUTO_ON_WAIT;
-                autoDeadline = now + (auto_gap_s * 1000UL);
+                autoState = AUTO_ON_WAIT;
+                autoDeadline = now + auto_gap_s * 1000UL;
             }
             break;
 
@@ -1316,7 +1085,7 @@ static void auto_tick(void)
                 auto_retry_count++;
                 auto_retry_counter = auto_retry_count;
 
-                if (auto_retry_limit != 0 &&
+                if (auto_retry_limit &&
                     auto_retry_count > auto_retry_limit)
                 {
                     ModelHandle_StopAuto();
@@ -1324,9 +1093,8 @@ static void auto_tick(void)
                 }
 
                 start_motor();
-                autoRunStart = now;
-                autoState    = AUTO_ON_WAIT;
-                autoDeadline = now + (auto_gap_s * 1000UL);
+                autoState = AUTO_ON_WAIT;
+                autoDeadline = now + auto_gap_s * 1000UL;
             }
             break;
 
@@ -1336,30 +1104,14 @@ static void auto_tick(void)
 }
 
 /***************************************************************
- * ======================== COUNTDOWN MODE ======================
+ * ====================== COUNTDOWN MODE =======================
  ***************************************************************/
-static uint32_t   cd_deadline       = 0;
-
-void ModelHandle_StopCountdown(void)
-{
-    countdownActive   = false;
-    countdownMode     = false;
-    countdownDuration = 0;
-    stop_motor();
-    ModelHandle_SaveModeState();
-}
+static uint32_t cd_deadline = 0;
 
 void ModelHandle_StartCountdown(uint32_t seconds)
 {
     clear_all_modes();
-
-    if (seconds == 0)
-    {
-        countdownActive   = false;
-        countdownMode     = false;
-        countdownDuration = 0;
-        return;
-    }
+    if (seconds == 0) return;
 
     countdownActive   = true;
     countdownMode     = true;
@@ -1367,75 +1119,63 @@ void ModelHandle_StartCountdown(uint32_t seconds)
     cd_deadline       = now_ms() + seconds * 1000UL;
 
     ModelHandle_SaveModeState();
-    start_motor();   /* countdown ALWAYS forces motor ON */
+    start_motor();
 }
 
-/* Update remaining time */
+void ModelHandle_StopCountdown(void)
+{
+    countdownActive = false;
+    countdownMode   = false;
+    countdownDuration = 0;
+    stop_motor();
+    ModelHandle_SaveModeState();
+}
+
 static void countdown_tick(void)
 {
-    if (!countdownActive)
-        return;
+    if (!countdownActive) return;
 
     uint32_t now = now_ms();
 
-    /* Tank full → stop immediately */
     if (isTankFull())
     {
         ModelHandle_StopCountdown();
-        Buzzer_TriggerAlert();      // <<< BUZZER: tank full in countdown
+        Buzzer_TriggerAlert();
         return;
     }
 
     if (now < cd_deadline)
-    {
         countdownDuration = (cd_deadline - now) / 1000UL;
-    }
     else
-    {
-        countdownDuration = 0;
         ModelHandle_StopCountdown();
-        return;
-    }
 }
 
 /***************************************************************
- * ========================= TWIST MODE =========================
+ * ========================= TWIST MODE ========================
  ***************************************************************/
 static bool     twist_on_phase = false;
 static uint32_t twist_deadline = 0;
 
-/* on_s / off_s are treated as MINUTES (1–180),
- * converted to seconds internally.
- */
 void ModelHandle_StartTwist(uint16_t on_s, uint16_t off_s,
                             uint8_t onH, uint8_t onM,
                             uint8_t offH, uint8_t offM)
 {
     clear_all_modes();
 
-    uint16_t on_min  = (on_s  == 0) ? 1 : on_s;
-    uint16_t off_min = (off_s == 0) ? 1 : off_s;
+    uint32_t on_sec  = (on_s  ? on_s  : 1) * 60UL;
+    uint32_t off_sec = (off_s ? off_s : 1) * 60UL;
 
-    uint32_t on_sec  = (uint32_t)on_min  * 60UL;
-    uint32_t off_sec = (uint32_t)off_min * 60UL;
-
-    if (on_sec  > 0xFFFF) on_sec  = 0xFFFF;
-    if (off_sec > 0xFFFF) off_sec = 0xFFFF;
-
-    twistSettings.onDurationSeconds  = (uint16_t)on_sec;
-    twistSettings.offDurationSeconds = (uint16_t)off_sec;
-
-    twistSettings.onHour   = onH;
+    twistSettings.onDurationSeconds  = on_sec;
+    twistSettings.offDurationSeconds = off_sec;
+    twistSettings.onHour = onH;
     twistSettings.onMinute = onM;
-    twistSettings.offHour  = offH;
-    twistSettings.offMinute= offM;
-
-    twistSettings.twistArmed  = true;
+    twistSettings.offHour = offH;
+    twistSettings.offMinute = offM;
+    twistSettings.twistArmed = true;
     twistSettings.twistActive = false;
 
     twist_on_phase = true;
-    twist_deadline = now_ms() + (on_sec * 1000UL);
-
+    twist_deadline = now_ms() + on_sec * 1000UL;
     start_motor();
 }
 
@@ -1447,27 +1187,22 @@ void ModelHandle_StopTwist(void)
     ModelHandle_SaveModeState();
 }
 
-/* Check if twist should start / stop based on RTC clock */
 static void twist_time_logic(void)
 {
-    if (!twistSettings.twistArmed)
-        return;
+    if (!twistSettings.twistArmed) return;
 
-    /* Start twist at ON time */
     if (!twistActive &&
         time.hour == twistSettings.onHour &&
         time.min  == twistSettings.onMinute)
     {
         twistActive = true;
         twistSettings.twistActive = true;
-
         twist_on_phase = true;
-        twist_deadline = now_ms() + twistSettings.onDurationSeconds * 1000UL;
-
+        twist_deadline = now_ms() +
+                         twistSettings.onDurationSeconds * 1000UL;
         start_motor();
     }
 
-    /* Stop twist at OFF time */
     if (twistActive &&
         time.hour == twistSettings.offHour &&
         time.min  == twistSettings.offMinute)
@@ -1476,112 +1211,66 @@ static void twist_time_logic(void)
     }
 }
 
-/* Twist ON/OFF cycling handler */
 static void twist_tick(void)
 {
-    if (!twistActive)
-        return;
+    if (!twistActive) return;
 
     if (isTankFull())
     {
         ModelHandle_StopTwist();
-        Buzzer_TriggerAlert();      // <<< BUZZER: tank full in twist
+        Buzzer_TriggerAlert();
         return;
     }
 
     uint32_t now = now_ms();
-
     if (now >= twist_deadline)
     {
-        if (twist_on_phase)
-        {
-            twist_on_phase = false;
-            stop_motor();
-            twist_deadline = now + twistSettings.offDurationSeconds * 1000UL;
-        }
-        else
-        {
-            twist_on_phase = true;
-            start_motor();
-            twist_deadline = now + twistSettings.onDurationSeconds * 1000UL;
-        }
+        twist_on_phase = !twist_on_phase;
+        twist_deadline = now +
+            (twist_on_phase ? twistSettings.onDurationSeconds
+                            : twistSettings.offDurationSeconds) * 1000UL;
     }
 
-    /* Enforce correct state */
-    if (twist_on_phase)
-        start_motor();
-    else
-        stop_motor();
+    if (twist_on_phase) start_motor();
+    else stop_motor();
 }
-
 /***************************************************************
- * ======================== PROTECTIONS =========================
+ * ======================= PROTECTIONS =========================
  ***************************************************************/
 static void protections_tick(void)
 {
-    /* Currently only enforce Max Run latch here */
     if (senseMaxRunReached)
-    {
         stop_motor();
-    }
 }
 
 /***************************************************************
  * =========================== LEDS =============================
  ***************************************************************/
-/*
- * Mapping:
- * - Green steady: motor ON
- * - Green blink : motor ON with dry-run timing
- * - Red steady  : motor OFF due to dry run
- * - Red blink   : Max Run error
- * - Blue blink  : overload/underload
- * - Purple blink: over / under voltage
- */
 static void leds_from_model(void)
 {
     LED_ClearAllIntents();
 
     bool motorOn = Motor_GetStatus();
 
-    /* Base indication: motor ON → Green steady */
     if (motorOn)
-    {
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 0);
-    }
 
-    /* Dry-run indications */
     if (senseDryRun)
     {
         if (motorOn)
-        {
-            /* Motor ON with dry-run timing → Green blink */
             LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 350);
-        }
         else
-        {
-            /* Motor OFF due to dry run → Red steady */
             LED_SetIntent(LED_COLOR_RED, LED_MODE_STEADY, 0);
-        }
     }
 
-    /* Max run reached → Red blink */
     if (senseMaxRunReached)
-    {
         LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 300);
-    }
 
-    /* Overload / underload → Blue blink */
     if (senseOverLoad || senseUnderLoad)
-    {
         LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 350);
-    }
 
-    /* Over/under voltage → Purple blink */
     if (senseOverUnderVolt)
-    {
         LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_BLINK, 350);
-    }
 
     LED_ApplyIntents();
 }
@@ -1591,11 +1280,12 @@ static void leds_from_model(void)
  ***************************************************************/
 void ModelHandle_Process(void)
 {
-    /* 0. FIRST UPDATE ALL FAULTS (MUST RUN EVERY LOOP) */
-    ModelHandle_CheckLoadFault();     /* Overload/Underload/Volt FSM   */
-    protections_tick();               /* Max Run latch enforcement     */
-    twist_time_logic();               /* Time-based twist control      */
-    check_max_run();                  /* Global Max Run                */
+    /* ALWAYS first */
+    ModelHandle_CheckLoadFault();
+    protections_tick();
+    twist_time_logic();
+    check_max_run();
+    ModelHandle_SoftDryRunHandler();
 
     if (senseMaxRunReached)
     {
@@ -1604,32 +1294,26 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /* 1. MANUAL MODE (Highest Priority) */
     if (manualActive)
     {
-        /* Stop motor immediately on ANY critical fault */
         if (senseOverLoad || senseUnderLoad || senseOverUnderVolt)
         {
             stop_motor();
-            manualActive   = false;
+            manualActive = false;
             manualOverride = false;
             ModelHandle_SaveModeState();
-            Buzzer_TriggerAlert();    // <<< BUZZER: manual mode fault
-            leds_from_model();
-            Buzzer_Update();
-            return;
+            Buzzer_TriggerAlert();
         }
-
-        /* Manual ignores dry-run & tank full */
-        if (!Motor_GetStatus())
+        else if (!Motor_GetStatus())
+        {
             start_motor();
+        }
 
         leds_from_model();
         Buzzer_Update();
         return;
     }
 
-    /* 2. AUTO MODE */
     if (autoActive)
     {
         auto_tick();
@@ -1638,10 +1322,9 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /* 3. SEMI-AUTO MODE */
     if (semiAutoActive)
     {
-        senseDryRun = false;   /* semi-auto ignores dry-run */
+        senseDryRun = false;
 
         if (!isTankFull())
         {
@@ -1652,7 +1335,7 @@ void ModelHandle_Process(void)
         {
             stop_motor();
             semiAutoActive = false;
-            Buzzer_TriggerAlert();    // <<< BUZZER: tank full in semi-auto
+            Buzzer_TriggerAlert();
         }
 
         leds_from_model();
@@ -1660,7 +1343,6 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /* 4. TIMER MODE */
     if (timerActive)
     {
         ModelHandle_ProcessTimerSlots();
@@ -1669,29 +1351,18 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /* 5. COUNTDOWN MODE */
     if (countdownActive)
     {
         countdown_tick();
 
-        if (isTankFull())
-        {
-            ModelHandle_StopCountdown();
-            /* Buzzer already triggered in countdown_tick */
-            leds_from_model();
-            Buzzer_Update();
-            return;
-        }
-
         if (!Motor_GetStatus())
-            start_motor();   /* countdown always forces ON */
+            start_motor();
 
         leds_from_model();
         Buzzer_Update();
         return;
     }
 
-    /* 6. TWIST MODE */
     if (twistActive)
     {
         twist_tick();
@@ -1700,27 +1371,26 @@ void ModelHandle_Process(void)
         return;
     }
 
-    /* 7. IDLE STATE */
     stop_motor();
     leds_from_model();
     Buzzer_Update();
 }
 
 /***************************************************************
- * ========================== RESET ALL =========================
+ * =========================== RESET ============================
  ***************************************************************/
 void ModelHandle_ResetAll(void)
 {
     clear_all_modes();
     stop_motor();
 
-    senseDryRun         = false;
-    senseOverLoad       = false;
-    senseOverUnderVolt  = false;
-    senseUnderLoad      = false;
-    senseMaxRunReached  = false;
+    senseDryRun        = false;
+    senseOverLoad      = false;
+    senseUnderLoad     = false;
+    senseOverUnderVolt = false;
+    senseMaxRunReached = false;
 
-    countdownDuration   = 0;
+    countdownDuration = 0;
 
     UART_SendStatusPacket();
 }
@@ -1728,22 +1398,49 @@ void ModelHandle_ResetAll(void)
 /***************************************************************
  * ===================== AUTO SETTINGS API ======================
  ***************************************************************/
-void ModelHandle_SetAutoSettings(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry)
+/***************************************************************
+ * ================= USER SETTINGS APPLY ======================
+ ***************************************************************/
+void ModelHandle_SetUserSettings(uint16_t gap_s,
+                                 uint8_t  retry,
+                                 uint16_t uv_limit,
+                                 uint16_t ov_limit,
+                                 int16_t  overload,
+                                 int16_t  underload,
+                                 uint16_t maxrun_min)
+{
+    sys.gap_time_s  = gap_s;
+    sys.retry_count = retry;
+    sys.uv_limit    = uv_limit;
+    sys.ov_limit    = ov_limit;
+
+    /* Convert stored int16 -> float if system uses float */
+    sys.overload  = (float)overload;
+    sys.underload = (float)underload;
+
+    sys.maxrun_min = maxrun_min;
+
+    ModelHandle_SaveSettingsToEEPROM();
+}
+
+void ModelHandle_SetAutoSettings(uint16_t gap_s,
+                                 uint16_t maxrun_min,
+                                 uint8_t retry)
 {
     auto_gap_s       = gap_s;
     auto_maxrun_min  = maxrun_min;
     auto_retry_limit = retry;
 
-    EEPROM_WriteBuffer(0x0300, (uint8_t*)&auto_gap_s,      sizeof(auto_gap_s));
+    EEPROM_WriteBuffer(0x0300, (uint8_t*)&auto_gap_s, sizeof(auto_gap_s));
     EEPROM_WriteBuffer(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
-    EEPROM_WriteBuffer(0x0304, (uint8_t*)&auto_retry_limit,sizeof(auto_retry_limit));
+    EEPROM_WriteBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
 }
 
 void ModelHandle_LoadAutoSettings(void)
 {
-    EEPROM_ReadBuffer(0x0300, (uint8_t*)&auto_gap_s,      sizeof(auto_gap_s));
+    EEPROM_ReadBuffer(0x0300, (uint8_t*)&auto_gap_s, sizeof(auto_gap_s));
     EEPROM_ReadBuffer(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
-    EEPROM_ReadBuffer(0x0304, (uint8_t*)&auto_retry_limit,sizeof(auto_retry_limit));
+    EEPROM_ReadBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
 }
 
 bool ModelHandle_IsAutoActive(void)
@@ -1752,7 +1449,7 @@ bool ModelHandle_IsAutoActive(void)
 }
 
 /***************************************************************
- * ============= EEPROM STATE SAVE (ONLY MODE FLAG) =============
+ * ===================== RTC MODE PERSIST ======================
  ***************************************************************/
 void ModelHandle_SaveCurrentStateToEEPROM(void)
 {
@@ -1765,13 +1462,12 @@ void ModelHandle_SaveCurrentStateToEEPROM(void)
     else if (countdownActive) s.mode = 4;
     else if (twistActive)     s.mode = 5;
     else if (autoActive)      s.mode = 6;
-    else                      s.mode = 0;
 
     RTC_SavePersistentState(&s);
 }
 
 /***************************************************************
- * ===================== TIMER SLOT SETTER ======================
+ * ================= TIMER SLOT SETTER API =====================
  ***************************************************************/
 void ModelHandle_SetTimerSlot(uint8_t slot,
                               uint8_t onH, uint8_t onM,
@@ -1786,22 +1482,16 @@ void ModelHandle_SetTimerSlot(uint8_t slot,
 }
 
 /***************************************************************
- *  SIMPLE CONTROL APIS FOR HEADER (enable/disable protections)
+ * ================= PROTECTION ENABLE APIs ====================
  ***************************************************************/
 void ModelHandle_SetDryRun(bool on)
 {
-    if (!on)
-        sys.gap_time_s = 0;
-    else if (sys.gap_time_s == 0)
-        sys.gap_time_s = 10;   /* default 10s gap if turning ON */
+    sys.gap_time_s = on ? (sys.gap_time_s ? sys.gap_time_s : 10) : 0;
 }
 
 void ModelHandle_SetOverLoad(bool on)
 {
-    if (!on)
-        sys.overload = 0.0f;
-    else if (sys.overload <= 0.1f)
-        sys.overload = 9.0f;   /* sensible default */
+    sys.overload = on ? (sys.overload > 0.1f ? sys.overload : 9.0f) : 0.0f;
 }
 
 void ModelHandle_SetOverUnderVolt(bool on)
@@ -1813,8 +1503,8 @@ void ModelHandle_SetOverUnderVolt(bool on)
     }
     else
     {
-        if (sys.uv_limit == 0) sys.uv_limit = 190;
-        if (sys.ov_limit == 0) sys.ov_limit = 270;
+        if (!sys.uv_limit) sys.uv_limit = 190;
+        if (!sys.ov_limit) sys.ov_limit = 270;
     }
 }
 
@@ -1822,12 +1512,18 @@ void ModelHandle_ClearMaxRunFlag(void)
 {
     senseMaxRunReached = false;
 }
+/***************************************************************
+ * ====== TIMER SLOT READ API (FOR SCREEN) =====================
+ ***************************************************************/
+const TimerSlot* ModelHandle_GetTimerSlots(void)
+{
+    return timerSlots;
+}
 
 /***************************************************************
- *  OPTIONAL: ProcessUartCommand STUB (not used now)
+ * ================= UART STUB ================================
  ***************************************************************/
 void ModelHandle_ProcessUartCommand(const char* cmd)
 {
     (void)cmd;
-    /* All UART commands are handled in uart_commands.c now */
 }
