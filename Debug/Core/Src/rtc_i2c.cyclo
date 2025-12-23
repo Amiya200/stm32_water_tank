@@ -1,5 +1,5 @@
 ../Core/Src/rtc_i2c.c:20:16:dec2bcd	1
 ../Core/Src/rtc_i2c.c:25:16:bcd2dec	1
 ../Core/Src/rtc_i2c.c:33:6:RTC_Init	4
-../Core/Src/rtc_i2c.c:69:6:RTC_SetTimeDate	1
-../Core/Src/rtc_i2c.c:93:6:RTC_GetTimeDate	2
+../Core/Src/rtc_i2c.c:78:6:RTC_SetTimeDate	1
+../Core/Src/rtc_i2c.c:102:6:RTC_GetTimeDate	2

@@ -32,34 +32,43 @@ static uint8_t bcd2dec(uint8_t v)
    ====================================================================== */
 void RTC_Init(void)
 {
-    uint8_t sec = 0;
+    uint8_t sec;
 
-    /* Check device */
     if (HAL_I2C_IsDeviceReady(&hi2c2, DS1307_8BIT_ADDR, 3, 100) != HAL_OK)
     {
-        printf("❌ DS1307 NOT found at 0x68\r\n");
+        printf("❌ DS1307 NOT found\r\n");
         return;
     }
-
-    printf("✅ DS1307 detected at 0x68\r\n");
 
     /* Read seconds register */
-    if (HAL_I2C_Mem_Read(&hi2c2, DS1307_8BIT_ADDR,
-                         0x00, I2C_MEMADD_SIZE_8BIT,
-                         &sec, 1, 100) != HAL_OK)
-    {
-        printf("❌ RTC READ FAIL\r\n");
-        return;
-    }
+    HAL_I2C_Mem_Read(&hi2c2, DS1307_8BIT_ADDR,
+                     0x00, I2C_MEMADD_SIZE_8BIT,
+                     &sec, 1, 100);
 
-    /* CH BIT FIX — START OSCILLATOR */
+    /* Clear CH bit */
     if (sec & 0x80)
     {
         sec &= 0x7F;
         HAL_I2C_Mem_Write(&hi2c2, DS1307_8BIT_ADDR,
                           0x00, I2C_MEMADD_SIZE_8BIT,
                           &sec, 1, 100);
-        HAL_Delay(20);
+        HAL_Delay(50);
+    }
+
+    /* VERIFY oscillator is running */
+    uint8_t sec2;
+    HAL_Delay(1100);  // wait >1 second
+    HAL_I2C_Mem_Read(&hi2c2, DS1307_8BIT_ADDR,
+                     0x00, I2C_MEMADD_SIZE_8BIT,
+                     &sec2, 1, 100);
+
+    if ((sec2 & 0x7F) == (sec & 0x7F))
+    {
+        printf("❌ RTC OSCILLATOR NOT RUNNING\r\n");
+    }
+    else
+    {
+        printf("✅ RTC RUNNING (seconds ticking)\r\n");
     }
 }
 

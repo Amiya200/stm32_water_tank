@@ -63,6 +63,13 @@ static uint16_t Timer_CRC16(const uint8_t *data, uint16_t len)
  * TIMER SLOTS (5)
  ***************************************************************/
 TimerSlot timerSlots[5] = {0};
+typedef enum {
+    TIMER_RUN = 0,
+    TIMER_GAP_WAIT
+} TimerDryState;
+
+static TimerDryState timerDryState = TIMER_RUN;
+static uint32_t timerGapDeadline = 0;
 
 /***************************************************************
  * MODE FLAGS
@@ -686,6 +693,9 @@ void ModelHandle_SoftDryRunHandler(void)
 {
     uint32_t now = now_ms();
 
+    if (timerActive)
+        return;   // timer has its own dry-run logic
+
     uint16_t gap_s = sys.gap_time_s;
     if (timerActive)
     {
@@ -930,20 +940,95 @@ static uint16_t get_active_timer_gap_minutes(void)
     }
     return 0;
 }
+static uint32_t timer_get_gap_ms(void)
+{
+    uint16_t gapMin = get_active_timer_gap_minutes();
+
+    if (gapMin == 0)
+        return 0;
+
+    return (uint32_t)gapMin * 60UL * 1000UL;
+}
 
 /***************************************************************
  * TIMER PROCESS (CALLED EVERY LOOP)
  ***************************************************************/
+typedef enum {
+    TIMER_STATE_ON,
+    TIMER_STATE_OFF,
+    TIMER_STATE_WATER_CONTINUOUS
+} TimerState;
+static TimerState timerState = TIMER_STATE_ON;
+static uint32_t   timerStateDeadline = 0;
+
+
 void ModelHandle_ProcessTimerSlots(void)
 {
-    if (!timerActive) return;
+    if (!timerActive)
+        return;
 
-    ModelHandle_SaveModeState();
-
-    if (timer_any_active_slot())
-        start_motor();
-    else
+    /* If slot not active → motor OFF */
+    if (!timer_any_active_slot())
+    {
         stop_motor();
+        timerState = TIMER_STATE_ON;
+        return;
+    }
+
+    /* Read dry-run sensor */
+    ModelHandle_CheckDryRun();
+
+    uint32_t now = HAL_GetTick();
+    uint32_t gapMs = timer_get_gap_ms();   // gapMinutes → ms
+
+    if (gapMs == 0)
+    {
+        /* No gap configured → normal timer behavior */
+        start_motor();
+        return;
+    }
+
+    /* ================= WATER AVAILABLE ================= */
+    if (senseDryRun == true)
+    {
+        timerState = TIMER_STATE_WATER_CONTINUOUS;
+        start_motor();
+        return;
+    }
+
+    /* ================= NO WATER (CYCLIC TEST) ================= */
+    switch (timerState)
+    {
+        case TIMER_STATE_ON:
+            start_motor();
+
+            if (timerStateDeadline == 0)
+                timerStateDeadline = now + gapMs;
+
+            if (now >= timerStateDeadline)
+            {
+                stop_motor();
+                timerState = TIMER_STATE_OFF;
+                timerStateDeadline = now + gapMs;
+            }
+            break;
+
+        case TIMER_STATE_OFF:
+            stop_motor();
+
+            if (now >= timerStateDeadline)
+            {
+                timerState = TIMER_STATE_ON;
+                timerStateDeadline = now + gapMs;
+            }
+            break;
+
+        case TIMER_STATE_WATER_CONTINUOUS:
+            /* Should never stay here if no water */
+            timerState = TIMER_STATE_ON;
+            timerStateDeadline = now + gapMs;
+            break;
+    }
 }
 
 /***************************************************************

@@ -185,9 +185,9 @@ int main(void)
 
         /* == Update RTC time == */
         RTC_GetTimeDate();
-
-        /* == Recalculate timer engine == */
-        ModelHandle_TimerRecalculateNow();
+//
+//        /* == Recalculate timer engine == */
+//        ModelHandle_TimerRecalculateNow();
 
         /* == Auto Timer Activation == */
         ModelHandle_CheckAutoTimerActivation();
