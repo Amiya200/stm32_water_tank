@@ -1340,7 +1340,7 @@ static void leds_from_model(void)
     if (motorOn)
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 0);
 
-    if (senseDryRun)
+    if (!senseDryRun)
     {
         if (motorOn)
             LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 350);
