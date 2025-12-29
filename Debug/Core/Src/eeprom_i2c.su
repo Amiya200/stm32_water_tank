@@ -1,7 +1,7 @@
 ../Core/Src/eeprom_i2c.c:16:19:EEPROM_WriteByte	40	static
 ../Core/Src/eeprom_i2c.c:26:19:EEPROM_ReadByte	32	static
 ../Core/Src/eeprom_i2c.c:37:19:EEPROM_WriteBuffer	40	static
-../Core/Src/eeprom_i2c.c:64:19:EEPROM_ReadBuffer	32	static
-../Core/Src/eeprom_i2c.c:75:16:ee_crc	16	static
-../Core/Src/eeprom_i2c.c:80:6:EEPROM_SaveMode	24	static
-../Core/Src/eeprom_i2c.c:96:9:EEPROM_LoadMode	24	static
+../Core/Src/eeprom_i2c.c:62:19:EEPROM_ReadBuffer	32	static
+../Core/Src/eeprom_i2c.c:73:16:ee_crc	16	static
+../Core/Src/eeprom_i2c.c:78:6:EEPROM_SaveMode	24	static
+../Core/Src/eeprom_i2c.c:94:9:EEPROM_LoadMode	24	static

@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-
+extern I2C_HandleTypeDef hi2c2;
 /***************************************************************
  *  EXTERNAL MODULE VARIABLES
  ***************************************************************/
@@ -121,7 +121,10 @@ typedef struct {
 } ModeState;
 
 static ModeState modeState;
-#define EE_ADDR_COUNTDOWN_BLOCK 0x1100
+#define EE_ADDR_COUNTDOWN_BLOCK 0x0040
+#define EE_ADDR_MODE_BLOCK     0x0080
+#define EE_ADDR_AUTO_BLOCK     0x00C0
+#define EE_ADDR_TIMER_BLOCK    0x0100
 #define CD_SIGNATURE 0xCD55
 
 typedef struct{
@@ -180,42 +183,104 @@ static void leds_from_model(void);
 /***************************************************************
  * ================= EEPROM SETTINGS SAVE ======================
  ***************************************************************/
+#ifndef EEPROM_PAGE_SIZE
+#define EEPROM_PAGE_SIZE 16
+#endif
+
+#ifndef EEPROM_I2C_ADDR
+#define EEPROM_I2C_ADDR (0x50 << 1)
+#endif
+
+#ifndef EEPROM_ADDR_SIZE
+#define EEPROM_ADDR_SIZE I2C_MEMADD_SIZE_8BIT
+#endif
+
+void EEPROM_WriteBlockSafe(uint16_t addr, uint8_t *data, uint16_t len)
+{
+    while (len)
+    {
+        uint16_t page_space = EEPROM_PAGE_SIZE - (addr % EEPROM_PAGE_SIZE);
+        uint16_t chunk = (len < page_space) ? len : page_space;
+
+        HAL_I2C_Mem_Write(&hi2c2, EEPROM_I2C_ADDR, addr,
+                          EEPROM_ADDR_SIZE, data, chunk, 1000);
+        HAL_Delay(6);
+
+        addr += chunk;
+        data += chunk;
+        len  -= chunk;
+    }
+}
+
+typedef struct __attribute__((packed))
+{
+    uint16_t sig;        // 2
+    uint8_t  gap;        // 1   (0–255 seconds)
+    uint8_t  retry;      // 1
+    uint16_t uv;         // 2
+    uint16_t ov;         // 2
+    uint8_t  maxrun;     // 1   (0–255 minutes)
+    uint16_t over10;     // 2   overload *10
+    uint16_t under10;    // 2   underload *10
+    uint8_t  crc;       // 1
+} SystemEEPROMBlock;
+
+#define EE_ADDR_SYS_BLOCK      0x0000
+#define SYS_SIG 0x5A5A
+
+static uint16_t SYS_CRC16(const uint8_t *d, uint16_t l)
+{
+    uint16_t c = 0xFFFF;
+    while (l--) c = (c>>1) ^ (*d++ + 0xA001);
+    return c;
+}
+
 void ModelHandle_SaveSettingsToEEPROM(void)
 {
-    EEPROM_WriteBuffer(EE_ADDR_GAP_TIME,    (uint8_t*)&sys.gap_time_s,   sizeof(sys.gap_time_s));
-    EEPROM_WriteBuffer(EE_ADDR_RETRY_COUNT, (uint8_t*)&sys.retry_count,  sizeof(sys.retry_count));
-    EEPROM_WriteBuffer(EE_ADDR_UV_LIMIT,    (uint8_t*)&sys.uv_limit,     sizeof(sys.uv_limit));
-    EEPROM_WriteBuffer(EE_ADDR_OV_LIMIT,    (uint8_t*)&sys.ov_limit,     sizeof(sys.ov_limit));
-    EEPROM_WriteBuffer(EE_ADDR_OVERLOAD,    (uint8_t*)&sys.overload,     sizeof(sys.overload));
-    EEPROM_WriteBuffer(EE_ADDR_UNDERLOAD,   (uint8_t*)&sys.underload,    sizeof(sys.underload));
-    EEPROM_WriteBuffer(EE_ADDR_MAXRUN,      (uint8_t*)&sys.maxrun_min,   sizeof(sys.maxrun_min));
+    SystemEEPROMBlock b;
+    b.sig   = SYS_SIG;
+    b.gap   = sys.gap_time_s;
+    b.retry = sys.retry_count;
+    b.uv    = sys.uv_limit;
+    b.ov    = sys.ov_limit;
+    b.maxrun = sys.maxrun_min;
+    b.over10  = (uint16_t)(sys.overload * 10.0f);
+    b.under10 = (uint16_t)(sys.underload * 10.0f);
 
-    uint16_t sig = SETTINGS_SIGNATURE;
-    EEPROM_WriteBuffer(EE_ADDR_SIGNATURE, (uint8_t*)&sig, sizeof(sig));
+    b.crc = 0;
+    uint8_t *p = (uint8_t*)&b;
+    for(int i=0;i<sizeof(b)-1;i++) b.crc ^= p[i];
+
+    EEPROM_WriteBuffer(EE_ADDR_SYS_BLOCK, (uint8_t*)&b, sizeof(b));
 }
+
+
+
 
 /***************************************************************
  * ================= EEPROM SETTINGS LOAD ======================
  ***************************************************************/
 void ModelHandle_LoadSettingsFromEEPROM(void)
 {
-    uint16_t sig = 0;
-    EEPROM_ReadBuffer(EE_ADDR_SIGNATURE, (uint8_t*)&sig, sizeof(sig));
+    SystemEEPROMBlock b;
+    EEPROM_ReadBuffer(EE_ADDR_SYS_BLOCK, (uint8_t*)&b, sizeof(b));
 
-    if (sig != SETTINGS_SIGNATURE)
-    {
-        ModelHandle_SaveSettingsToEEPROM();
-        return;
-    }
+    uint8_t crc = 0;
+    uint8_t *p = (uint8_t*)&b;
+    for(int i=0;i<sizeof(b)-1;i++) crc ^= p[i];
 
-    EEPROM_ReadBuffer(EE_ADDR_GAP_TIME,    (uint8_t*)&sys.gap_time_s,   sizeof(sys.gap_time_s));
-    EEPROM_ReadBuffer(EE_ADDR_RETRY_COUNT, (uint8_t*)&sys.retry_count,  sizeof(sys.retry_count));
-    EEPROM_ReadBuffer(EE_ADDR_UV_LIMIT,    (uint8_t*)&sys.uv_limit,     sizeof(sys.uv_limit));
-    EEPROM_ReadBuffer(EE_ADDR_OV_LIMIT,    (uint8_t*)&sys.ov_limit,     sizeof(sys.ov_limit));
-    EEPROM_ReadBuffer(EE_ADDR_OVERLOAD,    (uint8_t*)&sys.overload,     sizeof(sys.overload));
-    EEPROM_ReadBuffer(EE_ADDR_UNDERLOAD,   (uint8_t*)&sys.underload,    sizeof(sys.underload));
-    EEPROM_ReadBuffer(EE_ADDR_MAXRUN,      (uint8_t*)&sys.maxrun_min,   sizeof(sys.maxrun_min));
+    if(b.sig != SYS_SIG || crc != b.crc) return;
+
+    sys.gap_time_s  = b.gap;
+    sys.retry_count = b.retry;
+    sys.uv_limit    = b.uv;
+    sys.ov_limit    = b.ov;
+    sys.maxrun_min  = b.maxrun;
+    sys.overload    = b.over10 / 10.0f;
+    sys.underload   = b.under10 / 10.0f;
 }
+
+
 
 /***************************************************************
  * ================= MODE STATE SAVE ===========================

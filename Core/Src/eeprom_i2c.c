@@ -5,7 +5,7 @@
 extern I2C_HandleTypeDef hi2c2;
 
 /* ================= EEPROM CONFIG ================= */
-#define EEPROM_I2C_ADDR     0xA0
+#define EEPROM_I2C_ADDR (0x50 << 1)   // = 0xA0 but HAL safe
 #define EEPROM_TIMEOUT     100
 #define EEPROM_PAGE_SIZE   16     // 24C16 / 24C32 / 24C64
 
@@ -34,28 +34,26 @@ HAL_StatusTypeDef EEPROM_ReadByte(uint16_t addr, uint8_t *data)
 /* PAGE SAFE BUFFER WRITE (CRITICAL FIX)                          */
 /* ============================================================ */
 
-HAL_StatusTypeDef EEPROM_WriteBuffer(uint16_t addr, uint8_t *buf, uint16_t len)
+HAL_StatusTypeDef EEPROM_WriteBuffer(uint16_t addr, uint8_t *data, uint16_t len)
 {
-    HAL_StatusTypeDef ret = HAL_OK;
-
     while (len)
     {
-        uint16_t page_rem = EEPROM_PAGE_SIZE - (addr % EEPROM_PAGE_SIZE);
-        uint16_t chunk   = (len < page_rem) ? len : page_rem;
+        uint16_t chunk = (len > EEPROM_PAGE_SIZE) ? EEPROM_PAGE_SIZE : len;
 
-        ret = HAL_I2C_Mem_Write(&hi2c2, EEPROM_I2C_ADDR,
-                                addr, I2C_MEMADD_SIZE_16BIT,
-                                buf, chunk, EEPROM_TIMEOUT);
-        if (ret != HAL_OK) return ret;
+        HAL_I2C_Mem_Write(&hi2c2, EEPROM_I2C_ADDR,
+                          addr, I2C_MEMADD_SIZE_16BIT,
+                          data, chunk, 1000);
 
-        HAL_Delay(5); // EEPROM internal write cycle
+        // ACK polling (CRITICAL)
+        while (HAL_I2C_IsDeviceReady(&hi2c2, EEPROM_I2C_ADDR, 3, 1000) != HAL_OK);
 
         addr += chunk;
-        buf  += chunk;
+        data += chunk;
         len  -= chunk;
     }
     return HAL_OK;
 }
+
 
 /* ============================================================ */
 /* SAFE BUFFER READ                                               */

@@ -146,10 +146,9 @@ int main(void)
     /* ========== Then other modules ========== */
     ADC_Init(&hadc1);
     LoRa_Init();
-
-    /* Load system/device settings */
-//    ModelHandle_LoadSettingsFromEEPROM();
-//    HAL_Delay(200);
+    HAL_Delay(200);
+    ModelHandle_LoadSettingsFromEEPROM();
+    HAL_Delay(200);
     ModelHandle_LoadAutoSettings();   // <-- NEW: load AUTO gap/maxrun/retry
     HAL_Delay(200);
     ModelHandle_LoadTimerFromEEPROM();
@@ -157,9 +156,9 @@ int main(void)
     ModelHandle_LoadModeState();
     HAL_Delay(200);
     ModelHandle_LoadCountdown();   // <<< THIS LINE IS MANDATORY
-        HAL_Delay(200);
-        ModelHandle_LoadTimerFromEEPROM();
-        HAL_Delay(200);
+    HAL_Delay(200);
+    ModelHandle_LoadTimerFromEEPROM();
+    HAL_Delay(200);
 
     /* UI + I/O */
     Screen_Init();
