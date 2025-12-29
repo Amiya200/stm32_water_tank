@@ -1384,9 +1384,9 @@ void ModelHandle_Process(void)
         if (senseOverLoad || senseUnderLoad || senseOverUnderVolt)
         {
             stop_motor();
-            manualActive = false;
-            manualOverride = false;
-            ModelHandle_SaveModeState();
+//            manualActive = false;
+//            manualOverride = false;
+//            ModelHandle_SaveModeState();
             Buzzer_TriggerAlert();
         }
         else if (!Motor_GetStatus())
@@ -1409,7 +1409,7 @@ void ModelHandle_Process(void)
 
     if (semiAutoActive)
     {
-        senseDryRun = false;
+//        senseDryRun = false;
 
         if (!isTankFull())
         {
