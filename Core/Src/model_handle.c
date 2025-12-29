@@ -285,34 +285,17 @@ void ModelHandle_SaveTimerToEEPROM(void)
 void ModelHandle_LoadTimerFromEEPROM(void)
 {
     TimerEEPROMBlock blk;
-    EEPROM_ReadBuffer(EE_ADDR_TIMER_BLOCK,
-                      (uint8_t*)&blk,
-                      sizeof(blk));
+    EEPROM_ReadBuffer(EE_ADDR_TIMER_BLOCK,(uint8_t*)&blk,sizeof(blk));
 
-    uint16_t crc = Timer_CRC16((uint8_t*)&blk,
-                               sizeof(blk) - sizeof(uint16_t));
+    if(blk.signature != TIMER_EE_SIGNATURE) return;
 
-    if (blk.signature != TIMER_EE_SIGNATURE ||
-        blk.version   != TIMER_EE_VERSION   ||
-        blk.crc       != crc)
-    {
-        memset(timerSlots, 0, sizeof(timerSlots));
-        return;
-    }
+    uint16_t crc = Timer_CRC16((uint8_t*)&blk, sizeof(blk)-2);
+    if(blk.crc != crc) return;     // <<< CRITICAL
 
     memcpy(timerSlots, blk.slots, sizeof(timerSlots));
-
-    for (int i = 0; i < 5; i++)
-    {
-        TimerSlot *t = &timerSlots[i];
-        if (t->onHour > 23 || t->offHour > 23 ||
-            t->onMinute > 59 || t->offMinute > 59 ||
-            t->dayMask == 0)
-        {
-            memset(t, 0, sizeof(TimerSlot));
-        }
-    }
 }
+
+
 void Timer_EEPROM_EnsureValid(void)
 {
     TimerEEPROMBlock blk;
@@ -322,13 +305,11 @@ void Timer_EEPROM_EnsureValid(void)
 
     if(blk.signature!=TIMER_EE_SIGNATURE || blk.crc!=crc)
     {
-        memset(&blk,0,sizeof(blk));
-        blk.signature = TIMER_EE_SIGNATURE;
-        blk.version   = TIMER_EE_VERSION;
-        blk.crc = Timer_CRC16((uint8_t*)&blk,sizeof(blk)-2);
-        EEPROM_WriteBuffer(EE_ADDR_TIMER_BLOCK,(uint8_t*)&blk,sizeof(blk));
+        memset(timerSlots,0,sizeof(timerSlots));
+        ModelHandle_SaveTimerToEEPROM();
     }
 }
+
 
 
 /***************************************************************

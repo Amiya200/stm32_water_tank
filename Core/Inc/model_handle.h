@@ -9,14 +9,14 @@
 /* ============================================================
    TIMER SLOT
    ============================================================ */
-typedef struct {
+typedef struct __attribute__((packed)) {
+    uint8_t enabled;
     uint8_t onHour;
     uint8_t onMinute;
     uint8_t offHour;
     uint8_t offMinute;
     uint8_t dayMask;
-    uint8_t gapMinutes;   // per-slot dry-run gap override (minutes, 0 = use global)
-    bool    enabled;
+    uint16_t gapMinutes;
 } TimerSlot;
 
 /* ============================================================

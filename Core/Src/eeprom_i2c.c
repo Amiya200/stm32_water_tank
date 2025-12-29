@@ -1,52 +1,80 @@
 #include "eeprom_i2c.h"
 #include "stm32f1xx_hal.h"
 
+/* I2C handle */
 extern I2C_HandleTypeDef hi2c2;
 
-/* ============================================================
-   EEPROM CONFIG
-   ============================================================ */
+/* ================= EEPROM CONFIG ================= */
+#define EEPROM_I2C_ADDR     0xA0
+#define EEPROM_TIMEOUT     100
+#define EEPROM_PAGE_SIZE   16     // 24C16 / 24C32 / 24C64
 
-#define EEPROM_I2C_ADDR       0xA0
-#define EEPROM_TIMEOUT       100
-
-
-/* ============================================================
-   LOW LEVEL EEPROM DRIVER (UNCHANGED API)
-   ============================================================ */
+/* ============================================================ */
+/* LOW LEVEL BYTE ACCESS                                         */
+/* ============================================================ */
 
 HAL_StatusTypeDef EEPROM_WriteByte(uint16_t addr, uint8_t data)
 {
-    return HAL_I2C_Mem_Write(&hi2c2, EEPROM_I2C_ADDR, addr,
-                             I2C_MEMADD_SIZE_16BIT, &data, 1, EEPROM_TIMEOUT);
+    HAL_StatusTypeDef r;
+    r = HAL_I2C_Mem_Write(&hi2c2, EEPROM_I2C_ADDR,
+                          addr, I2C_MEMADD_SIZE_16BIT,
+                          &data, 1, EEPROM_TIMEOUT);
+    HAL_Delay(5);                     // internal write cycle
+    return r;
 }
 
 HAL_StatusTypeDef EEPROM_ReadByte(uint16_t addr, uint8_t *data)
 {
-    return HAL_I2C_Mem_Read(&hi2c2, EEPROM_I2C_ADDR, addr,
-                            I2C_MEMADD_SIZE_16BIT, data, 1, EEPROM_TIMEOUT);
+    return HAL_I2C_Mem_Read(&hi2c2, EEPROM_I2C_ADDR,
+                            addr, I2C_MEMADD_SIZE_16BIT,
+                            data, 1, EEPROM_TIMEOUT);
 }
+
+/* ============================================================ */
+/* PAGE SAFE BUFFER WRITE (CRITICAL FIX)                          */
+/* ============================================================ */
 
 HAL_StatusTypeDef EEPROM_WriteBuffer(uint16_t addr, uint8_t *buf, uint16_t len)
 {
-    return HAL_I2C_Mem_Write(&hi2c2, EEPROM_I2C_ADDR, addr,
-                             I2C_MEMADD_SIZE_16BIT, buf, len, EEPROM_TIMEOUT);
+    HAL_StatusTypeDef ret = HAL_OK;
+
+    while (len)
+    {
+        uint16_t page_rem = EEPROM_PAGE_SIZE - (addr % EEPROM_PAGE_SIZE);
+        uint16_t chunk   = (len < page_rem) ? len : page_rem;
+
+        ret = HAL_I2C_Mem_Write(&hi2c2, EEPROM_I2C_ADDR,
+                                addr, I2C_MEMADD_SIZE_16BIT,
+                                buf, chunk, EEPROM_TIMEOUT);
+        if (ret != HAL_OK) return ret;
+
+        HAL_Delay(5); // EEPROM internal write cycle
+
+        addr += chunk;
+        buf  += chunk;
+        len  -= chunk;
+    }
+    return HAL_OK;
 }
+
+/* ============================================================ */
+/* SAFE BUFFER READ                                               */
+/* ============================================================ */
 
 HAL_StatusTypeDef EEPROM_ReadBuffer(uint16_t addr, uint8_t *buf, uint16_t len)
 {
-    return HAL_I2C_Mem_Read(&hi2c2, EEPROM_I2C_ADDR, addr,
-                            I2C_MEMADD_SIZE_16BIT, buf, len, EEPROM_TIMEOUT);
+    return HAL_I2C_Mem_Read(&hi2c2, EEPROM_I2C_ADDR,
+                            addr, I2C_MEMADD_SIZE_16BIT,
+                            buf, len, EEPROM_TIMEOUT);
 }
 
-
-/* ============================================================
-   SAFE MODE STORAGE (NEW, POWER-FAIL SAFE)
-   ============================================================ */
+/* ============================================================ */
+/* POWER FAIL SAFE MODE STORAGE                                   */
+/* ============================================================ */
 
 static uint8_t ee_crc(uint8_t m, uint8_t mot)
 {
-    return (m ^ mot ^ EE_COMMIT_FLAG);
+    return (uint8_t)(m ^ mot ^ EE_COMMIT_FLAG);
 }
 
 void EEPROM_SaveMode(uint8_t mode, uint8_t motor)
@@ -54,7 +82,7 @@ void EEPROM_SaveMode(uint8_t mode, uint8_t motor)
     uint8_t crc = ee_crc(mode, motor);
     uint8_t zero = 0;
 
-    /* Invalidate */
+    /* Invalidate old data */
     EEPROM_WriteByte(EE_MODE_BLOCK_ADDR, zero);
 
     EEPROM_WriteByte(EE_MODE_BLOCK_ADDR + 1, mode);
@@ -72,14 +100,14 @@ uint8_t EEPROM_LoadMode(uint8_t *mode, uint8_t *motor)
     EEPROM_ReadByte(EE_MODE_BLOCK_ADDR, &v);
     EEPROM_ReadByte(EE_MODE_BLOCK_ADDR + 4, &c);
 
-    if(v != EE_VALID_FLAG || c != EE_COMMIT_FLAG)
+    if (v != EE_VALID_FLAG || c != EE_COMMIT_FLAG)
         return 0;
 
     EEPROM_ReadByte(EE_MODE_BLOCK_ADDR + 1, &m);
     EEPROM_ReadByte(EE_MODE_BLOCK_ADDR + 2, &mot);
     EEPROM_ReadByte(EE_MODE_BLOCK_ADDR + 3, &crc);
 
-    if(crc != ee_crc(m, mot))
+    if (crc != ee_crc(m, mot))
         return 0;
 
     *mode = m;

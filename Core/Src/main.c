@@ -131,14 +131,13 @@ int main(void)
     MX_SPI1_Init();
     MX_USART1_UART_Init();
     MX_I2C2_Init();
-    Timer_EEPROM_EnsureValid();
     MX_TIM3_Init();
 
     /* ========== FIRST: INIT RTC BEFORE LCD ========== */
     RTC_Init();
     /* Set time ONLY ONCE — comment this line after first flash */
 //     RTC_SetTimeDate(0, 44, 12, 1, 29, 12, 2025);
-
+    Timer_EEPROM_EnsureValid();
     RTC_GetTimeDate();
 
     /* ========== SECOND: INIT LCD AFTER RTC ========== */
@@ -158,6 +157,9 @@ int main(void)
     ModelHandle_LoadModeState();
     HAL_Delay(200);
     ModelHandle_LoadCountdown();   // <<< THIS LINE IS MANDATORY
+        HAL_Delay(200);
+        ModelHandle_LoadTimerFromEEPROM();
+        HAL_Delay(200);
 
     /* UI + I/O */
     Screen_Init();
