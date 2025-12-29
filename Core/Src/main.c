@@ -124,22 +124,20 @@ int main(void)
     /* USER CODE END 1 */
      HAL_Init();
     SystemClock_Config();
-
-    /* ===== POWER-UP REFERENCE (for 7s motor lockout) ===== */
-    ModelHandle_OnPowerUp();     // <-- NEW
-
+    ModelHandle_OnPowerUp();
     /* Initialize HAL peripherals */
     MX_GPIO_Init();
     MX_ADC1_Init();
     MX_SPI1_Init();
     MX_USART1_UART_Init();
-    MX_I2C2_Init();              // MUST COME BEFORE ANY I2C DEVICE
+    MX_I2C2_Init();
+    Timer_EEPROM_EnsureValid();
     MX_TIM3_Init();
 
     /* ========== FIRST: INIT RTC BEFORE LCD ========== */
     RTC_Init();
     /* Set time ONLY ONCE — comment this line after first flash */
-    // RTC_SetTimeDate(0, 22, 11, 3, 3, 12, 2025);
+//     RTC_SetTimeDate(0, 44, 12, 1, 29, 12, 2025);
 
     RTC_GetTimeDate();
 
@@ -151,13 +149,15 @@ int main(void)
     LoRa_Init();
 
     /* Load system/device settings */
-    ModelHandle_LoadSettingsFromEEPROM();
+//    ModelHandle_LoadSettingsFromEEPROM();
+//    HAL_Delay(200);
     ModelHandle_LoadAutoSettings();   // <-- NEW: load AUTO gap/maxrun/retry
-    HAL_Delay(70);
+    HAL_Delay(200);
     ModelHandle_LoadTimerFromEEPROM();
-    /* Load last mode / power-restore state */
+    HAL_Delay(200);
     ModelHandle_LoadModeState();
-    HAL_Delay(70);
+    HAL_Delay(200);
+    ModelHandle_LoadCountdown();   // <<< THIS LINE IS MANDATORY
 
     /* UI + I/O */
     Screen_Init();

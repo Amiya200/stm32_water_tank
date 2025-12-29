@@ -90,6 +90,7 @@ void ModelHandle_ToggleManual(void);
 void ModelHandle_ManualLongPress(void);
 void ModelHandle_SetMotor(bool on);
 void ModelHandle_ClearManualOverride(void);
+void Timer_EEPROM_EnsureValid(void);
 
 /* Semi-auto Mode */
 void ModelHandle_StartSemiAuto(void);

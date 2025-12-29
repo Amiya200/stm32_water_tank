@@ -35,7 +35,8 @@ extern float g_voltageV;
  ***************************************************************/
 #define TIMER_EE_SIGNATURE  0x544D   /* 'TM' */
 #define TIMER_EE_VERSION    1
-#define EE_ADDR_TIMER_BLOCK 0x1000
+#define EE_ADDR_TIMER_BLOCK 0x7000    // last EEPROM page (safe)
+
 
 typedef struct {
     uint16_t signature;
@@ -120,6 +121,15 @@ typedef struct {
 } ModeState;
 
 static ModeState modeState;
+#define EE_ADDR_COUNTDOWN_BLOCK 0x1100
+#define CD_SIGNATURE 0xCD55
+
+typedef struct{
+    uint16_t sig;
+    uint32_t remaining;
+    uint8_t  active;
+    uint16_t crc;
+} CountdownBlock;
 
 /* Power Restore runtime copy */
 static uint8_t powerRestoreMode = 0;
@@ -158,6 +168,7 @@ static bool     slot_is_active_now(const TimerSlot *t);
 /* Tank */
 static bool isTankFull(void);
 
+static void SaveCountdown(void);
 /* FSM ticks */
 static void auto_tick(void);
 static void countdown_tick(void);
@@ -302,9 +313,24 @@ void ModelHandle_LoadTimerFromEEPROM(void)
         }
     }
 }
-/***************************************************************
- * ================= INTERNAL UTILITIES ========================
- ***************************************************************/
+void Timer_EEPROM_EnsureValid(void)
+{
+    TimerEEPROMBlock blk;
+    EEPROM_ReadBuffer(EE_ADDR_TIMER_BLOCK,(uint8_t*)&blk,sizeof(blk));
+
+    uint16_t crc = Timer_CRC16((uint8_t*)&blk,sizeof(blk)-2);
+
+    if(blk.signature!=TIMER_EE_SIGNATURE || blk.crc!=crc)
+    {
+        memset(&blk,0,sizeof(blk));
+        blk.signature = TIMER_EE_SIGNATURE;
+        blk.version   = TIMER_EE_VERSION;
+        blk.crc = Timer_CRC16((uint8_t*)&blk,sizeof(blk)-2);
+        EEPROM_WriteBuffer(EE_ADDR_TIMER_BLOCK,(uint8_t*)&blk,sizeof(blk));
+    }
+}
+
+
 /***************************************************************
  * ============== FORWARD DECLARATIONS (REQUIRED) ==============
  ***************************************************************/
@@ -1212,6 +1238,7 @@ void ModelHandle_StopCountdown(void)
     countdownActive = false;
     countdownMode   = false;
     countdownDuration = 0;
+    SaveCountdown();                 // clear EEPROM
     stop_motor();
     ModelHandle_SaveModeState();
 }
@@ -1222,6 +1249,7 @@ static void countdown_tick(void)
 
     uint32_t now = now_ms();
 
+    /* Tank full ends countdown */
     if (isTankFull())
     {
         ModelHandle_StopCountdown();
@@ -1229,10 +1257,58 @@ static void countdown_tick(void)
         return;
     }
 
-    if (now < cd_deadline)
-        countdownDuration = (cd_deadline - now) / 1000UL;
-    else
+    /* Deadline expired */
+    if (now >= cd_deadline)
+    {
         ModelHandle_StopCountdown();
+        return;
+    }
+
+    /* Update remaining time */
+    countdownDuration = (cd_deadline - now) / 1000UL;
+
+    /* ===== EEPROM POWER CUT SAFE SAVE (every 5 seconds) ===== */
+    static uint32_t lastSave = 0;
+    if ((now - lastSave) >= 5000UL)
+    {
+        lastSave = now;
+        SaveCountdown();     // stores remaining seconds safely
+    }
+}
+
+static uint16_t CD_CRC(const uint8_t* d,uint16_t l){
+    uint16_t c=0xFFFF;
+    while(l--) c=(c>>1)^(*d++ + 0xA001);
+    return c;
+}
+static void SaveCountdown(void)
+{
+    CountdownBlock b;
+    b.sig = CD_SIGNATURE;
+    b.remaining = countdownDuration;
+    b.active = countdownActive;
+    b.crc = CD_CRC((uint8_t*)&b,sizeof(b)-2);
+
+    EEPROM_WriteBuffer(EE_ADDR_COUNTDOWN_BLOCK,(uint8_t*)&b,sizeof(b));
+}
+
+void ModelHandle_LoadCountdown(void)
+{
+    CountdownBlock b;
+    EEPROM_ReadBuffer(EE_ADDR_COUNTDOWN_BLOCK,(uint8_t*)&b,sizeof(b));
+
+    if(b.sig!=CD_SIGNATURE) return;
+    if(CD_CRC((uint8_t*)&b,sizeof(b)-2)!=b.crc) return;
+
+    if(b.active && b.remaining > 0)
+    {
+        countdownActive   = true;
+        countdownMode     = true;
+        countdownDuration = b.remaining;
+
+        cd_deadline = now_ms() + b.remaining * 1000UL;   // <<< FIX
+        start_motor();
+    }
 }
 
 /***************************************************************
@@ -1430,7 +1506,7 @@ void ModelHandle_Process(void)
 
     if (timerActive)
     {
-        ModelHandle_ProcessTimerSlots();
+    	ModelHandle_ProcessTimerSlots();
         leds_from_model();
         Buzzer_Update();
         return;
@@ -1564,7 +1640,11 @@ void ModelHandle_SetTimerSlot(uint8_t slot,
     timerSlots[slot].onMinute  = onM;
     timerSlots[slot].offHour   = offH;
     timerSlots[slot].offMinute = offM;
+    timerSlots[slot].enabled   = 1;
+
+    ModelHandle_SaveTimerToEEPROM();   // <<< CRITICAL
 }
+
 
 /***************************************************************
  * ================= PROTECTION ENABLE APIs ====================
