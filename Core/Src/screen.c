@@ -202,7 +202,7 @@ static uint8_t  edit_settings_retry = 3;
 /* Low / High Volt: 0=Disable, else 150–200 / 250–300V             */
 static uint16_t edit_settings_uv    = 180;  // Low volt
 static uint16_t edit_settings_ov    = 260;  // High volt
-
+uint8_t akg = 0 ;
 /* Over/Under load: 0=Disable, else A (0.1 step) with clamping     */
 static int edit_settings_ol = 6;       // Overload (A) change to int
 static int edit_settings_ul = 0;       // Underload (A) change to int
@@ -524,8 +524,9 @@ static void show_edit_off_time(void)
  *  TIMER — DAYS MENU
  ***************************************************************/
 static const char* dayNames[] = {
-    "Monday", "Tuesday", "Wed", "Thu", "Friday", "Sat", "Sun",
-    "Enable All", "Disable All", "Next>"
+    "Enable All", "Disable All",
+    "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
+    "Next>"
 };
 
 static void show_timer_days(void)
@@ -534,17 +535,17 @@ static void show_timer_days(void)
 
     char buf[17];
 
-    if (edit_day_index < 7)
-    {
-        uint8_t isOn = ((edit_day_mask >> edit_day_index) & 1);
-        snprintf(buf, sizeof(buf), "> %s (%s)",
-                 dayNames[edit_day_index],
-                 isOn ? "ON" : "OFF");
-    }
-    else {
-        snprintf(buf, sizeof(buf), "> %s",
-                 dayNames[edit_day_index]);
-    }
+    if (edit_day_index >= 2 && edit_day_index <= 8)
+        {
+            uint8_t d = edit_day_index - 2;
+            uint8_t isOn = (edit_day_mask >> d) & 1;
+            snprintf(buf,sizeof(buf),"> %s (%s)", dayNames[edit_day_index], isOn?"ON":"OFF");
+        }
+        else
+        {
+            snprintf(buf,sizeof(buf),"> %s", dayNames[edit_day_index]);
+        }
+
 
     lcd_line1(buf);
 }
@@ -582,6 +583,7 @@ static void show_timer_enable(void)
  ***************************************************************/
 static void show_timer_summary(void)
 {
+akg =1;
     char title[17];
     snprintf(title, sizeof(title), "T%u Summary",
              (unsigned)(currentSlot + 1));
@@ -902,7 +904,7 @@ static void show_reset_confirm(void)
 static void apply_timer_slot(void)
 {
     TimerSlot *t = &timerSlots[currentSlot];
-
+akg=2;
     t->onHour    = edit_on_h;
     t->onMinute  = edit_on_m;
     t->offHour   = edit_off_h;
@@ -1078,32 +1080,33 @@ static void menu_select(void)
 
     /* TIMER SLOT SELECT → LOAD TIMER */
     if (ui == UI_TIMER_SLOT_SELECT)
-    {
-        if (currentSlot == 5)
         {
-            ui = UI_MENU;  // BACK
+            if (currentSlot == 5)
+            {
+                ui = UI_MENU;  // BACK
+                screenNeedsRefresh = true;
+                return;
+            }
+
+            TimerSlot *t = &timerSlots[currentSlot];
+
+            edit_on_h  = t->onHour;
+            edit_on_m  = t->onMinute;
+            edit_off_h = t->offHour;
+            edit_off_m = t->offMinute;
+
+            edit_day_mask = t->dayMask;
+            edit_gap_min  = t->gapMinutes;
+            edit_slot_enabled = t->enabled;
+
+            time_edit_field = 0;
+            edit_day_index  = 0;
+
+            ui = UI_TIMER_EDIT_ON_TIME;
             screenNeedsRefresh = true;
             return;
         }
 
-        TimerSlot *t = &timerSlots[currentSlot];
-
-        edit_on_h  = t->onHour;
-        edit_on_m  = t->onMinute;
-        edit_off_h = t->offHour;
-        edit_off_m = t->offMinute;
-
-        edit_day_mask = t->dayMask;
-        edit_gap_min  = t->gapMinutes;
-        edit_slot_enabled = t->enabled;
-
-        time_edit_field = 0;
-        edit_day_index  = 0;
-
-        ui = UI_TIMER_EDIT_ON_TIME;
-        screenNeedsRefresh = true;
-        return;
-    }
 
     /* TIMER EDIT FLOW SEQUENCE */
     switch(ui)
@@ -1136,15 +1139,17 @@ static void menu_select(void)
         case UI_TIMER_EDIT_GAP:
             ui = UI_TIMER_EDIT_ENABLE;
             break;
-
         case UI_TIMER_EDIT_ENABLE:
-            ui = UI_TIMER_EDIT_SUMMARY;
+            /* normal flow: save slot & back to slot list */
+            apply_timer_slot();
+            ui = UI_TIMER_SLOT_SELECT;
             break;
 
         case UI_TIMER_EDIT_SUMMARY:
             apply_timer_slot();
-            ui = UI_TIMER_SLOT_SELECT;   /* after summary → back to slot select */
+            ui = UI_TIMER_SLOT_SELECT;
             break;
+
 
         default:
             break;
@@ -1765,12 +1770,10 @@ void Screen_HandleSwitches(void)
                 break;
 
             case BTN_SELECT:
-                if (edit_day_index < 7)
-                    edit_day_mask ^= (1u << edit_day_index);
-                else if (edit_day_index == 7)
-                    edit_day_mask = 0x7F;
-                else if (edit_day_index == 8)
-                    edit_day_mask = 0x00;
+                if (edit_day_index == 0) edit_day_mask = 0x7F;     // Enable all
+                else if (edit_day_index == 1) edit_day_mask = 0x00;// Disable all
+                else if (edit_day_index >= 2 && edit_day_index <= 8)
+                    edit_day_mask ^= (1 << (edit_day_index - 2));
                 else if (edit_day_index == 9)
                     ui = UI_TIMER_EDIT_GAP;
                 break;
@@ -1803,11 +1806,10 @@ void Screen_HandleSwitches(void)
             case BTN_DOWN_LONG:
                 edit_slot_enabled = false;
                 break;
-
             case BTN_SELECT:
-                ui = UI_TIMER_EDIT_SUMMARY;
+                apply_timer_slot();
+                ui = UI_TIMER_SLOT_SELECT;
                 break;
-
             case BTN_RESET:
                 ui = UI_TIMER_SLOT_SELECT;
                 break;
