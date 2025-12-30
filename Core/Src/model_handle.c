@@ -63,7 +63,7 @@ static uint16_t Timer_CRC16(const uint8_t *data, uint16_t len)
 /***************************************************************
  * TIMER SLOTS (5)
  ***************************************************************/
-TimerSlot timerSlots[5] = {0};
+TimerSlot timerSlots[5];
 typedef enum {
     TIMER_RUN = 0,
     TIMER_GAP_WAIT
@@ -711,10 +711,18 @@ static void motor_force_off(void)
 
 static inline void start_motor(void)
 {
-    if(motorOwner == MOTOR_OWNER_NONE)
-        motorOwner = MOTOR_OWNER_MANUAL;   // default owner
+    if (motorOwner == MOTOR_OWNER_NONE)
+    {
+        if (autoActive)        motorOwner = MOTOR_OWNER_AUTO;
+        else if (timerActive) motorOwner = MOTOR_OWNER_TIMER;
+        else if (twistActive) motorOwner = MOTOR_OWNER_TWIST;
+        else if (countdownActive) motorOwner = MOTOR_OWNER_COUNTDOWN;
+        else if (semiAutoActive) motorOwner = MOTOR_OWNER_SEMIAUTO;
+        else motorOwner = MOTOR_OWNER_MANUAL;
+    }
     motor_apply(true);
 }
+
 
 static inline void stop_motor(void)
 {
@@ -792,6 +800,8 @@ static inline bool isAnyModeActive(void)
 
 void ModelHandle_SoftDryRunHandler(void)
 {
+	if (autoActive) return;    // <<< AUTO MODE CONTROLS MOTOR
+
 	if(motorOwner != MOTOR_OWNER_NONE &&
 	   motorOwner != MOTOR_OWNER_AUTO &&
 	   motorOwner != MOTOR_OWNER_TIMER)
@@ -1099,6 +1109,13 @@ void ModelHandle_ProcessTimerSlots(void)
         return;
     }
 
+    if (autoActive && isTankFull())
+    {
+        ModelHandle_StopAuto();
+        Buzzer_TriggerAlert();
+        return;
+    }
+
     /* ================= WATER AVAILABLE ================= */
     if (senseDryRun == true)
     {
@@ -1310,10 +1327,13 @@ static void auto_tick(void)
     	}
     switch (autoState)
     {
-        case AUTO_ON_WAIT:
-            if (now >= autoDeadline)
-                autoState = AUTO_DRY_CHECK;
-            break;
+    case AUTO_ON_WAIT:
+        start_motor();
+        motorStatus = 1;
+        if (now >= autoDeadline)
+            autoState = AUTO_DRY_CHECK;
+        break;
+
 
         case AUTO_DRY_CHECK:
             ModelHandle_CheckDryRun();
@@ -1598,24 +1618,34 @@ void ModelHandle_Process(void)
 
     if (manualActive)
     {
+        if (isTankFull())                // <<< MISSING STOP CONDITION
+        {
+            manualActive = false;
+            clear_all_modes();
+            motor_force_off();
+            ModelHandle_SaveModeState();
+            Buzzer_TriggerAlert();
+            return;
+        }
+
         if (senseOverLoad || senseUnderLoad || senseOverUnderVolt)
         {
             manualActive = false;
             clear_all_modes();
-            motor_force_off();          // <<< HARD RELAY OFF
+            motor_force_off();
             ModelHandle_SaveModeState();
             Buzzer_TriggerAlert();
+            return;
         }
 
-        else if (!Motor_GetStatus())
-        {
+        if (!Motor_GetStatus())
             start_motor();
-        }
 
         leds_from_model();
         Buzzer_Update();
         return;
     }
+
 
     if (autoActive)
     {
