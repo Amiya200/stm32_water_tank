@@ -132,35 +132,27 @@ int main(void)
     MX_USART1_UART_Init();
     MX_I2C2_Init();
     MX_TIM3_Init();
-
-    /* ========== FIRST: INIT RTC BEFORE LCD ========== */
     RTC_Init();
     /* Set time ONLY ONCE — comment this line after first flash */
 //     RTC_SetTimeDate(0, 44, 12, 1, 29, 12, 2025);
     Timer_EEPROM_EnsureValid();
     RTC_GetTimeDate();
-
-    /* ========== SECOND: INIT LCD AFTER RTC ========== */
     lcd_init();
-
-    /* ========== Then other modules ========== */
     ADC_Init(&hadc1);
     LoRa_Init();
-    HAL_Delay(200);
+    HAL_Delay(50);
     ModelHandle_LoadSettingsFromEEPROM();
-    HAL_Delay(200);
+    HAL_Delay(50);
     ModelHandle_LoadAutoSettings();   // <-- NEW: load AUTO gap/maxrun/retry
-    HAL_Delay(200);
+    HAL_Delay(50);
     ModelHandle_LoadTimerFromEEPROM();
-    HAL_Delay(200);
+    HAL_Delay(50);
     ModelHandle_LoadModeState();
-    HAL_Delay(200);
+    HAL_Delay(50);
     ModelHandle_LoadCountdown();   // <<< THIS LINE IS MANDATORY
-    HAL_Delay(200);
+    HAL_Delay(50);
     ModelHandle_LoadTimerFromEEPROM();
-    HAL_Delay(200);
-
-    /* UI + I/O */
+    HAL_Delay(50);
     Screen_Init();
     UART_Init();
     Switches_Init();
@@ -169,9 +161,7 @@ int main(void)
     ACS712_Init(&hadc1);
 
     loraMode = LORA_MODE_RECEIVER;
-
     /* USER CODE END 2 */
-
     /* Infinite loop */
     while (1)
     {
@@ -179,37 +169,19 @@ int main(void)
         /* == Sensor Updates == */
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
-
-        /* == UI Buttons + Screen == */
         Screen_HandleSwitches();
         Screen_Update();
-
-        /* == Update RTC time == */
         RTC_GetTimeDate();
-//
-//        /* == Recalculate timer engine == */
-//        ModelHandle_TimerRecalculateNow();
-
-        /* == Auto Timer Activation == */
         ModelHandle_CheckAutoTimerActivation();
-
-        /* == UART Commands == */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
-
-        /* == Core Motor Logic == */
         ModelHandle_Process();
         ModelHandle_ProcessDryRun();
-
-        /* == LoRa Communication == */
         LoRa_Task();
-
-        /* == LED Updates == */
         LED_Task();
-
         HAL_Delay(10);  // ~50Hz loop
     }
 

@@ -124,8 +124,11 @@ static ModeState modeState;
 #define EE_ADDR_COUNTDOWN_BLOCK 0x0040
 #define EE_ADDR_MODE_BLOCK     0x0080
 #define EE_ADDR_AUTO_BLOCK     0x00C0
-#define EE_ADDR_TIMER_BLOCK    0x0100
 #define CD_SIGNATURE 0xCD55
+static bool autoResumeBoot = false;
+void ModelHandle_CheckDryRun(void);
+void ModelHandle_CheckLoadFault(void);
+static uint8_t AUTO_CRC(const uint8_t* d, uint16_t l);
 
 typedef struct{
     uint16_t sig;
@@ -158,7 +161,7 @@ static inline void stop_motor(void);
 /* Mode helpers */
 static inline void clear_all_modes(void);
 static inline bool isAnyModeActive(void);
-
+static void SaveAutoRuntime(void);
 /* Dry-run */
 void ModelHandle_SoftDryRunHandler(void);
 
@@ -179,6 +182,17 @@ static void twist_tick(void);
 static void twist_time_logic(void);
 static void protections_tick(void);
 static void leds_from_model(void);
+typedef enum {
+    MOTOR_OWNER_NONE = 0,
+    MOTOR_OWNER_MANUAL,
+    MOTOR_OWNER_SEMIAUTO,
+    MOTOR_OWNER_TIMER,
+    MOTOR_OWNER_COUNTDOWN,
+    MOTOR_OWNER_TWIST,
+    MOTOR_OWNER_AUTO
+} MotorOwner;
+
+static volatile MotorOwner motorOwner = MOTOR_OWNER_NONE;
 
 /***************************************************************
  * ================= EEPROM SETTINGS SAVE ======================
@@ -437,6 +451,7 @@ static bool isTankFull(void)
     {
         lastState = false;
     }
+    stop_motor();
 
     return false;
 }
@@ -512,6 +527,7 @@ void ModelHandle_StartTimerNearestSlot(void)
 {
     clear_all_modes();
     timerActive = true;
+    motorOwner = MOTOR_OWNER_TIMER;
     ModelHandle_ProcessTimerSlots();
 }
 static inline void Buzzer_SetPin(bool on)
@@ -595,10 +611,11 @@ void reset(void)
     /* 2) Water available → keep motor ON until tank is full or fault */
     while (!isTankFull())
     {
+    	stop_motor();
         ModelHandle_CheckLoadFault();
         if (senseOverLoad || senseUnderLoad || senseOverUnderVolt || senseMaxRunReached)
         {
-            stop_motor();
+
             manualOverride = false;
             Buzzer_TriggerAlert();  // <<< BUZZER: load/volt fault
             return;
@@ -684,14 +701,26 @@ static inline void motor_apply(bool on)
     motorStatus = on ? 1 : 0;
     UART_SendStatusPacket();
 }
+static void motor_force_off(void)
+{
+    Relay_Set(1, false);
+    motorStatus = 0;
+    motorOwner  = MOTOR_OWNER_NONE;
+    UART_SendStatusPacket();
+}
 
-static inline void start_motor(void) { motor_apply(true); }
-static inline void stop_motor(void)  { motor_apply(false); }
+static inline void start_motor(void)
+{
+    if(motorOwner == MOTOR_OWNER_NONE)
+        motorOwner = MOTOR_OWNER_MANUAL;   // default owner
+    motor_apply(true);
+}
 
-/***************************************************************
- * ================= BUZZER DRIVER =============================
- ***************************************************************/
-
+static inline void stop_motor(void)
+{
+    motor_apply(false);
+    motorOwner = MOTOR_OWNER_NONE;
+}
 
 /***************************************************************
  * ================= MAX RUN PROTECTION ========================
@@ -763,6 +792,11 @@ static inline bool isAnyModeActive(void)
 
 void ModelHandle_SoftDryRunHandler(void)
 {
+	if(motorOwner != MOTOR_OWNER_NONE &&
+	   motorOwner != MOTOR_OWNER_AUTO &&
+	   motorOwner != MOTOR_OWNER_TIMER)
+	    return;
+
     uint32_t now = now_ms();
 
     if (timerActive)
@@ -877,6 +911,11 @@ static inline uint32_t get_load_lock_duration_ms(void)
 
 void ModelHandle_CheckLoadFault(void)
 {
+	if(motorOwner != MOTOR_OWNER_NONE &&
+	   motorOwner != MOTOR_OWNER_AUTO &&
+	   motorOwner != MOTOR_OWNER_TIMER)
+	    return;
+
     float I = g_currentA;
     float V = g_voltageV;
 
@@ -1142,8 +1181,7 @@ void ModelHandle_StartSemiAuto(void)
 {
     clear_all_modes();
     semiAutoActive = true;
-    ModelHandle_SaveModeState();
-
+    motorOwner = MOTOR_OWNER_SEMIAUTO;
     senseDryRun = false;
     if (!isTankFull())
         start_motor();
@@ -1173,7 +1211,18 @@ typedef enum {
 
 static AutoState autoState    = AUTO_IDLE;
 static uint32_t  autoDeadline = 0;
+#define EE_ADDR_AUTO_RUNTIME  0x0340
+#define AUTO_SIG 0xA055
 
+typedef struct __attribute__((packed))
+{
+    uint16_t sig;
+    uint8_t  active;
+    uint8_t  state;
+    uint8_t  retryCount;
+    uint32_t remaining_ms;
+    uint8_t  crc;
+} AutoRuntimeBlock;
 void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
 {
     clear_all_modes();
@@ -1192,27 +1241,73 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry)
 
 void ModelHandle_StopAuto(void)
 {
+	stop_motor();
     autoActive = false;
     autoState  = AUTO_IDLE;
     auto_retry_count = 0;
-
+    EEPROM_WriteBuffer(EE_ADDR_AUTO_RUNTIME, (uint8_t[]){0}, sizeof(AutoRuntimeBlock));
     ModelHandle_SaveModeState();
-    stop_motor();
+
 }
 
+void ModelHandle_LoadAutoSettings(void)
+{
+    EEPROM_ReadBuffer(0x0300, (uint8_t*)&auto_gap_s, sizeof(auto_gap_s));
+    EEPROM_ReadBuffer(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
+    EEPROM_ReadBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
+
+    AutoRuntimeBlock b;
+    EEPROM_ReadBuffer(EE_ADDR_AUTO_RUNTIME,(uint8_t*)&b,sizeof(b));
+
+    if(b.sig != AUTO_SIG) return;
+    if(AUTO_CRC((uint8_t*)&b,sizeof(b)-1) != b.crc) return;
+    if(!b.active) return;
+
+    autoActive       = true;
+    autoState        = (AutoState)b.state;
+    auto_retry_count = b.retryCount;
+    autoDeadline     = now_ms() + b.remaining_ms;
+    autoResumeBoot   = true;     // <<< MARK BOOT RESUME
+
+
+    start_motor();   // resumes from exact phase
+}
 static void auto_tick(void)
 {
+
+
     if (!autoActive) return;
 
     uint32_t now = now_ms();
 
+    /* ===== AUTO runtime safe-save every 5 sec ===== */
+    static uint32_t lastSave = 0;
+    if(now - lastSave >= 5000UL)
+    {
+        lastSave = now;
+        SaveAutoRuntime();
+    }
+
     if (isTankFull())
     {
         ModelHandle_StopAuto();
+        EEPROM_WriteBuffer(EE_ADDR_AUTO_RUNTIME, (uint8_t[]){0}, sizeof(AutoRuntimeBlock));
         Buzzer_TriggerAlert();
         return;
     }
 
+    if(autoResumeBoot)
+    	{
+    	    autoResumeBoot = false;
+
+    	    // Resume correct phase
+    	    if(autoState == AUTO_ON_WAIT || autoState == AUTO_DRY_CHECK)
+    	        start_motor();
+    	    else
+    	        stop_motor();
+
+    	    return;
+    	}
     switch (autoState)
     {
         case AUTO_ON_WAIT:
@@ -1505,12 +1600,13 @@ void ModelHandle_Process(void)
     {
         if (senseOverLoad || senseUnderLoad || senseOverUnderVolt)
         {
-            stop_motor();
-//            manualActive = false;
-//            manualOverride = false;
-//            ModelHandle_SaveModeState();
+            manualActive = false;
+            clear_all_modes();
+            motor_force_off();          // <<< HARD RELAY OFF
+            ModelHandle_SaveModeState();
             Buzzer_TriggerAlert();
         }
+
         else if (!Motor_GetStatus())
         {
             start_motor();
@@ -1531,8 +1627,6 @@ void ModelHandle_Process(void)
 
     if (semiAutoActive)
     {
-//        senseDryRun = false;
-
         if (!isTankFull())
         {
             if (!Motor_GetStatus())
@@ -1540,8 +1634,10 @@ void ModelHandle_Process(void)
         }
         else
         {
-            stop_motor();
             semiAutoActive = false;
+            clear_all_modes();
+            motor_force_off();          // <<< HARD RELAY OFF
+            ModelHandle_SaveModeState();
             Buzzer_TriggerAlert();
         }
 
@@ -1549,6 +1645,7 @@ void ModelHandle_Process(void)
         Buzzer_Update();
         return;
     }
+
 
     if (timerActive)
     {
@@ -1629,6 +1726,30 @@ void ModelHandle_SetUserSettings(uint16_t gap_s,
 
     ModelHandle_SaveSettingsToEEPROM();
 }
+static uint8_t AUTO_CRC(const uint8_t* d, uint16_t l)
+{
+    uint8_t c = 0;
+    while(l--) c ^= *d++;
+    return c;
+}
+static void SaveAutoRuntime(void)
+{
+    AutoRuntimeBlock b;
+
+    b.sig        = AUTO_SIG;
+    b.active     = autoActive;
+    b.state      = autoState;
+    b.retryCount = auto_retry_count;
+
+    if(autoActive && autoDeadline > now_ms())
+        b.remaining_ms = autoDeadline - now_ms();
+    else
+        b.remaining_ms = 0;
+
+    b.crc = AUTO_CRC((uint8_t*)&b, sizeof(b)-1);
+
+    EEPROM_WriteBuffer(EE_ADDR_AUTO_RUNTIME, (uint8_t*)&b, sizeof(b));
+}
 
 void ModelHandle_SetAutoSettings(uint16_t gap_s,
                                  uint16_t maxrun_min,
@@ -1643,12 +1764,6 @@ void ModelHandle_SetAutoSettings(uint16_t gap_s,
     EEPROM_WriteBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
 }
 
-void ModelHandle_LoadAutoSettings(void)
-{
-    EEPROM_ReadBuffer(0x0300, (uint8_t*)&auto_gap_s, sizeof(auto_gap_s));
-    EEPROM_ReadBuffer(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
-    EEPROM_ReadBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
-}
 
 bool ModelHandle_IsAutoActive(void)
 {
