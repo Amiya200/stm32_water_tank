@@ -1112,6 +1112,11 @@ void ModelHandle_ProcessTimerSlots(void)
         return;
     }
 
+    if (isTankFull())
+       {
+           stop_motor();          // motor forced OFF
+           return;                // keep slot active but motor clamped
+       }
     /* Read dry-run sensor */
     ModelHandle_CheckDryRun();
 
