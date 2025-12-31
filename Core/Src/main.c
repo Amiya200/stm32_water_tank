@@ -178,6 +178,7 @@ int main(void)
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
+        ModelHandle_CheckDryRun();
         ModelHandle_Process();
         ModelHandle_ProcessDryRun();
         LoRa_Task();

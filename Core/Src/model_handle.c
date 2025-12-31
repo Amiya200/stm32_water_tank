@@ -64,13 +64,13 @@ static uint16_t Timer_CRC16(const uint8_t *data, uint16_t len)
  * TIMER SLOTS (5)
  ***************************************************************/
 TimerSlot timerSlots[5];
-typedef enum {
-    TIMER_RUN = 0,
-    TIMER_GAP_WAIT
-} TimerDryState;
-
-static TimerDryState timerDryState = TIMER_RUN;
-static uint32_t timerGapDeadline = 0;
+//typedef enum {
+//    TIMER_RUN = 0,
+//    TIMER_GAP_WAIT
+//} TimerDryState;
+//
+//static TimerDryState timerDryState = TIMER_RUN;
+//static uint32_t timerGapDeadline = 0;
 
 /***************************************************************
  * MODE FLAGS
@@ -170,9 +170,6 @@ static bool     timer_any_active_slot(void);
 static uint16_t get_active_timer_gap_minutes(void);
 static uint8_t  get_today_mask(void);
 static bool     slot_is_active_now(const TimerSlot *t);
-
-/* Tank */
-static bool isTankFull(void);
 
 static void SaveCountdown(void);
 /* FSM ticks */
@@ -667,40 +664,52 @@ void ModelHandle_OnPowerUp(void)
 {
     powerOnMs = HAL_GetTick();
 }
+/*********************** MOTOR CORE (SAFE) ************************/
 
+/* Physical relay truth (prevents desync) */
+static inline bool Motor_IsRelayOn(void)
+{
+    return HAL_GPIO_ReadPin(Relay1_GPIO_Port, Relay1_Pin) == GPIO_PIN_SET;
+}
+
+
+/* Power-on delay */
 static bool Motor_StartAllowed(void)
 {
-    return (HAL_GetTick() - powerOnMs) >= 7000UL; /* 7s delay */
+    return (HAL_GetTick() - powerOnMs) >= 7000UL;   // 7s safety delay
 }
 
-static inline bool Motor_GetStatusInternal(void)
-{
-    return (motorStatus == 1);
-}
-
-bool Motor_GetStatus(void)
-{
-    return Motor_GetStatusInternal();
-}
-
+/* Unified motor apply — self healing */
 static inline void motor_apply(bool on)
 {
-    bool current = Motor_GetStatusInternal();
-    if (on == current)
-        return;
+    bool relayNow = Motor_IsRelayOn();
 
     if (on)
     {
         if (!Motor_StartAllowed())
             return;
 
-        motorOnStartMs = HAL_GetTick();
+        if (!relayNow)
+        {
+            Relay_Set(1, true);
+            motorOnStartMs = HAL_GetTick();
+        }
+
+        motorStatus = 1;
+    }
+    else
+    {
+        if (relayNow)
+            Relay_Set(1, false);
+
+        motorStatus = 0;
+        motorOwner  = MOTOR_OWNER_NONE;
     }
 
-    Relay_Set(1, on);
-    motorStatus = on ? 1 : 0;
     UART_SendStatusPacket();
 }
+
+/* Absolute emergency OFF */
 static void motor_force_off(void)
 {
     Relay_Set(1, false);
@@ -709,25 +718,32 @@ static void motor_force_off(void)
     UART_SendStatusPacket();
 }
 
+/* External motor status */
+bool Motor_GetStatus(void)
+{
+    return Motor_IsRelayOn();
+}
+
+/* Safe start with ownership */
 static inline void start_motor(void)
 {
     if (motorOwner == MOTOR_OWNER_NONE)
     {
-        if (autoActive)        motorOwner = MOTOR_OWNER_AUTO;
-        else if (timerActive) motorOwner = MOTOR_OWNER_TIMER;
-        else if (twistActive) motorOwner = MOTOR_OWNER_TWIST;
-        else if (countdownActive) motorOwner = MOTOR_OWNER_COUNTDOWN;
-        else if (semiAutoActive) motorOwner = MOTOR_OWNER_SEMIAUTO;
-        else motorOwner = MOTOR_OWNER_MANUAL;
+        if      (autoActive)       motorOwner = MOTOR_OWNER_AUTO;
+        else if (timerActive)      motorOwner = MOTOR_OWNER_TIMER;
+        else if (twistActive)      motorOwner = MOTOR_OWNER_TWIST;
+        else if (countdownActive)  motorOwner = MOTOR_OWNER_COUNTDOWN;
+        else if (semiAutoActive)   motorOwner = MOTOR_OWNER_SEMIAUTO;
+        else                       motorOwner = MOTOR_OWNER_MANUAL;
     }
+
     motor_apply(true);
 }
 
-
+/* Safe stop — always hard OFF */
 static inline void stop_motor(void)
 {
     motor_apply(false);
-    motorOwner = MOTOR_OWNER_NONE;
 }
 
 /***************************************************************
@@ -1308,6 +1324,7 @@ static void auto_tick(void)
     if (isTankFull())
     {
         ModelHandle_StopAuto();
+        stop_motor();
         EEPROM_WriteBuffer(EE_ADDR_AUTO_RUNTIME, (uint8_t[]){0}, sizeof(AutoRuntimeBlock));
         Buzzer_TriggerAlert();
         return;
