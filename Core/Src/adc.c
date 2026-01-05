@@ -183,7 +183,7 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
     }
 
     if (changed && loraPacket[0] != '\0') {
-        LoRa_SendPacket((uint8_t*)loraPacket, strlen(loraPacket));
+//        LoRa_SendPacket((uint8_t*)loraPacket, strlen(loraPacket));
     }
 }
 

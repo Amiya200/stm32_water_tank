@@ -4,14 +4,14 @@
 #include "stm32f1xx_hal.h"
 #include <stdint.h>
 
-/* ==== LoRa Modes ==== */
+/* ================= MODES ================= */
 #define LORA_MODE_TRANSMITTER   1
 #define LORA_MODE_RECEIVER      2
 #define LORA_MODE_TRANSCEIVER   3
 
 extern uint8_t loraMode;
 
-/* ==== Pin mapping ==== */
+/* ================= PIN MAPPING ================= */
 #define LORA_NSS_PORT    GPIOA
 #define LORA_NSS_PIN     GPIO_PIN_15
 
@@ -21,13 +21,12 @@ extern uint8_t loraMode;
 #define LORA_DIO0_PORT   GPIOB
 #define LORA_DIO0_PIN    GPIO_PIN_7
 
-/* External SPI handle */
+/* ================= SPI ================= */
 extern SPI_HandleTypeDef hspi1;
 
-/* ==== API ==== */
-void LoRa_Reset(void);
+/* ================= API ================= */
 void LoRa_Init(void);
-void LoRa_SetFrequency(uint32_t freqHz);
+void LoRa_Task(void);
 
 void LoRa_WriteReg(uint8_t addr, uint8_t data);
 uint8_t LoRa_ReadReg(uint8_t addr);
@@ -36,10 +35,6 @@ void LoRa_WriteBuffer(uint8_t addr, const uint8_t *buffer, uint8_t size);
 void LoRa_ReadBuffer(uint8_t addr, uint8_t *buffer, uint8_t size);
 
 void LoRa_SendPacket(const uint8_t *buffer, uint8_t size);
-
-/* IMPORTANT — UPDATED SIGNATURE */
 uint8_t LoRa_ReceivePacket(uint8_t *buffer, int16_t *rssi);
-
-void LoRa_Task(void);
 
 #endif /* __LORA_H__ */

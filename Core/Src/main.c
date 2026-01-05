@@ -165,8 +165,7 @@ int main(void)
     /* Infinite loop */
     while (1)
     {
-
-        /* == Sensor Updates == */
+    	LoRa_Task();
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
         Screen_HandleSwitches();
@@ -181,7 +180,7 @@ int main(void)
         ModelHandle_CheckDryRun();
         ModelHandle_Process();
         ModelHandle_ProcessDryRun();
-        LoRa_Task();
+
         LED_Task();
         HAL_Delay(10);  // ~50Hz loop
     }
