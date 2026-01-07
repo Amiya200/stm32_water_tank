@@ -5,4 +5,4 @@
 ../Core/Src/lora.c:64:13:LoRa_Reset	8	static
 ../Core/Src/lora.c:74:6:LoRa_Init	16	static
 ../Core/Src/lora.c:116:9:LoRa_ReceivePacket	24	static
-../Core/Src/lora.c:146:6:LoRa_Task	120	static
+../Core/Src/lora.c:146:6:LoRa_Task	16	static

@@ -11,8 +11,8 @@ void Debug_Print(const char *s);
 uint8_t loraMode = LORA_MODE_RECEIVER;
 extern SPI_HandleTypeDef hspi1;
 
-uint8_t rxBuffer[64];
-uint32_t rxPacketCount = 0;
+uint8_t rxBuffer_l[64];
+uint32_t rxPacketCount_l = 0;
 
 /* ================= CONSTANTS ================= */
 #define LORA_FREQUENCY 433000000UL
@@ -25,9 +25,9 @@ uint32_t rxPacketCount = 0;
 
 void LoRa_WriteReg(uint8_t addr, uint8_t data)
 {
-    uint8_t buf[2] = { addr | 0x80, data };
+    uint8_t buf_l[2] = { addr | 0x80, data };
     NSS_LOW();
-    HAL_SPI_Transmit(&hspi1, buf, 2, HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi1, buf_l, 2, HAL_MAX_DELAY);
     NSS_HIGH();
 }
 
@@ -41,21 +41,21 @@ uint8_t LoRa_ReadReg(uint8_t addr)
     return rx;
 }
 
-void LoRa_WriteBuffer(uint8_t addr, const uint8_t *buffer, uint8_t size)
+void LoRa_WriteBuffer(uint8_t addr, const uint8_t *buffer_l, uint8_t size)
 {
     uint8_t a = addr | 0x80;
     NSS_LOW();
     HAL_SPI_Transmit(&hspi1, &a, 1, HAL_MAX_DELAY);
-    HAL_SPI_Transmit(&hspi1, (uint8_t*)buffer, size, HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi1, (uint8_t*)buffer_l, size, HAL_MAX_DELAY);
     NSS_HIGH();
 }
 
-void LoRa_ReadBuffer(uint8_t addr, uint8_t *buffer, uint8_t size)
+void LoRa_ReadBuffer(uint8_t addr, uint8_t *buffer_l, uint8_t size)
 {
     uint8_t a = addr & 0x7F;
     NSS_LOW();
     HAL_SPI_Transmit(&hspi1, &a, 1, HAL_MAX_DELAY);
-    HAL_SPI_Receive(&hspi1, buffer, size, HAL_MAX_DELAY);
+    HAL_SPI_Receive(&hspi1, buffer_l, size, HAL_MAX_DELAY);
     NSS_HIGH();
 }
 
@@ -113,7 +113,7 @@ void LoRa_Init(void)
 
 /* ================= RECEIVE (DIO0-BASED, RELIABLE) ================= */
 
-uint8_t LoRa_ReceivePacket(uint8_t *buffer, int16_t *rssi)
+uint8_t LoRa_ReceivePacket(uint8_t *buffer_l, int16_t *rssi)
 {
     /* DIO0 goes HIGH on RX_DONE */
     if (HAL_GPIO_ReadPin(LORA_DIO0_PORT, LORA_DIO0_PIN) == GPIO_PIN_RESET)
@@ -131,7 +131,7 @@ uint8_t LoRa_ReceivePacket(uint8_t *buffer, int16_t *rssi)
     uint8_t fifoAddr = LoRa_ReadReg(0x10);
 
     LoRa_WriteReg(0x0D, fifoAddr);
-    LoRa_ReadBuffer(0x00, buffer, len);
+    LoRa_ReadBuffer(0x00, buffer_l, len);
 
     int16_t raw = LoRa_ReadReg(0x1A);
     *rssi = -157 + raw;
@@ -149,19 +149,19 @@ void LoRa_Task(void)
         return;
 
     int16_t rssi;
-    uint8_t len = LoRa_ReceivePacket(rxBuffer, &rssi);
+    uint8_t len = LoRa_ReceivePacket(rxBuffer_l, &rssi);
 
     if (len > 0)
     {
-        rxBuffer[len] = '\0';
-        rxPacketCount++;
-
-        char msg[96];
-        snprintf(msg, sizeof(msg),
-                 "RX #%lu → %s | RSSI %d dBm\r\n",
-                 rxPacketCount, rxBuffer, rssi);
-
-        Debug_Print(msg);
+    	rxBuffer_l[len] = '\0';
+    	rxPacketCount_l++;
+//
+//        char msg[96];
+//        snprintf(msg, sizeof(msg),
+//                 "RX #%lu → %s | RSSI %d dBm\r\n",
+//				 rxPacketCount_l, rxBuffer_l, rssi);
+//
+//        Debug_Print(msg);
         LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 120);
     }
 }
