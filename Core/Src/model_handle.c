@@ -84,6 +84,7 @@ volatile uint8_t motorStatus = 0;
  * PROTECTION FLAGS
  ***************************************************************/
 volatile bool senseDryRun         = false;
+volatile bool groundWater         = false;
 volatile bool senseOverLoad       = false;
 volatile bool senseUnderLoad      = false;
 volatile bool senseOverUnderVolt  = false;
@@ -540,79 +541,6 @@ static void Buzzer_Update(void)
         Buzzer_SetPin(buzzerState);
     }
 }
-/* Reset key (SW1) */
-void reset(void)
-{
-    /* If any protection fault is active, do not attempt reset run */
-    if (senseOverLoad || senseUnderLoad || senseOverUnderVolt || senseMaxRunReached)
-    {
-        stop_motor();
-        return;
-    }
-
-    /* Treat reset as a special manual test — no other modes */
-    clear_all_modes();
-    manualOverride = true;
-
-    /* 1) Start motor and run up to 5s to check for water (dry-run sensor) */
-    start_motor();
-
-    uint32_t start = HAL_GetTick();
-    senseDryRun = true;  // assume dry until we see water
-
-    while ((HAL_GetTick() - start) < 5000UL)
-    {
-        /* Update dry-run status based on sensor voltage */
-        ModelHandle_CheckDryRun();
-
-        /* If water is detected (dry-run cleared), break early */
-        if (!senseDryRun)
-            break;
-
-        HAL_Delay(100);
-    }
-
-    /* After 5s: if still dry → stop motor and exit */
-    if (senseDryRun)
-    {
-        stop_motor();
-        manualOverride = false;
-        Buzzer_TriggerAlert();      // <<< BUZZER: tank empty / dry run
-        return;
-    }
-
-    /* 2) Water available → keep motor ON until tank is full or fault */
-    while (!isTankFull())
-    {
-    	stop_motor();
-        ModelHandle_CheckLoadFault();
-        if (senseOverLoad || senseUnderLoad || senseOverUnderVolt || senseMaxRunReached)
-        {
-
-            manualOverride = false;
-            Buzzer_TriggerAlert();  // <<< BUZZER: load/volt fault
-            return;
-        }
-
-        ModelHandle_CheckDryRun();
-        if (senseDryRun)
-        {
-            stop_motor();
-            manualOverride = false;
-            Buzzer_TriggerAlert();  // <<< BUZZER: dry run while reset
-            return;
-        }
-
-        HAL_Delay(100);
-    }
-
-    /* Tank full → stop motor */
-    stop_motor();
-    manualOverride = false;
-    Buzzer_TriggerAlert();          // <<< BUZZER: tank full
-}
-
-
 static inline uint32_t now_ms(void)
 {
     return HAL_GetTick();
@@ -756,14 +684,25 @@ void ModelHandle_CheckDryRun(void)
         return;
     }
 
-    float v = adcData.voltages[0];
+    float v = adcData.voltages[5];
 
     if (v < 0.01f)
         senseDryRun = true;   /* DRY */
     else
         senseDryRun = false;  /* WATER OK */
-}
 
+
+
+}
+void ModelHandle_CheckGroundWater(void)
+{
+    float v = adcData.voltages[4];
+
+    if (v > 0.01f)
+        groundWater = false;   // NO WATER
+    else
+        groundWater = true;    // WATER AVAILABLE
+}
 
 /***************************************************************
  * ================= SOFT DRY RUN FSM ==========================
@@ -789,15 +728,14 @@ static inline bool isAnyModeActive(void)
     return (manualActive || semiAutoActive || countdownActive ||
             twistActive || timerActive || autoActive);
 }
-
 void ModelHandle_SoftDryRunHandler(void)
 {
-	if (autoActive) return;    // <<< AUTO MODE CONTROLS MOTOR
+    if (autoActive) return;    // AUTO mode controls motor separately
 
-	if(motorOwner != MOTOR_OWNER_NONE &&
-	   motorOwner != MOTOR_OWNER_AUTO &&
-	   motorOwner != MOTOR_OWNER_TIMER)
-	    return;
+    if (motorOwner != MOTOR_OWNER_NONE &&
+        motorOwner != MOTOR_OWNER_AUTO &&
+        motorOwner != MOTOR_OWNER_TIMER)
+        return;
 
     uint32_t now = now_ms();
 
@@ -805,13 +743,32 @@ void ModelHandle_SoftDryRunHandler(void)
         return;   // timer has its own dry-run logic
 
     uint16_t gap_s = sys.gap_time_s;
+
     if (timerActive)
     {
         uint16_t slotGap = get_active_timer_gap_minutes();
         if (slotGap > 0) gap_s = slotGap * 60U;
     }
 
+    /* =========================
+       STEP 1 — GROUND WATER CHECK (MASTER)
+       ========================= */
+    ModelHandle_CheckGroundWater();
+
+    if (!groundWater)   // NO WATER AVAILABLE
+    {
+        stop_motor();
+        dryState = DRY_IDLE;
+        dryConfirming = false;
+        Buzzer_TriggerAlert();
+        return;
+    }
+
+    /* =========================
+       STEP 2 — DRY RUN CHECK
+       ========================= */
     ModelHandle_CheckDryRun();
+
     if (gap_s == 0) return;
 
     dryOffGapMs = (uint32_t)gap_s * 1000UL;
@@ -833,6 +790,7 @@ void ModelHandle_SoftDryRunHandler(void)
     switch (dryState)
     {
         case DRY_IDLE:
+
             if (!senseDryRun)
             {
                 start_motor();
@@ -847,6 +805,7 @@ void ModelHandle_SoftDryRunHandler(void)
             break;
 
         case DRY_PROBE:
+
             if (!senseDryRun)
             {
                 dryState = DRY_NORMAL;
@@ -861,6 +820,7 @@ void ModelHandle_SoftDryRunHandler(void)
             break;
 
         case DRY_NORMAL:
+
             if (senseDryRun)
             {
                 if (!dryConfirming)
@@ -1088,43 +1048,58 @@ void ModelHandle_ProcessTimerSlots(void)
         return;
     }
 
+    /* ===============================
+       STEP 1 — GROUND WATER CHECK
+       =============================== */
+    ModelHandle_CheckGroundWater();
+
+    if (!groundWater)
+    {
+        stop_motor();
+        timerState = TIMER_STATE_ON;
+        return;   // HARD BLOCK
+    }
+
+    /* ===============================
+       STEP 2 — TANK FULL CHECK
+       =============================== */
     if (isTankFull())
-       {
-           stop_motor();          // motor forced OFF
-           return;                // keep slot active but motor clamped
-       }
-    /* Read dry-run sensor */
+    {
+        stop_motor();
+        return;
+    }
+
+    /* ===============================
+       STEP 3 — DRY RUN CHECK
+       =============================== */
     ModelHandle_CheckDryRun();
 
     uint32_t now = HAL_GetTick();
-    uint32_t gapMs = timer_get_gap_ms();   // gapMinutes → ms
+    uint32_t gapMs = timer_get_gap_ms();
 
     if (gapMs == 0)
     {
-        /* No gap configured → normal timer behavior */
         start_motor();
         return;
     }
 
-    if (autoActive && isTankFull())
-    {
-        ModelHandle_StopAuto();
-        Buzzer_TriggerAlert();
-        return;
-    }
-
-    /* ================= WATER AVAILABLE ================= */
-    if (senseDryRun == true)
+    /* ===============================
+       WATER AVAILABLE (NORMAL RUN)
+       =============================== */
+    if (!senseDryRun)
     {
         timerState = TIMER_STATE_WATER_CONTINUOUS;
         start_motor();
         return;
     }
 
-    /* ================= NO WATER (CYCLIC TEST) ================= */
+    /* ===============================
+       NO WATER (CYCLIC TEST MODE)
+       =============================== */
     switch (timerState)
     {
         case TIMER_STATE_ON:
+
             start_motor();
 
             if (timerStateDeadline == 0)
@@ -1136,9 +1111,11 @@ void ModelHandle_ProcessTimerSlots(void)
                 timerState = TIMER_STATE_OFF;
                 timerStateDeadline = now + gapMs;
             }
+
             break;
 
         case TIMER_STATE_OFF:
+
             stop_motor();
 
             if (now >= timerStateDeadline)
@@ -1146,10 +1123,11 @@ void ModelHandle_ProcessTimerSlots(void)
                 timerState = TIMER_STATE_ON;
                 timerStateDeadline = now + gapMs;
             }
+
             break;
 
         case TIMER_STATE_WATER_CONTINUOUS:
-            /* Should never stay here if no water */
+
             timerState = TIMER_STATE_ON;
             timerStateDeadline = now + gapMs;
             break;
@@ -1288,53 +1266,77 @@ void ModelHandle_LoadAutoSettings(void)
 }
 static void auto_tick(void)
 {
-
-
     if (!autoActive) return;
 
     uint32_t now = now_ms();
 
     /* ===== AUTO runtime safe-save every 5 sec ===== */
     static uint32_t lastSave = 0;
-    if(now - lastSave >= 5000UL)
+    if (now - lastSave >= 5000UL)
     {
         lastSave = now;
         SaveAutoRuntime();
     }
 
+    /* ===============================
+       STEP 1 — GROUND WATER CHECK
+       =============================== */
+    ModelHandle_CheckGroundWater();
+
+    if (!groundWater)
+    {
+        stop_motor();
+        return;   // HARD BLOCK until water returns
+    }
+
+    /* ===============================
+       STEP 2 — TANK FULL CHECK
+       =============================== */
     if (isTankFull())
     {
         ModelHandle_StopAuto();
         stop_motor();
-        EEPROM_WriteBuffer(EE_ADDR_AUTO_RUNTIME, (uint8_t[]){0}, sizeof(AutoRuntimeBlock));
+        EEPROM_WriteBuffer(EE_ADDR_AUTO_RUNTIME,
+                           (uint8_t[]){0},
+                           sizeof(AutoRuntimeBlock));
         Buzzer_TriggerAlert();
         return;
     }
 
-    if(autoResumeBoot)
-    	{
-    	    autoResumeBoot = false;
+    /* ===============================
+       BOOT RESUME
+       =============================== */
+    if (autoResumeBoot)
+    {
+        autoResumeBoot = false;
 
-    	    // Resume correct phase
-    	    if(autoState == AUTO_ON_WAIT || autoState == AUTO_DRY_CHECK)
-    	        start_motor();
-    	    else
-    	        stop_motor();
+        if (autoState == AUTO_ON_WAIT ||
+            autoState == AUTO_DRY_CHECK)
+            start_motor();
+        else
+            stop_motor();
 
-    	    return;
-    	}
+        return;
+    }
+
+    /* ===============================
+       AUTO FSM
+       =============================== */
     switch (autoState)
     {
-    case AUTO_ON_WAIT:
-        start_motor();
-        motorStatus = 1;
-        if (now >= autoDeadline)
-            autoState = AUTO_DRY_CHECK;
-        break;
+        case AUTO_ON_WAIT:
 
+            start_motor();
+
+            if (now >= autoDeadline)
+                autoState = AUTO_DRY_CHECK;
+
+            break;
 
         case AUTO_DRY_CHECK:
+
             ModelHandle_CheckDryRun();
+
             if (!senseDryRun)
             {
                 stop_motor();
@@ -1347,9 +1349,11 @@ static void auto_tick(void)
                 autoState = AUTO_ON_WAIT;
                 autoDeadline = now + auto_gap_s * 1000UL;
             }
+
             break;
 
         case AUTO_OFF_WAIT:
+
             if (now >= autoDeadline)
             {
                 auto_retry_count++;
@@ -1366,6 +1370,7 @@ static void auto_tick(void)
                 autoState = AUTO_ON_WAIT;
                 autoDeadline = now + auto_gap_s * 1000UL;
             }
+
             break;
 
         default:
@@ -1533,14 +1538,23 @@ static void twist_time_logic(void)
 
 static void twist_tick(void)
 {
-    if (!twistActive) return;
+	if (!twistActive) return;
 
-    if (isTankFull())
-    {
-        ModelHandle_StopTwist();
-        Buzzer_TriggerAlert();
-        return;
-    }
+	    ModelHandle_CheckGroundWater();
+
+	    if (!groundWater)
+	    {
+	        stop_motor();
+	        Buzzer_TriggerAlert();
+	        return;
+	    }
+
+	    if (isTankFull())
+	    {
+	        ModelHandle_StopTwist();
+	        Buzzer_TriggerAlert();
+	        return;
+	    }
 
     uint32_t now = now_ms();
     if (now >= twist_deadline)
@@ -1650,6 +1664,15 @@ void ModelHandle_Process(void)
      * ========================================================= */
     if (semiAutoActive)
     {
+        ModelHandle_CheckGroundWater();
+
+        if (!groundWater)
+        {
+            stop_motor();
+            Buzzer_TriggerAlert();
+            return;
+        }
+
         if (!isTankFull())
         {
             if (!Motor_GetStatus())
@@ -1669,6 +1692,7 @@ void ModelHandle_Process(void)
         return;
     }
 
+
     /* =========================================================
      * TIMER MODE
      * ========================================================= */
@@ -1685,6 +1709,15 @@ void ModelHandle_Process(void)
      * ========================================================= */
     if (countdownActive)
     {
+        ModelHandle_CheckGroundWater();
+
+        if (!groundWater)
+        {
+            stop_motor();
+            Buzzer_TriggerAlert();
+            return;
+        }
+
         countdown_tick();
 
         if (!Motor_GetStatus())
@@ -1694,6 +1727,7 @@ void ModelHandle_Process(void)
         Buzzer_Update();
         return;
     }
+
 
     /* =========================================================
      * TWIST MODE

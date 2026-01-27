@@ -351,83 +351,89 @@ static void show_dash(void)
 
     /* Page Rotation Logic */
     if (elapsed < DASH_PAGE1_TIME)
-    {
         dash_page = 0;
-    }
     else if (elapsed < (DASH_PAGE1_TIME + DASH_PAGE2_TIME))
-    {
         dash_page = 1;
-    }
     else if (elapsed < (DASH_PAGE1_TIME + DASH_PAGE2_TIME + DASH_PAGE3_TIME))
-    {
         dash_page = 2;
-    }
     else
     {
         dash_cycle_start = now;
         dash_page = 0;
     }
 
-    /* Tank Level Calculation */
+    /* ---------------- Tank Level ---------------- */
     int submerged = 0;
-    for (int i = 1; i <= 5; i++)
-        if (adcData.voltages[i] < 0.1f) submerged++;
+    for (int i = 1; i <= 4; i++)
+        if (adcData.voltages[i] < 0.1f)
+            submerged++;
 
     int tankPercent = submerged * 20;
 
+    /* ---------------- Mode ---------------- */
     const char* mode =
-        manualActive ? "MANUL" :
-        semiAutoActive ? "SEMI" :
-        timerActive ? "TIMER" :
-        countdownActive ? "COUNTD" :
-        twistActive ? "TWIST" :
-        autoActive ? "AUTO" : "IDLE";
+        manualActive    ? "MANUL" :
+        semiAutoActive  ? "SEMI " :
+        timerActive     ? "TIMER" :
+        countdownActive ? "COUNT" :
+        twistActive     ? "TWIST" :
+        autoActive      ? "AUTO " : "IDLE ";
 
     bool motorOn = Motor_GetStatus();
 
-    /* ==================== PAGE 1 ==================== */
+    /* ==================== PAGE 1 : STATUS ==================== */
     if (dash_page == 0)
     {
-        snprintf(l0,sizeof(l0),"M:%s %s %3d%%",
+        /* Line 0 */
+        snprintf(l0, sizeof(l0), "M:%s %-5s %3d%%",
                  motorOn ? "ON " : "OFF",
                  mode,
                  tankPercent);
 
-        if (ModelHandle_IsDryRunActive())
-            snprintf(l1,sizeof(l1),"W-AVAILABLE");
-        else
-            snprintf(l1,sizeof(l1),"W-UNAVAILABLE");
+        /* Ground Water status (ADC1)
+         * YES when value == 0, else NO
+         */
+        const char *gw =
+            (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
+
+        const char *dry =
+            (adcData.voltages[5] <= 0.01f) ? "YES" : "NO ";
+
+
+        /* Line 1 : BOTH statuses always visible */
+        snprintf(l1, sizeof(l1), "G.W:%s DRY:%s", gw, dry);
+
     }
 
-    /* ==================== PAGE 2 ==================== */
+    /* ==================== PAGE 2 : DATE / TIME ==================== */
     else if (dash_page == 1)
     {
-        snprintf(l0,sizeof(l0),"Date:%02u-%02u-%02u",
+        snprintf(l0, sizeof(l0), "Date:%02u-%02u-%02u",
                  time.dom,
                  time.month,
                  (uint8_t)(time.year % 100));
 
-        snprintf(l1,sizeof(l1),"Time:%02u:%02u:%02u",
+        snprintf(l1, sizeof(l1), "Time:%02u:%02u:%02u",
                  time.hour,
                  time.min,
-				 time.sec);
+                 time.sec);
     }
 
-    /* ==================== PAGE 3 ==================== */
+    /* ==================== PAGE 3 : LIVE MONITOR ==================== */
     else
     {
-        snprintf(l0,sizeof(l0),"V:%3.0fV  I:%3.1fA",
+        snprintf(l0, sizeof(l0), "V:%3.0fV  I:%3.1fA",
                  g_voltageV,
                  g_currentA);
 
         if (ModelHandle_IsOverload())
-            snprintf(l1,sizeof(l1),"OVER LOAD!");
+            snprintf(l1, sizeof(l1), "OVER LOAD!");
         else if (ModelHandle_IsUnderload())
-            snprintf(l1,sizeof(l1),"UNDER LOAD!");
+            snprintf(l1, sizeof(l1), "UNDER LOAD!");
         else if (ModelHandle_IsVoltageFault())
-            snprintf(l1,sizeof(l1),"VOLT FAULT!");
+            snprintf(l1, sizeof(l1), "VOLT FAULT!");
         else
-            snprintf(l1,sizeof(l1),"Live Monitor");
+            snprintf(l1, sizeof(l1), "Live Monitor");
     }
 
     lcd_line0(l0);
@@ -2372,10 +2378,6 @@ void Screen_Update(void)
         }
     }
 }
-
-/***************************************************************
- *  FINAL EXTERNS — CONNECTED TO MODEL ENGINE
- ***************************************************************/
 extern void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry);
 extern void ModelHandle_StartTimerNearestSlot(void);
 extern void ModelHandle_StopTimer(void);
