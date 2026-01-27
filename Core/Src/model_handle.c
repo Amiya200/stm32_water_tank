@@ -389,31 +389,36 @@ static bool isTankFull(void)
     static uint32_t stableStart = 0;
     static bool lastState = false;
 
-    bool allZero = true;
+    bool allSubmerged = true;
 
-    for (int i = 1; i <= 5; i++)
+    /* Check ONLY water level sensors: 0–3 */
+    for (int i = 0; i <= 3; i++)
     {
         if (adcData.voltages[i] > 0.10f)
         {
-            allZero = false;
+            allSubmerged = false;
             break;
         }
     }
+
     uint32_t now = HAL_GetTick();
-    if (allZero)
+
+    if (allSubmerged)
     {
         if (!lastState)
         {
             lastState = true;
             stableStart = now;
         }
-        if ((now - stableStart) >= 1000)
+
+        if ((now - stableStart) >= 1000)   // 1 sec stable confirm
             return true;
     }
     else
     {
         lastState = false;
     }
+
     return false;
 }
 
@@ -698,10 +703,10 @@ void ModelHandle_CheckGroundWater(void)
 {
     float v = adcData.voltages[4];
 
-    if (v > 0.01f)
-        groundWater = false;   // NO WATER
+    if (v < 0.01f)
+        groundWater = true;   // NO WATER
     else
-        groundWater = true;    // WATER AVAILABLE
+        groundWater = false;    // WATER AVAILABLE
 }
 
 /***************************************************************

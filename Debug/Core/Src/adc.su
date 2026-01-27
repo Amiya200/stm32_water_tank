@@ -2,4 +2,4 @@
 ../Core/Src/adc.c:81:14:readChannelAveraged	32	static
 ../Core/Src/adc.c:91:6:ADC_Init	16	static
 ../Core/Src/adc.c:98:6:ADC_ReadAllChannels	64	static
-../Core/Src/adc.c:190:9:ADC_CheckMaxVoltage	24	static
+../Core/Src/adc.c:219:9:ADC_CheckMaxVoltage	24	static

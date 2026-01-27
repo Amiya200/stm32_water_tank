@@ -124,6 +124,14 @@ static uint32_t lastUserAction     = 0;
 #define LONG_PRESS_MS      3000
 #define CONTINUOUS_STEP_MS  250   // smoother experience
 #define COUNTDOWN_INC_MS   2000
+/* Backup values for enable/disable toggle */
+static uint16_t bk_gap = 10;
+static uint8_t  bk_retry = 3;
+static uint16_t bk_uv = 180;
+static uint16_t bk_ov = 260;
+static int      bk_ol = 6;
+static int      bk_ul = 2;
+static uint16_t bk_maxrun = 120;
 
 /* Button press tracking */
 static uint32_t sw_press_start[4] = {0,0,0,0};
@@ -364,11 +372,15 @@ static void show_dash(void)
 
     /* ---------------- Tank Level ---------------- */
     int submerged = 0;
-    for (int i = 1; i <= 4; i++)
+    for (int i = 0; i <= 3; i++)   // ONLY tank sensors
+    {
         if (adcData.voltages[i] < 0.1f)
             submerged++;
+    }
 
-    int tankPercent = submerged * 20;
+
+    int tankPercent = (submerged * 100) / 4;
+
 
     /* ---------------- Mode ---------------- */
     const char* mode =
@@ -490,26 +502,47 @@ static void show_devset_menu(void)
 {
     char l0[17], l1[17];
 
-    /* Adjust top-of-view */
+    /* Adjust scroll window */
     if (devset_idx < devset_view_top)
         devset_view_top = devset_idx;
     else if (devset_idx > devset_view_top + 1)
         devset_view_top = devset_idx - 1;
 
-    /* Line 0 */
     uint8_t idx0 = devset_view_top;
     uint8_t idx1 = devset_view_top + 1;
 
+    char star0 = ' ';
+    char star1 = ' ';
+
+    /* Enabled logic */
+    if (idx0 == 0 && edit_settings_gap_s > 0)     star0 = '*';
+    if (idx0 == 1 && edit_settings_retry > 0)     star0 = '*';
+    if (idx0 == 2 && edit_settings_uv > 0)        star0 = '*';
+    if (idx0 == 3 && edit_settings_ov > 0)        star0 = '*';
+    if (idx0 == 4 && edit_settings_ol > 0)        star0 = '*';
+    if (idx0 == 5 && edit_settings_ul > 0)        star0 = '*';
+    if (idx0 == 6 && edit_settings_maxrun > 0)    star0 = '*';
+
+    if (idx1 == 0 && edit_settings_gap_s > 0)     star1 = '*';
+    if (idx1 == 1 && edit_settings_retry > 0)     star1 = '*';
+    if (idx1 == 2 && edit_settings_uv > 0)        star1 = '*';
+    if (idx1 == 3 && edit_settings_ov > 0)        star1 = '*';
+    if (idx1 == 4 && edit_settings_ol > 0)        star1 = '*';
+    if (idx1 == 5 && edit_settings_ul > 0)        star1 = '*';
+    if (idx1 == 6 && edit_settings_maxrun > 0)    star1 = '*';
+
     if (idx0 < DEVSET_MENU_COUNT)
-        snprintf(l0, sizeof(l0), "%c%-15.15s",
+        snprintf(l0, sizeof(l0), "%c%c%-14.14s",
                  (devset_idx == idx0 ? '>' : ' '),
+                 star0,
                  devset_menu_items[idx0]);
     else
         snprintf(l0, sizeof(l0), "                ");
 
     if (idx1 < DEVSET_MENU_COUNT)
-        snprintf(l1, sizeof(l1), "%c%-15.15s",
+        snprintf(l1, sizeof(l1), "%c%c%-14.14s",
                  (devset_idx == idx1 ? '>' : ' '),
+                 star1,
                  devset_menu_items[idx1]);
     else
         snprintf(l1, sizeof(l1), "                ");
@@ -2061,6 +2094,9 @@ void Screen_HandleSwitches(void)
     /* ===============================
        DEVICE SETUP MENU (scroll)
        =============================== */
+    /* ===============================
+       DEVICE SETUP MENU (scroll + toggle)
+       =============================== */
     if (ui == UI_DEVSET_MENU)
     {
         switch (b)
@@ -2075,8 +2111,8 @@ void Screen_HandleSwitches(void)
                 if (devset_idx < DEVSET_MENU_COUNT - 1) devset_idx++;
                 break;
 
+            /* NORMAL SELECT → ENTER EDIT SCREEN */
             case BTN_SELECT:
-            case BTN_SELECT_LONG:
                 switch (devset_idx)
                 {
                     case 0:  ui = UI_SETTINGS_GAP;        break;
@@ -2094,6 +2130,81 @@ void Screen_HandleSwitches(void)
                     case 12: ui = UI_MENU;                break;
                     default: break;
                 }
+                break;
+
+            /* LONG SELECT → ENABLE / DISABLE TOGGLE */
+            case BTN_SELECT_LONG:
+
+                switch (devset_idx)
+                {
+                    case 0: /* Dry Run */
+                        if (edit_settings_gap_s > 0) {
+                            bk_gap = edit_settings_gap_s;
+                            edit_settings_gap_s = 0;
+                        } else {
+                            edit_settings_gap_s = bk_gap ? bk_gap : 5;
+                        }
+                        break;
+
+                    case 1: /* Testing Gap */
+                        if (edit_settings_retry > 0) {
+                            bk_retry = edit_settings_retry;
+                            edit_settings_retry = 0;
+                        } else {
+                            edit_settings_retry = bk_retry ? bk_retry : 5;
+                        }
+                        break;
+
+                    case 2: /* Low Volt */
+                        if (edit_settings_uv > 0) {
+                            bk_uv = edit_settings_uv;
+                            edit_settings_uv = 0;
+                        } else {
+                            edit_settings_uv = bk_uv ? bk_uv : 180;
+                        }
+                        break;
+
+                    case 3: /* High Volt */
+                        if (edit_settings_ov > 0) {
+                            bk_ov = edit_settings_ov;
+                            edit_settings_ov = 0;
+                        } else {
+                            edit_settings_ov = bk_ov ? bk_ov : 260;
+                        }
+                        break;
+
+                    case 4: /* Over Load */
+                        if (edit_settings_ol > 0) {
+                            bk_ol = edit_settings_ol;
+                            edit_settings_ol = 0;
+                        } else {
+                            edit_settings_ol = bk_ol ? bk_ol : 5;
+                        }
+                        break;
+
+                    case 5: /* Under Load */
+                        if (edit_settings_ul > 0) {
+                            bk_ul = edit_settings_ul;
+                            edit_settings_ul = 0;
+                        } else {
+                            edit_settings_ul = bk_ul ? bk_ul : 2;
+                        }
+                        break;
+
+                    case 6: /* Max Run */
+                        if (edit_settings_maxrun > 0) {
+                            bk_maxrun = edit_settings_maxrun;
+                            edit_settings_maxrun = 0;
+                        } else {
+                            edit_settings_maxrun = bk_maxrun ? bk_maxrun : 60;
+                        }
+                        break;
+
+                    default:
+                        break;
+                }
+
+                apply_settings_core();
                 break;
 
             case BTN_RESET:

@@ -105,85 +105,114 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef* hadc, ADC_Data* data)
     {
         float v = readChannelVoltage(hadc, adcChannels[i]);
 
-        if (i == 0)
-        {
-            // Keep filtering so ModelHandle_CheckDryRun() works
-            if (s_filtered[0] == 0.0f)
-                s_filtered[0] = v;
-            else
-                s_filtered[0] = EMA_ALPHA * v + (1 - EMA_ALPHA) * s_filtered[0];
-
-            v = s_filtered[0];
-
-            data->voltages[0]   = v;
-            data->rawValues[0]  = (uint16_t)((v * ADC_RES) / VREF);
-            data->maxReached[0] = false;
-            g_adcVoltages[0]    = v;
-
-            continue; // 🔥 IMPORTANT: skip water-level logic
-        }
+        /* ==============================
+           Apply EMA filtering
+        ============================== */
         if (s_filtered[i] == 0.0f)
             s_filtered[i] = v;
         else
-            s_filtered[i] = EMA_ALPHA * v + (1 - EMA_ALPHA) * s_filtered[i];
+            s_filtered[i] = EMA_ALPHA * v + (1.0f - EMA_ALPHA) * s_filtered[i];
 
         v = s_filtered[i];
-
-        if (v < GROUND_THRESHOLD)
-            v = 0.0f;
 
         data->voltages[i]   = v;
         data->rawValues[i]  = (uint16_t)((v * ADC_RES) / VREF);
         data->maxReached[i] = (v >= 3.2f);
         g_adcVoltages[i]    = v;
 
-        // Detect meaningful change (used for LoRa)
-        if (fabsf(v - s_prev_volt[i]) > PRINT_DELTA) {
+        /* Detect meaningful change (for LoRa reporting) */
+        if (fabsf(v - s_prev_volt[i]) > PRINT_DELTA)
+        {
             changed = true;
             s_prev_volt[i] = v;
         }
-        if (!s_level_flags[i] && v >= THR)
+
+        /* =====================================================
+           CHANNEL 0–3 → WATER LEVEL SENSORS
+        ===================================================== */
+        if (i <= 3)
         {
-            s_level_flags[i] = 1;
+            /* Threshold logic */
+            if (!s_level_flags[i] && v >= THR)
+            {
+                s_level_flags[i] = 1;
 
-            switch (i) {
-                case 1: snprintf(dataPacketTx, sizeof(dataPacketTx), "@30W#"); break;
-                case 2: snprintf(dataPacketTx, sizeof(dataPacketTx), "@70W#"); break;
-                case 3: snprintf(dataPacketTx, sizeof(dataPacketTx), "@1:W#");  break;
-                case 4: snprintf(dataPacketTx, sizeof(dataPacketTx), "@DRY#"); break;
-                case 5: snprintf(dataPacketTx, sizeof(dataPacketTx), "@FULL#"); break;
-                default: dataPacketTx[0] = '\0'; break;
+                switch (i)
+                {
+                    case 0: snprintf(dataPacketTx, sizeof(dataPacketTx), "@L1#"); break;
+                    case 1: snprintf(dataPacketTx, sizeof(dataPacketTx), "@L2#"); break;
+                    case 2: snprintf(dataPacketTx, sizeof(dataPacketTx), "@L3#"); break;
+                    case 3: snprintf(dataPacketTx, sizeof(dataPacketTx), "@FULL#"); break;
+                    default: dataPacketTx[0] = '\0'; break;
+                }
+
+                if (dataPacketTx[0])
+                {
+                    strncat(loraPacket, dataPacketTx,
+                            sizeof(loraPacket) - strlen(loraPacket) - 1);
+                    strncat(loraPacket, ";",
+                            sizeof(loraPacket) - strlen(loraPacket) - 1);
+                }
+            }
+            else if (s_level_flags[i] && v < (THR - HYST_DELTA))
+            {
+                s_level_flags[i] = 0;
             }
 
-            s_low_counts[i] = 0;
-
-            if (dataPacketTx[0]) {
-                strncat(loraPacket, dataPacketTx, sizeof(loraPacket)-strlen(loraPacket)-1);
-                strncat(loraPacket, ";", sizeof(loraPacket)-strlen(loraPacket)-1);
-            }
+            continue;  // IMPORTANT: skip other logic
         }
-        else if (s_level_flags[i] && v < (THR - HYST_DELTA))
+
+        /* =====================================================
+           CHANNEL 4 → GROUND WATER
+        ===================================================== */
+        if (i == 4)
         {
-            s_level_flags[i] = 0;
-        }
+            if (!s_level_flags[i] && v >= GROUND_THRESHOLD)
+            {
+                s_level_flags[i] = 1;
+                snprintf(dataPacketTx, sizeof(dataPacketTx), "@GW#");
 
-        // Debounce for DRY LOW signal (water-level only)
-        if (v < DRY_VOLTAGE_THRESHOLD) {
-            if (s_low_counts[i] < 0xFF) s_low_counts[i]++;
-        } else {
-            s_low_counts[i] = 0;
-        }
-
-        if (!manualOverride) {
-            if (motorStatus == 1 && s_low_counts[i] >= DRY_COUNT_THRESHOLD) {
-                motorStatus = 0;
-                memset(s_low_counts, 0, sizeof(s_low_counts));
+                strncat(loraPacket, dataPacketTx,
+                        sizeof(loraPacket) - strlen(loraPacket) - 1);
+                strncat(loraPacket, ";",
+                        sizeof(loraPacket) - strlen(loraPacket) - 1);
             }
+            else if (s_level_flags[i] && v < (GROUND_THRESHOLD - HYST_DELTA))
+            {
+                s_level_flags[i] = 0;
+            }
+
+            continue;
+        }
+
+        /* =====================================================
+           CHANNEL 5 → DRY RUN SENSOR
+        ===================================================== */
+        if (i == 5)
+        {
+            if (!s_level_flags[i] && v >= DRY_VOLTAGE_THRESHOLD)
+            {
+                s_level_flags[i] = 1;
+                snprintf(dataPacketTx, sizeof(dataPacketTx), "@DRY#");
+
+                strncat(loraPacket, dataPacketTx,
+                        sizeof(loraPacket) - strlen(loraPacket) - 1);
+                strncat(loraPacket, ";",
+                        sizeof(loraPacket) - strlen(loraPacket) - 1);
+            }
+            else if (s_level_flags[i] && v < (DRY_VOLTAGE_THRESHOLD - HYST_DELTA))
+            {
+                s_level_flags[i] = 0;
+            }
+
+            continue;
         }
     }
 
-    if (changed && loraPacket[0] != '\0') {
-//        LoRa_SendPacket((uint8_t*)loraPacket, strlen(loraPacket));
+    /* Send LoRa packet only if changed */
+    if (changed && loraPacket[0] != '\0')
+    {
+        // LoRa_SendPacket((uint8_t*)loraPacket, strlen(loraPacket));
     }
 }
 
