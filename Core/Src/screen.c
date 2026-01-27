@@ -10,7 +10,7 @@
 #include "model_handle.h"
 #include "adc.h"
 #include "rtc_i2c.h"
-
+#include "acs712.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -57,17 +57,17 @@ typedef enum {
     UI_COUNTDOWN_EDIT_MIN,
 
     /* Device Setup (Settings) – scroll menu + per-item editors */
-    UI_DEVSET_MENU,          // Scrollable list inside Device Setup
+    UI_DEVSET_MENU,
 
-    UI_SETTINGS_GAP,         // Set Dry Run
-    UI_SETTINGS_RETRY,       // Set Testing Gap
-    UI_SETTINGS_UV,          // Set Low Volt
-    UI_SETTINGS_OV,          // Set High Volt
-    UI_SETTINGS_OL,          // Over Load
-    UI_SETTINGS_UL,          // Under Load
-    UI_SETTINGS_MAXRUN,      // Set Max Run
-    UI_SETTINGS_PWRREST,     // Power Restore
-    UI_SETTINGS_FACTORY,     // Factory Reset (Yes/No)
+    UI_SETTINGS_GAP,
+    UI_SETTINGS_RETRY,
+    UI_SETTINGS_UV,
+    UI_SETTINGS_OV,
+    UI_SETTINGS_OL,
+    UI_SETTINGS_UL,
+    UI_SETTINGS_MAXRUN,
+    UI_SETTINGS_PWRREST,
+    UI_SETTINGS_FACTORY,
 
     /* Date / Time / Day editors */
     UI_DEVSET_EDIT_DATE,
@@ -75,11 +75,11 @@ typedef enum {
     UI_DEVSET_EDIT_DAY,
 
     /* Add New Device Submenus */
-    UI_ADD_DEVICE_MENU,        // Pair / Remove
-    UI_ADD_DEVICE_PAIR,        // Choose Wi-Fi/Receiver/Tx to pair
-    UI_ADD_DEVICE_REMOVE,      // Choose Wi-Fi/Receiver/Tx to remove
-    UI_ADD_DEVICE_PAIR_DONE,   // Paired OK
-    UI_ADD_DEVICE_REMOVE_DONE, // Removed OK
+    UI_ADD_DEVICE_MENU,
+    UI_ADD_DEVICE_PAIR,
+    UI_ADD_DEVICE_REMOVE,
+    UI_ADD_DEVICE_PAIR_DONE,
+    UI_ADD_DEVICE_REMOVE_DONE,
 
     /* Reset confirm from main menu */
     UI_RESET_CONFIRM,
@@ -248,12 +248,11 @@ static const char* const addDevTypeNames[] = {
    MAIN MENU ITEMS (as per document)
    ================================================================ */
 static const char* const main_menu[] = {
-    "Timer Setting",     // 0
     "Add New Device",    // 1
     "Device Setup",      // 2
     "Reset To Default"   // 3
 };
-#define MAIN_MENU_COUNT 4
+#define MAIN_MENU_COUNT 3
 
 static uint8_t menu_idx      = 0;
 static uint8_t menu_view_top = 0;
@@ -263,13 +262,13 @@ static uint8_t menu_view_top = 0;
    (Mapped to individual edit screens)
    ================================================================ */
 static const char* const devset_menu_items[] = {
-    "Set Dry Run",     // -> UI_SETTINGS_GAP
-    "Set Testing Gap", // -> UI_SETTINGS_RETRY
-    "Set Low Volt",    // -> UI_SETTINGS_UV
-    "Set High Volt",   // -> UI_SETTINGS_OV
-    "Set Over Load",   // -> UI_SETTINGS_OL
-    "Set Under Load",  // -> UI_SETTINGS_UL
-    "Set Max Run",     // -> UI_SETTINGS_MAXRUN
+    "Dry Run",     // -> UI_SETTINGS_GAP
+    "Testing Gap", // -> UI_SETTINGS_RETRY
+    "Low Volt",    // -> UI_SETTINGS_UV
+    "High Volt",   // -> UI_SETTINGS_OV
+    "Over Load",   // -> UI_SETTINGS_OL
+    "Under Load",  // -> UI_SETTINGS_UL
+    "Max Run",     // -> UI_SETTINGS_MAXRUN
     "Set Date",        // -> UI_DEVSET_EDIT_DATE
     "Set Time",        // -> UI_DEVSET_EDIT_TIME
     "Set Day",         // -> UI_DEVSET_EDIT_DAY
@@ -330,39 +329,112 @@ static void show_welcome(void)
 /***************************************************************
  *  DASHBOARD SCREEN
  ***************************************************************/
+
+static uint8_t dash_page = 0;
+static uint32_t dash_cycle_start = 0;
+
+#define DASH_PAGE1_TIME 20000   // 10 sec
+#define DASH_PAGE2_TIME 5000    // 5 sec
+#define DASH_PAGE3_TIME 5000    // 5 sec
+
+
 static void show_dash(void)
 {
     char l0[17], l1[17];
+    uint32_t now = HAL_GetTick();
 
-    const char* motor = Motor_GetStatus() ? "ON " : "OFF";
+    /* Initialize cycle start */
+    if (dash_cycle_start == 0)
+        dash_cycle_start = now;
 
-    const char* mode = "IDLE";
-    if (manualActive)          mode = "MANUAL";
-    else if (semiAutoActive)   mode = "SEMI";
-    else if (timerActive)      mode = "TIMER";
-    else if (countdownActive)  mode = "CD";
-    else if (twistActive)      mode = "TWIST";
-    else if (autoActive)       mode = "AUTO";
+    uint32_t elapsed = now - dash_cycle_start;
 
-    snprintf(l0, sizeof(l0), "M:%s %s", motor, mode);
+    /* Page Rotation Logic */
+    if (elapsed < DASH_PAGE1_TIME)
+    {
+        dash_page = 0;
+    }
+    else if (elapsed < (DASH_PAGE1_TIME + DASH_PAGE2_TIME))
+    {
+        dash_page = 1;
+    }
+    else if (elapsed < (DASH_PAGE1_TIME + DASH_PAGE2_TIME + DASH_PAGE3_TIME))
+    {
+        dash_page = 2;
+    }
+    else
+    {
+        dash_cycle_start = now;
+        dash_page = 0;
+    }
 
-    /* Compute water level from 5 probes (ADC <0.1 = submerged) */
+    /* Tank Level Calculation */
     int submerged = 0;
     for (int i = 1; i <= 5; i++)
         if (adcData.voltages[i] < 0.1f) submerged++;
 
-    const char* level =
-        (submerged>=5)?"100%":
-        (submerged==4)?"80%":
-        (submerged==3)?"60%":
-        (submerged==2)?"40%":
-        (submerged==1)?"20%":"0%";
+    int tankPercent = submerged * 20;
 
-    snprintf(l1, sizeof(l1), "Water:%s", level);
+    const char* mode =
+        manualActive ? "MANUL" :
+        semiAutoActive ? "SEMI" :
+        timerActive ? "TIMER" :
+        countdownActive ? "COUNTD" :
+        twistActive ? "TWIST" :
+        autoActive ? "AUTO" : "IDLE";
+
+    bool motorOn = Motor_GetStatus();
+
+    /* ==================== PAGE 1 ==================== */
+    if (dash_page == 0)
+    {
+        snprintf(l0,sizeof(l0),"M:%s %s %3d%%",
+                 motorOn ? "ON " : "OFF",
+                 mode,
+                 tankPercent);
+
+        if (ModelHandle_IsDryRunActive())
+            snprintf(l1,sizeof(l1),"W-AVAILABLE");
+        else
+            snprintf(l1,sizeof(l1),"W-UNAVAILABLE");
+    }
+
+    /* ==================== PAGE 2 ==================== */
+    else if (dash_page == 1)
+    {
+        snprintf(l0,sizeof(l0),"Date:%02u-%02u-%02u",
+                 time.dom,
+                 time.month,
+                 (uint8_t)(time.year % 100));
+
+        snprintf(l1,sizeof(l1),"Time:%02u:%02u:%02u",
+                 time.hour,
+                 time.min,
+				 time.sec);
+    }
+
+    /* ==================== PAGE 3 ==================== */
+    else
+    {
+        snprintf(l0,sizeof(l0),"V:%3.0fV  I:%3.1fA",
+                 g_voltageV,
+                 g_currentA);
+
+        if (ModelHandle_IsOverload())
+            snprintf(l1,sizeof(l1),"OVER LOAD!");
+        else if (ModelHandle_IsUnderload())
+            snprintf(l1,sizeof(l1),"UNDER LOAD!");
+        else if (ModelHandle_IsVoltageFault())
+            snprintf(l1,sizeof(l1),"VOLT FAULT!");
+        else
+            snprintf(l1,sizeof(l1),"Live Monitor");
+    }
 
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
+
 
 /***************************************************************
  *  MAIN MENU DRAW
@@ -736,7 +808,7 @@ static void show_settings_retry(void){
 
 /* Low Volt: 0=Disable, else 150–200V */
 static void show_settings_uv(void){
-    lcd_line0("Set Low Volt");
+    lcd_line0("Low Volt");
     char buf[17];
     if (edit_settings_uv == 0)
         snprintf(buf,sizeof(buf),"Disable    Next>");
@@ -747,7 +819,7 @@ static void show_settings_uv(void){
 
 /* High Volt: 0=Disable, else 250–300V */
 static void show_settings_ov(void){
-    lcd_line0("Set High Volt");
+    lcd_line0("High Volt");
     char buf[17];
     if (edit_settings_ov == 0)
         snprintf(buf,sizeof(buf),"Disable    Next>");
@@ -781,7 +853,7 @@ static void show_settings_ul(void){
 
 /* Max Run: 0=Disable, else 10–300min */
 static void show_settings_maxrun(void){
-    lcd_line0("Set Max Run");
+    lcd_line0("Max Run");
     char buf[17];
     if (edit_settings_maxrun == 0)
         snprintf(buf,sizeof(buf),"Disable    Next>");
@@ -1052,31 +1124,25 @@ static void menu_select(void)
     {
         switch(menu_idx)
         {
-            case 0:   /* TIMER SETTING */
-                currentSlot = 0;
-                timer_page  = 0;
-                ui = UI_TIMER_SLOT_SELECT;
-                screenNeedsRefresh = true;
-                return;
-
-            case 1:   /* ADD NEW DEVICE */
+            case 0:   /* ADD NEW DEVICE */
                 addDevMenuIndex = 0;
                 addDevTypeIndex = 0;
                 ui = UI_ADD_DEVICE_MENU;
                 screenNeedsRefresh = true;
                 return;
 
-            case 2:   /* DEVICE SETUP */
-                start_settings_edit_flow();  /* sets ui = UI_DEVSET_MENU */
+            case 1:   /* DEVICE SETUP */
+                start_settings_edit_flow();
                 return;
 
-            case 3:   /* RESET TO DEFAULT CONFIRM */
+            case 2:   /* RESET TO DEFAULT CONFIRM */
                 reset_confirm_yes = false;
                 ui = UI_RESET_CONFIRM;
                 screenNeedsRefresh = true;
                 return;
         }
     }
+
 
     /* TIMER SLOT SELECT → LOAD TIMER */
     if (ui == UI_TIMER_SLOT_SELECT)
@@ -1167,103 +1233,131 @@ void increase_edit_value(void)
     {
         /* TIMER ON TIME */
         case UI_TIMER_EDIT_ON_TIME:
-            if (time_edit_field == 0) { if (edit_on_h < 23) edit_on_h++; }
-            else                      { if (edit_on_m < 59) edit_on_m++; }
+            if (time_edit_field == 0) {
+                if (edit_on_h <= 18) edit_on_h += 5;
+                else edit_on_h = 23;
+            } else {
+                if (edit_on_m <= 54) edit_on_m += 5;
+                else edit_on_m = 59;
+            }
             break;
 
         /* TIMER OFF TIME */
         case UI_TIMER_EDIT_OFF_TIME:
-            if (time_edit_field == 0) { if (edit_off_h < 23) edit_off_h++; }
-            else                      { if (edit_off_m < 59) edit_off_m++; }
+            if (time_edit_field == 0) {
+                if (edit_off_h <= 18) edit_off_h += 5;
+                else edit_off_h = 23;
+            } else {
+                if (edit_off_m <= 54) edit_off_m += 5;
+                else edit_off_m = 59;
+            }
             break;
 
         /* TIMER GAP */
         case UI_TIMER_EDIT_GAP:
-            if (edit_gap_min < 240) edit_gap_min++;  // limit 4 hours
+            if (edit_gap_min <= 235) edit_gap_min += 5;
+            else edit_gap_min = 240;
             break;
 
         /* AUTO SETTINGS */
-        case UI_AUTO_EDIT_GAP:      edit_auto_gap_s++; break;
-        case UI_AUTO_EDIT_MAXRUN:   edit_auto_maxrun_min++; break;
-        case UI_AUTO_EDIT_RETRY:    edit_auto_retry++; break;
+        case UI_AUTO_EDIT_GAP:      edit_auto_gap_s += 5; break;
+        case UI_AUTO_EDIT_MAXRUN:   edit_auto_maxrun_min += 5; break;
+        case UI_AUTO_EDIT_RETRY:    edit_auto_retry += 5; break;
 
         /* TWIST MODE */
-        case UI_TWIST_EDIT_ON:    edit_twist_on_s++; break;
-        case UI_TWIST_EDIT_OFF:   edit_twist_off_s++; break;
-        case UI_TWIST_EDIT_ON_H:  if (edit_twist_on_hh < 23) edit_twist_on_hh++; break;
-        case UI_TWIST_EDIT_ON_M:  if (edit_twist_on_mm < 59) edit_twist_on_mm++; break;
-        case UI_TWIST_EDIT_OFF_H: if (edit_twist_off_hh < 23) edit_twist_off_hh++; break;
-        case UI_TWIST_EDIT_OFF_M: if (edit_twist_off_mm < 59) edit_twist_off_mm++; break;
+        case UI_TWIST_EDIT_ON:    edit_twist_on_s += 5; break;
+        case UI_TWIST_EDIT_OFF:   edit_twist_off_s += 5; break;
+        case UI_TWIST_EDIT_ON_H:
+            if (edit_twist_on_hh <= 18) edit_twist_on_hh += 5;
+            else edit_twist_on_hh = 23;
+            break;
+        case UI_TWIST_EDIT_ON_M:
+            if (edit_twist_on_mm <= 54) edit_twist_on_mm += 5;
+            else edit_twist_on_mm = 59;
+            break;
+        case UI_TWIST_EDIT_OFF_H:
+            if (edit_twist_off_hh <= 18) edit_twist_off_hh += 5;
+            else edit_twist_off_hh = 23;
+            break;
+        case UI_TWIST_EDIT_OFF_M:
+            if (edit_twist_off_mm <= 54) edit_twist_off_mm += 5;
+            else edit_twist_off_mm = 59;
+            break;
 
         /* COUNTDOWN */
         case UI_COUNTDOWN_EDIT_MIN:
-            if (edit_countdown_min < 999) edit_countdown_min++;
+            if (edit_countdown_min <= 994) edit_countdown_min += 1;
+            else edit_countdown_min = 999;
             break;
 
-        /* SETTINGS / DEVICE SETUP */
-        /* Dry run gap: 0..15 min */
+        /* SETTINGS */
         case UI_SETTINGS_GAP:
-            if (edit_settings_gap_s < 15) edit_settings_gap_s++;
+            if (edit_settings_gap_s <= 10) edit_settings_gap_s += 5;
+            else edit_settings_gap_s = 15;
             break;
 
-        /* Testing Gap: 0..180min */
         case UI_SETTINGS_RETRY:
-            if (edit_settings_retry < 180) edit_settings_retry++;
+            if (edit_settings_retry <= 175) edit_settings_retry += 5;
+            else edit_settings_retry = 180;
             break;
 
-        /* Low Volt: 0=Disable, else 150..200V */
         case UI_SETTINGS_UV:
             if (edit_settings_uv == 0) edit_settings_uv = 150;
-            else if (edit_settings_uv < 200) edit_settings_uv++;
+            else if (edit_settings_uv <= 195) edit_settings_uv += 5;
+            else edit_settings_uv = 200;
             break;
 
-        /* High Volt: 0=Disable, else 250..300V */
         case UI_SETTINGS_OV:
             if (edit_settings_ov == 0) edit_settings_ov = 250;
-            else if (edit_settings_ov < 300) edit_settings_ov++;
+            else if (edit_settings_ov <= 295) edit_settings_ov += 5;
+            else edit_settings_ov = 300;
             break;
 
-        /* Over Load: 0..25A (0=Disable) */
         case UI_SETTINGS_OL:
-        	if (edit_settings_ol < 25) edit_settings_ol++;  // Increment by 1
-        	break;
+            if (edit_settings_ol <= 20) edit_settings_ol += 5;
+            else edit_settings_ol = 25;
+            break;
 
         case UI_SETTINGS_UL:
-        	if (edit_settings_ul < 10) edit_settings_ul++;  // Increment by 1
-        	break;
-
-        /* Max Run: 0=Disable, else 10..300min */
-        case UI_SETTINGS_MAXRUN:
-            if (edit_settings_maxrun == 0) edit_settings_maxrun = 10;
-            else if (edit_settings_maxrun < 300) edit_settings_maxrun++;
+            if (edit_settings_ul <= 5) edit_settings_ul += 5;
+            else edit_settings_ul = 10;
             break;
 
-        /* Power Restore: 0=YES,1=NO,2=LAST */
+        case UI_SETTINGS_MAXRUN:
+            if (edit_settings_maxrun == 0) edit_settings_maxrun = 10;
+            else if (edit_settings_maxrun <= 295) edit_settings_maxrun += 5;
+            else edit_settings_maxrun = 300;
+            break;
+
         case UI_SETTINGS_PWRREST:
-            if (edit_settings_pwrrest < 2) edit_settings_pwrrest++;
-            else edit_settings_pwrrest = 0;
+            edit_settings_pwrrest = (edit_settings_pwrrest + 1) % 3;
             break;
 
         case UI_SETTINGS_FACTORY:
             edit_settings_factory_yes ^= 1;
             break;
 
-        /* DEVSET DATE/TIME/DAY */
+        /* DATE / TIME / DAY */
         case UI_DEVSET_EDIT_DATE:
             if (edit_date_field == 0) {
-                if (edit_date_dd < 31) edit_date_dd++;
+                if (edit_date_dd <= 26) edit_date_dd += 5;
+                else edit_date_dd = 31;
             } else if (edit_date_field == 1) {
-                if (edit_date_mm < 12) edit_date_mm++;
+                if (edit_date_mm <= 7) edit_date_mm += 5;
+                else edit_date_mm = 12;
             } else {
-                if (edit_date_yyyy < 2099) edit_date_yyyy++;
+                if (edit_date_yyyy <= 2094) edit_date_yyyy += 5;
+                else edit_date_yyyy = 2099;
             }
             break;
 
         case UI_DEVSET_EDIT_TIME:
             if (edit_time_field == 0) {
-                if (edit_time_hh < 23) edit_time_hh++;
+                if (edit_time_hh <= 18) edit_time_hh += 5;
+                else edit_time_hh = 23;
             } else {
-                if (edit_time_min < 59) edit_time_min++;
+                if (edit_time_min <= 54) edit_time_min += 5;
+                else edit_time_min = 59;
             }
             break;
 
@@ -1280,103 +1374,78 @@ void decrease_edit_value(void)
 {
     switch(ui)
     {
-        /* TIMER ON TIME */
         case UI_TIMER_EDIT_ON_TIME:
-            if (time_edit_field == 0) { if (edit_on_h > 0) edit_on_h--; }
-            else                      { if (edit_on_m > 0) edit_on_m--; }
+            if (time_edit_field == 0) {
+                if (edit_on_h >= 5) edit_on_h -= 5;
+                else edit_on_h = 0;
+            } else {
+                if (edit_on_m >= 5) edit_on_m -= 5;
+                else edit_on_m = 0;
+            }
             break;
 
-        /* TIMER OFF TIME */
         case UI_TIMER_EDIT_OFF_TIME:
-            if (time_edit_field == 0) { if (edit_off_h > 0) edit_off_h--; }
-            else                      { if (edit_off_m > 0) edit_off_m--; }
+            if (time_edit_field == 0) {
+                if (edit_off_h >= 5) edit_off_h -= 5;
+                else edit_off_h = 0;
+            } else {
+                if (edit_off_m >= 5) edit_off_m -= 5;
+                else edit_off_m = 0;
+            }
             break;
 
-        /* TIMER GAP */
         case UI_TIMER_EDIT_GAP:
-            if (edit_gap_min > 0) edit_gap_min--;
+            if (edit_gap_min >= 5) edit_gap_min -= 5;
+            else edit_gap_min = 0;
             break;
 
-        /* AUTO SETTINGS */
-        case UI_AUTO_EDIT_GAP:      if(edit_auto_gap_s > 0) edit_auto_gap_s--; break;
-        case UI_AUTO_EDIT_MAXRUN:   if(edit_auto_maxrun_min > 0) edit_auto_maxrun_min--; break;
-        case UI_AUTO_EDIT_RETRY:    if(edit_auto_retry > 0) edit_auto_retry--; break;
-
-        /* TWIST */
-        case UI_TWIST_EDIT_ON:      if(edit_twist_on_s > 0) edit_twist_on_s--; break;
-        case UI_TWIST_EDIT_OFF:     if(edit_twist_off_s > 0) edit_twist_off_s--; break;
-        case UI_TWIST_EDIT_ON_H:    if(edit_twist_on_hh > 0) edit_twist_on_hh--; break;
-        case UI_TWIST_EDIT_ON_M:    if(edit_twist_on_mm > 0) edit_twist_on_mm--; break;
-        case UI_TWIST_EDIT_OFF_H:   if(edit_twist_off_hh > 0) edit_twist_off_hh--; break;
-        case UI_TWIST_EDIT_OFF_M:   if(edit_twist_off_mm > 0) edit_twist_off_mm--; break;
-
-        /* COUNTDOWN */
-        case UI_COUNTDOWN_EDIT_MIN:
-            if (edit_countdown_min > 1) edit_countdown_min--;
+        case UI_AUTO_EDIT_GAP:
+            if (edit_auto_gap_s >= 5) edit_auto_gap_s -= 5;
+            else edit_auto_gap_s = 0;
             break;
 
-        /* SETTINGS / DEVICE SETUP */
-        /* Dry run gap: 0..15, 0=Disable */
+        case UI_AUTO_EDIT_MAXRUN:
+            if (edit_auto_maxrun_min >= 5) edit_auto_maxrun_min -= 5;
+            else edit_auto_maxrun_min = 0;
+            break;
+
+        case UI_AUTO_EDIT_RETRY:
+            if (edit_auto_retry >= 5) edit_auto_retry -= 5;
+            else edit_auto_retry = 0;
+            break;
+
         case UI_SETTINGS_GAP:
-            if(edit_settings_gap_s > 0) edit_settings_gap_s--;
+            if (edit_settings_gap_s >= 5) edit_settings_gap_s -= 5;
+            else edit_settings_gap_s = 0;
             break;
 
-        /* Testing Gap: 0..180 */
         case UI_SETTINGS_RETRY:
-            if(edit_settings_retry > 0) edit_settings_retry--;
-            break;
-
-        /* Low Volt: 0=Disable, else down to 150 */
-        case UI_SETTINGS_UV:
-            if (edit_settings_uv > 150) edit_settings_uv--;
-            else if (edit_settings_uv == 150) edit_settings_uv = 0;
-            break;
-
-        /* High Volt: 0=Disable, else down to 250 */
-        case UI_SETTINGS_OV:
-            if (edit_settings_ov > 250) edit_settings_ov--;
-            else if (edit_settings_ov == 250) edit_settings_ov = 0;
+            if (edit_settings_retry >= 5) edit_settings_retry -= 5;
+            else edit_settings_retry = 0;
             break;
 
         case UI_SETTINGS_OL:
-        	if (edit_settings_ol > 0) edit_settings_ol--;  // Decrement by 1
-        	break;
+            if (edit_settings_ol >= 5) edit_settings_ol -= 5;
+            else edit_settings_ol = 0;
+            break;
+
         case UI_SETTINGS_UL:
-        	if (edit_settings_ul > 0) edit_settings_ul--;  // Decrement by 1
-        	break;
+            if (edit_settings_ul >= 5) edit_settings_ul -= 5;
+            else edit_settings_ul = 0;
+            break;
 
-        /* Max Run: 0=Disable, else 10..300 */
         case UI_SETTINGS_MAXRUN:
-            if(edit_settings_maxrun > 10) edit_settings_maxrun--;
-            else if (edit_settings_maxrun == 10) edit_settings_maxrun = 0;
-            break;
-
-        /* Power Restore: 0=YES,1=NO,2=LAST */
-        case UI_SETTINGS_PWRREST:
-            if (edit_settings_pwrrest == 0) edit_settings_pwrrest = 2;
-            else edit_settings_pwrrest--;
-            break;
-
-        case UI_SETTINGS_FACTORY:
-            edit_settings_factory_yes ^= 1;
-            break;
-
-        /* DEVSET DATE/TIME/DAY */
-        case UI_DEVSET_EDIT_DATE:
-            if (edit_date_field == 0) {
-                if (edit_date_dd > 1) edit_date_dd--;
-            } else if (edit_date_field == 1) {
-                if (edit_date_mm > 1) edit_date_mm--;
-            } else {
-                if (edit_date_yyyy > 2020) edit_date_yyyy--;
-            }
+            if (edit_settings_maxrun >= 15) edit_settings_maxrun -= 5;
+            else edit_settings_maxrun = 0;
             break;
 
         case UI_DEVSET_EDIT_TIME:
             if (edit_time_field == 0) {
-                if (edit_time_hh > 0) edit_time_hh--;
+                if (edit_time_hh >= 5) edit_time_hh -= 5;
+                else edit_time_hh = 0;
             } else {
-                if (edit_time_min > 0) edit_time_min--;
+                if (edit_time_min >= 5) edit_time_min -= 5;
+                else edit_time_min = 0;
             }
             break;
 
@@ -1459,13 +1528,13 @@ void Screen_HandleSwitches(void)
     bool sw_down = Switch_IsPressed(3);
 
     /* LONG PRESS RESET → manual toggle */
-    if (b == BTN_RESET_LONG)
-    {
-        ModelHandle_ToggleManual();
-        ui = UI_DASH;
-        screenNeedsRefresh = true;
-        return;
-    }
+//    if (b == BTN_RESET_LONG)
+//    {
+//        ModelHandle_ToggleManual();
+//        ui = UI_DASH;
+//        screenNeedsRefresh = true;
+//        return;
+//    }
 
     /* CONTINUOUS UP (HOLD) */
     if (sw_up && sw_long_issued[2] && ui != UI_COUNTDOWN_EDIT_MIN)
@@ -2106,7 +2175,7 @@ void Screen_HandleSwitches(void)
     {
         case BTN_RESET:
             /* Restart pump / test-run */
-            reset();
+            ModelHandle_ToggleManual();
             ui = UI_DASH;
             screenNeedsRefresh = true;
             return;
@@ -2183,6 +2252,7 @@ void Screen_HandleSwitches(void)
  ***************************************************************/
 void Screen_Update(void)
 {
+
     uint32_t now = HAL_GetTick();
 
     /* CURSOR BLINK ONLY IN MAIN MENU */

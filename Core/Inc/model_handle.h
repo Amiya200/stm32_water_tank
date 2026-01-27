@@ -102,6 +102,11 @@ void ModelHandle_StopAllModesAndMotor(void);
 
 /* Motor Control */
 bool Motor_GetStatus(void);
+bool ModelHandle_IsOverload(void);
+bool ModelHandle_IsUnderload(void);
+bool ModelHandle_IsDryRunActive(void);
+bool ModelHandle_IsVoltageFault(void);
+bool ModelHandle_IsMaxRunReached(void);
 
 /* Protection Functions */
 void ModelHandle_SetDryRun(bool on);

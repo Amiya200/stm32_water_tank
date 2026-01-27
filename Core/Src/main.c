@@ -134,7 +134,7 @@ int main(void)
     MX_TIM3_Init();
     RTC_Init();
     /* Set time ONLY ONCE — comment this line after first flash */
-//     RTC_SetTimeDate(0, 44, 12, 1, 29, 12, 2025);
+//    RTC_SetTimeDate(0, 31, 11, 2, 27, 1, 2026);
     Timer_EEPROM_EnsureValid();
     RTC_GetTimeDate();
     lcd_init();
