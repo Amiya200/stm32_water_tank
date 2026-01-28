@@ -190,6 +190,8 @@ typedef struct __attribute__((packed))
     uint32_t remaining_ms;
     uint8_t  crc;
 } AutoRuntimeBlock;
+#define AUTO_START_LEVEL_PERCENT   75
+#define AUTO_STOP_LEVEL_PERCENT    100   // hysteresis
 static uint32_t loadTimer = 0;
 static uint8_t  loadRetryCount = 0;
 #ifndef EEPROM_PAGE_SIZE
@@ -617,15 +619,6 @@ void ModelHandle_SoftDryRunHandler(void)
         uint16_t slotGap = get_active_timer_gap_minutes();
         if (slotGap > 0) gap_s = slotGap * 60U;
     }
-    ModelHandle_CheckGroundWater();
-    if (!groundWater)
-    {
-        stop_motor();
-        dryState = DRY_IDLE;
-        dryConfirming = false;
-        Buzzer_TriggerAlert();
-        return;
-    }
     ModelHandle_CheckDryRun();
     if (gap_s == 0) return;
     dryOffGapMs = (uint32_t)gap_s * 1000UL;
@@ -844,14 +837,7 @@ void ModelHandle_ProcessTimerSlots(void)
         timerState = TIMER_STATE_ON;
         return;
     }
-    ModelHandle_CheckGroundWater();
 
-    if (!groundWater)
-    {
-        stop_motor();
-        timerState = TIMER_STATE_ON;
-        return;
-    }
     if (isTankFull())
     {
         stop_motor();
@@ -975,6 +961,51 @@ void ModelHandle_LoadAutoSettings(void)
     autoResumeBoot   = true;
     start_motor();
 }
+static uint8_t get_tank_level_percent(void)
+{
+    uint8_t submerged = 0;
+
+    for (int i = 0; i <= 3; i++)
+    {
+        if (adcData.voltages[i] < 0.10f)
+            submerged++;
+    }
+
+    return (submerged * 100) / 4;
+}
+static void auto_mode_background_control(void)
+{
+    static bool autoWasStartedByLevel = false;
+
+    uint8_t level = get_tank_level_percent();
+
+    /* Do NOT interfere with user-selected modes */
+    if (manualActive || semiAutoActive ||
+        timerActive || countdownActive || twistActive)
+    {
+        autoWasStartedByLevel = false;
+        return;
+    }
+
+    /* START AUTO when water < 75% */
+    if (!autoActive && level < AUTO_START_LEVEL_PERCENT)
+    {
+        ModelHandle_StartAuto(auto_gap_s,
+                              auto_maxrun_min,
+                              auto_retry_limit);
+        autoWasStartedByLevel = true;
+    }
+
+    /* STOP AUTO only when tank is almost full */
+    if (autoActive &&
+        autoWasStartedByLevel &&
+        level >= AUTO_STOP_LEVEL_PERCENT)
+    {
+        ModelHandle_StopAuto();
+        autoWasStartedByLevel = false;
+    }
+}
+
 static void auto_tick(void)
 {
     if (!autoActive) return;
@@ -984,13 +1015,6 @@ static void auto_tick(void)
     {
         lastSave = now;
         SaveAutoRuntime();
-    }
-    ModelHandle_CheckGroundWater();
-
-    if (!groundWater)
-    {
-        stop_motor();
-        return;
     }
     if (isTankFull())
     {
@@ -1180,13 +1204,6 @@ static void twist_time_logic(void)
 static void twist_tick(void)
 {
 	if (!twistActive) return;
-	    ModelHandle_CheckGroundWater();
-	    if (!groundWater)
-	    {
-	        stop_motor();
-	        Buzzer_TriggerAlert();
-	        return;
-	    }
 	    if (isTankFull())
 	    {
 	        ModelHandle_StopTwist();
@@ -1232,6 +1249,7 @@ static void leds_from_model(void)
 }
 void ModelHandle_Process(void)
 {
+	auto_mode_background_control();
     ModelHandle_CheckLoadFault();
     protections_tick();
     twist_time_logic();
@@ -1261,13 +1279,7 @@ void ModelHandle_Process(void)
     }
     if (semiAutoActive)
     {
-        ModelHandle_CheckGroundWater();
-        if (!groundWater)
-        {
-            stop_motor();
-            Buzzer_TriggerAlert();
-            return;
-        }
+
         if (!isTankFull())
         {
             if (!Motor_GetStatus())
@@ -1294,13 +1306,7 @@ void ModelHandle_Process(void)
     }
     if (countdownActive)
     {
-        ModelHandle_CheckGroundWater();
-        if (!groundWater)
-        {
-            stop_motor();
-            Buzzer_TriggerAlert();
-            return;
-        }
+
         countdown_tick();
         if (!Motor_GetStatus())
             start_motor();
