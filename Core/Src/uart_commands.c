@@ -8,13 +8,8 @@
 
 extern bool g_screenUpdatePending;
 extern TimerSlot timerSlots[5];
-
 static inline void ack(const char *msg) { UART_TransmitPacket(msg); }
 static inline void err(const char *msg) { UART_TransmitPacket(msg); }
-
-/* =========================
-   Cached status report
-   ========================= */
 typedef struct {
     uint8_t level;
     uint8_t motorStatus;
@@ -23,7 +18,6 @@ typedef struct {
 static uint8_t parseDays(const char *daysStr)
 {
     uint8_t mask = 0;
-
     if (strstr(daysStr, "mon")) mask |= (1 << 0);
     if (strstr(daysStr, "tue")) mask |= (1 << 1);
     if (strstr(daysStr, "wed")) mask |= (1 << 2);
@@ -31,13 +25,9 @@ static uint8_t parseDays(const char *daysStr)
     if (strstr(daysStr, "fri")) mask |= (1 << 4);
     if (strstr(daysStr, "sat")) mask |= (1 << 5);
     if (strstr(daysStr, "sun")) mask |= (1 << 6);
-
     return mask;
 }
-
 static StatusSnapshot lastSent = {255, 255, "INIT"};
-
-/* Simple ':'-based tokenizer (no strtok) */
 static char* next_token(char** ctx) {
     char* s = *ctx;
     if (!s) return NULL;
@@ -46,10 +36,6 @@ static char* next_token(char** ctx) {
     else { *ctx = NULL; }
     return s;
 }
-
-/* =========================
-   STATUS PACKET
-   ========================= */
 void UART_SendStatusPacket(void)
 {
     extern ADC_Data adcData;
@@ -59,63 +45,44 @@ void UART_SendStatusPacket(void)
     extern volatile bool timerActive;
     extern volatile bool countdownActive;
     extern volatile bool twistActive;
-
     int submerged = 0;
     for (int i = 0; i < 5; i++) {
         if (adcData.voltages[i] < 0.1f) submerged++;
     }
-
     const char *mode = "IDLE";
     if (manualActive)         mode = "MANUAL";
     else if (semiAutoActive)  mode = "SEMIAUTO";
     else if (timerActive)     mode = "TIMER";
     else if (countdownActive) mode = "COUNTDOWN";
     else if (twistActive)     mode = "TWIST";
-
     bool changed =
         (lastSent.level != submerged) ||
         (lastSent.motorStatus != motorStatus) ||
         (strcmp(lastSent.mode, mode) != 0);
-
     if (!changed) return;
-
     lastSent.level = submerged;
     lastSent.motorStatus = motorStatus;
     strncpy(lastSent.mode, mode, sizeof(lastSent.mode) - 1);
-
     char buf[80];
     snprintf(buf, sizeof(buf),
              "STATUS:MOTOR:%s:LEVEL:%d:MODE:%s",
              motorStatus ? "ON" : "OFF",
              submerged, mode);
-
     UART_TransmitPacket(buf);
 }
-
-/* =========================
-   COMMAND HANDLER
-   ========================= */
 void UART_HandleCommand(const char *pkt)
 {
     if (!pkt || !*pkt) return;
-
     char buf[UART_RX_BUFFER_SIZE];
     strncpy(buf, pkt, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
-
-    /* remove wrappers like '@' and '#' */
     if (buf[0] == '@') memmove(buf, buf + 1, strlen(buf));
     char *end = strchr(buf, '#');
     if (end) *end = '\0';
-
     char *ctx = buf;
     char *cmd = next_token(&ctx);
     if (!cmd) return;
-
-    /* ---- BASIC ---- */
     if (!strcmp(cmd, "PING")) { ack("PONG"); return; }
-
-    /* ---- MANUAL ---- */
     else if (!strcmp(cmd, "MANUAL")) {
         char *state = next_token(&ctx);
         if (!state) { err("PARAM"); return; }
@@ -124,8 +91,6 @@ void UART_HandleCommand(const char *pkt)
         else { err("FORMAT"); return; }
         ack("MANUAL_OK");
     }
-    /* ---- AUTO ---- */
-
     else if (!strcmp(cmd, "AUTO")) {
         char *s = next_token(&ctx);
         if (!s) { err("ERR:AUTO"); return; }
@@ -139,91 +104,60 @@ void UART_HandleCommand(const char *pkt)
         } else {
             ModelHandle_StopAllModesAndMotor();
         }
-
         ack(!strcmp(s, "ON") ? "AUTO_ON" : "AUTO_OFF");
     }
-
-
-
-
-    /* ---- TIMER (slot-based) ---- */
     else if (!strcmp(cmd, "TIMER")) {
-
         char *sub = next_token(&ctx);
         if (sub && !strcmp(sub, "SET")) {
-
-            // Parse the command parameters
-            char *slotStr = next_token(&ctx);    // Slot number
-            char *daysStr = next_token(&ctx);    // Days (mon,tue,wed,...)
-            char *h1s = next_token(&ctx);        // On Hour
-            char *m1s = next_token(&ctx);        // On Minute
-            char *h2s = next_token(&ctx);        // Off Hour
-            char *m2s = next_token(&ctx);        // Off Minute
-            char *gapStr = next_token(&ctx);     // Gap Minutes
+            char *slotStr = next_token(&ctx);
+            char *daysStr = next_token(&ctx);
+            char *h1s = next_token(&ctx);
+            char *m1s = next_token(&ctx);
+            char *h2s = next_token(&ctx);
+            char *m2s = next_token(&ctx);
+            char *gapStr = next_token(&ctx);
 
             if (!slotStr || !daysStr || !h1s || !m1s || !h2s || !m2s || !gapStr) {
                 err("TIMER_FORMAT");
                 return;
             }
-
-            // Convert each part to integers
             int slot = atoi(slotStr);
-            int h1 = atoi(h1s); // On Hour
-            int m1 = atoi(m1s); // On Minute
-            int h2 = atoi(h2s); // Off Hour
-            int m2 = atoi(m2s); // Off Minute
-            int gap = atoi(gapStr); // Gap Minutes
-
-            // Validate the parsed values
+            int h1 = atoi(h1s);
+            int m1 = atoi(m1s);
+            int h2 = atoi(h2s);
+            int m2 = atoi(m2s);
+            int gap = atoi(gapStr);
             if (slot < 1 || slot > 5 ||
                 h1 < 0 || h1 > 23 ||
                 m1 < 0 || m1 > 59 ||
                 h2 < 0 || h2 > 23 ||
                 m2 < 0 || m2 > 59 ||
-                gap < 0 || gap > 60)  // Ensure gap is within 0-60 range
+                gap < 0 || gap > 60)
             {
                 err("TIMER_RANGE");
                 return;
             }
-
-            // Get the slot index (0-based)
             uint8_t idx = slot - 1;
-
-            // Store the parsed values into the corresponding TimerSlot
             timerSlots[idx].enabled     = true;
-            timerSlots[idx].dayMask     = parseDays(daysStr);  // Parse days into a bitmask
+            timerSlots[idx].dayMask     = parseDays(daysStr);
             timerSlots[idx].onHour      = h1;
             timerSlots[idx].onMinute    = m1;
             timerSlots[idx].offHour     = h2;
             timerSlots[idx].offMinute   = m2;
-            timerSlots[idx].gapMinutes  = gap;  // Store the gapMinutes in the TimerSlot
-
-            // Start the timer (or whatever functionality you want to trigger)
+            timerSlots[idx].gapMinutes  = gap;
             ModelHandle_StartTimer();
-
-            // Send acknowledgment
             ack("TIMER_OK");
         }
-
         else if (sub && !strcmp(sub, "STOP")) {
-            // Disable all timers
             for (int i = 0; i < 5; i++)
                 timerSlots[i].enabled = false;
-
-            // Stop all modes and motor
             ModelHandle_StopAllModesAndMotor();
-
-            // Acknowledge stop
             ack("TIMER_STOP");
         }
         else {
-            // If the format is invalid
             err("FORMAT");
         }
     }
-
-
-    /* ---- SEMIAUTO ---- */
     else if (!strcmp(cmd, "SEMIAUTO")) {
         char *sub = next_token(&ctx);
         if (sub && !strcmp(sub, "ON")) {
@@ -238,8 +172,6 @@ void UART_HandleCommand(const char *pkt)
         g_screenUpdatePending = true;
         return;
     }
-
-    /* ---- COUNTDOWN ---- */
     else if (!strcmp(cmd, "COUNTDOWN")) {
         char *sub = next_token(&ctx);
         if (sub && !strcmp(sub, "ON")) {
@@ -252,27 +184,20 @@ void UART_HandleCommand(const char *pkt)
             ack("COUNTDOWN_OFF");
         } else err("FORMAT");
     }
-
-    /* ================= SETTINGS (CORRECT & SAFE) ================= */
     else if (!strcmp(cmd, "SETTINGS"))
     {
         uint16_t dryRun  = 0;
         uint16_t maxRun  = 0;
         uint16_t lowV    = 190;
         uint16_t highV   = 270;
-
         int16_t  overLoad_i  = 0;
         int16_t  underLoad_i = 0;
-
         uint8_t  retry       = 0;
         uint8_t  pwrRestore  = 0;
-
         bool gotOverLoad  = false;
         bool gotUnderLoad = false;
-
         char *save;
         char *kv = strtok_r(ctx, ":", &save);   // token stream
-
         while (kv)
         {
             if      (sscanf(kv, "dryRunGap=%hu",  &dryRun)  == 1) {}
@@ -280,7 +205,6 @@ void UART_HandleCommand(const char *pkt)
             else if (sscanf(kv, "maxRun=%hu",     &maxRun)  == 1) {}
             else if (sscanf(kv, "lowVolt=%hu",    &lowV)    == 1) {}
             else if (sscanf(kv, "highVolt=%hu",   &highV)   == 1) {}
-
             else if (sscanf(kv, "overLoad=%hd",   &overLoad_i) == 1)
             {
                 gotOverLoad = true;
@@ -290,28 +214,20 @@ void UART_HandleCommand(const char *pkt)
                 gotUnderLoad = true;
             }
             else if (sscanf(kv, "powerRestore=%hhu", &pwrRestore) == 1) {}
-
             kv = strtok_r(NULL, ":", &save);
         }
-
-        /* ================== CLAMP VALUES ================== */
-
         if (gotOverLoad)
         {
             if (overLoad_i < 0)  overLoad_i = 0;
-            if (overLoad_i > 25) overLoad_i = 25;   // max 25A
+            if (overLoad_i > 25) overLoad_i = 25;
         }
-
         if (gotUnderLoad)
         {
             if (underLoad_i < 0)  underLoad_i = 0;
             if (underLoad_i > 25) underLoad_i = 25;
         }
-
-        /* ================== APPLY SETTINGS ================== */
-
         ModelHandle_SetUserSettings(
-            dryRun * 60,   // minutes → seconds
+            dryRun * 60,
             retry,
             lowV,
             highV,
@@ -319,11 +235,7 @@ void UART_HandleCommand(const char *pkt)
             gotUnderLoad ? underLoad_i : ModelHandle_GetUnderloadLimit(),
             maxRun
         );
-
         ModelHandle_SetPowerRestoreMode(pwrRestore);
-
-        /* ================== ACK (FIXED) ================== */
-
         char dbg[64];
         snprintf(dbg, sizeof(dbg),
                  "ACK:UL=%d OL=%d",
@@ -332,22 +244,17 @@ void UART_HandleCommand(const char *pkt)
 
         UART_TransmitPacket(dbg);
     }
-
-    /* ---- STATUS ---- */
     else if (!strcmp(cmd, "STATUS")) {
         static uint32_t lastReply = 0;
         uint32_t now = HAL_GetTick();
-        if (now - lastReply >= 5000) {   // reply only once every 5 s
+        if (now - lastReply >= 5000) {
             UART_SendStatusPacket();
             lastReply = now;
         }
         return;
     }
-
     else {
-//        err("UNKNOWN");
         return;
     }
-
     g_screenUpdatePending = true;
 }

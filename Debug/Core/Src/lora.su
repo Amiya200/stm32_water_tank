@@ -1,8 +1,8 @@
-../Core/Src/lora.c:26:6:LoRa_WriteReg	24	static
-../Core/Src/lora.c:34:9:LoRa_ReadReg	24	static
-../Core/Src/lora.c:44:6:LoRa_WriteBuffer	24	static
-../Core/Src/lora.c:53:6:LoRa_ReadBuffer	24	static
-../Core/Src/lora.c:64:13:LoRa_Reset	8	static
-../Core/Src/lora.c:74:6:LoRa_Init	16	static
-../Core/Src/lora.c:116:9:LoRa_ReceivePacket	24	static
-../Core/Src/lora.c:146:6:LoRa_Task	16	static
+../Core/Src/lora.c:14:6:LoRa_WriteReg	24	static
+../Core/Src/lora.c:21:9:LoRa_ReadReg	24	static
+../Core/Src/lora.c:30:6:LoRa_WriteBuffer	24	static
+../Core/Src/lora.c:38:6:LoRa_ReadBuffer	24	static
+../Core/Src/lora.c:46:13:LoRa_Reset	8	static
+../Core/Src/lora.c:53:6:LoRa_Init	16	static
+../Core/Src/lora.c:75:9:LoRa_ReceivePacket	24	static
+../Core/Src/lora.c:94:6:LoRa_Task	16	static
