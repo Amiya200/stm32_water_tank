@@ -75,7 +75,7 @@ void LED_SetIntent(LedColor color, LedMode mode, uint16_t period_ms)
     s_intent[color].mode = mode;
     s_intent[color].period_ms = period_ms;
 }
-void LED_ApplyIntents(void) { /* no-op, reserved for future resolve rules */ }
+void LED_ApplyIntents(void) {}
 void LED_All_Off(void)
 {
     for (int i = 0; i < LED_COLOR_COUNT; ++i) {

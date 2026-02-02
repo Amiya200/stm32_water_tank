@@ -29,9 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "rf.h"
-
 #include "stdio.h"
-
 #include "acs712.h"
 /* USER CODE END Includes */
 
@@ -180,11 +178,9 @@ int main(void)
         ModelHandle_CheckDryRun();
         ModelHandle_Process();
         ModelHandle_ProcessDryRun();
-
         LED_Task();
-        HAL_Delay(10);  // ~50Hz loop
+        HAL_Delay(10);
     }
-
     /* USER CODE BEGIN 3 */
 }
 

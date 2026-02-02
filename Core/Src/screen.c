@@ -1163,29 +1163,39 @@ void Screen_HandleSwitches(void)
         if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
         {
             last_repeat_time = now;
+
             if (ui == UI_MENU && menu_idx > 0)
                 menu_idx--;
             else if (ui == UI_TIMER_SLOT_SELECT && currentSlot > 0)
                 currentSlot--;
             else if (ui == UI_DEVSET_MENU && devset_idx > 0)
                 devset_idx--;
+
             screenNeedsRefresh = true;
         }
     }
+
     if (sw_down && sw_long_issued[3] && ui != UI_COUNTDOWN_EDIT_MIN)
     {
         if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
         {
             last_repeat_time = now;
+
             if (ui == UI_MENU && menu_idx < MAIN_MENU_COUNT - 1)
                 menu_idx++;
             else if (ui == UI_TIMER_SLOT_SELECT && currentSlot < 5)
                 currentSlot++;
             else if (ui == UI_DEVSET_MENU && devset_idx < DEVSET_MENU_COUNT - 1)
                 devset_idx++;
+
             screenNeedsRefresh = true;
         }
     }
+
+    /* ==============================
+       COUNTDOWN EDIT MODE (1-by-1)
+    ===============================*/
+
     if (ui == UI_COUNTDOWN_EDIT_MIN)
     {
         if (sw_down)
@@ -1194,16 +1204,19 @@ void Screen_HandleSwitches(void)
                 (now - last_repeat_time >= CONTINUOUS_STEP_MS))
             {
                 last_repeat_time = now;
+
                 if (edit_countdown_min < 999)
                     edit_countdown_min += 1;
+
                 screenNeedsRefresh = true;
             }
         }
         else if (prev_sw_down_edit)
         {
-            ui = UI_DASH;
+            ui = UI_DASH;   // release → exit edit
             screenNeedsRefresh = true;
         }
+
         prev_sw_down_edit = sw_down;
         return;
     }
