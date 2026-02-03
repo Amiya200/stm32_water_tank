@@ -56,10 +56,5 @@
 ../Core/Src/screen.c:896:6:increase_edit_value	54
 ../Core/Src/screen.c:1032:6:decrease_edit_value	32
 ../Core/Src/screen.c:1107:17:decode_button_press	18
-<<<<<<< HEAD
-../Core/Src/screen.c:1154:6:Screen_HandleSwitches	40
-../Core/Src/screen.c:1297:6:Screen_Update	57
-=======
 ../Core/Src/screen.c:1154:6:Screen_HandleSwitches	69
 ../Core/Src/screen.c:1405:6:Screen_Update	57
->>>>>>> ec16c8d (code ok with timer mode getting off at off time)

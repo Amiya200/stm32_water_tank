@@ -529,8 +529,8 @@ void ModelHandle_StartTimerNearestSlot(void)
 }
 static inline void Buzzer_SetPin(bool on)
 {
-//    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-//                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 static uint32_t buzzerAlertUntil = 0;
@@ -676,7 +676,7 @@ static inline bool Motor_IsRelayOn(void)
 /* Power-on delay */
 static bool Motor_StartAllowed(void)
 {
-    return (HAL_GetTick() - powerOnMs) >= 7000UL;
+    return (HAL_GetTick() - powerOnMs) >= 7000UL;   // 7s safety delay
 }
 
 /* Unified motor apply — self healing */
@@ -705,6 +705,7 @@ static inline void motor_apply(bool on)
         motorStatus = 0;
         motorOwner  = MOTOR_OWNER_NONE;
     }
+
     UART_SendStatusPacket();
 }
 
@@ -940,8 +941,10 @@ void ModelHandle_CheckLoadFault(void)
 	   motorOwner != MOTOR_OWNER_AUTO &&
 	   motorOwner != MOTOR_OWNER_TIMER)
 	    return;
+
     float I = g_currentA;
     float V = g_voltageV;
+
     bool overload  = (sys.overload > 0.1f) && (I > sys.overload);
     bool underload = (sys.underload > 0.001f) && (I < sys.underload);
     bool voltFault = ((sys.uv_limit && V < sys.uv_limit) ||
@@ -1033,9 +1036,11 @@ static bool slot_is_active_now(const TimerSlot *t)
 {
     if (!t->enabled) return false;
     if (!(t->dayMask & get_today_mask())) return false;
+
     uint16_t now = time.hour * 60 + time.min;
     uint16_t on  = t->onHour  * 60 + t->onMinute;
     uint16_t off = t->offHour * 60 + t->offMinute;
+
     return (on < off) ? (now >= on && now < off)
                       : (now >= on || now < off);
 }
@@ -1051,6 +1056,7 @@ static bool timer_any_active_slot(void)
 static uint16_t get_active_timer_gap_minutes(void)
 {
     if (!timerActive) return 0;
+
     uint16_t now = time.hour * 60 + time.min;
     uint8_t  dm  = get_today_mask();
 
@@ -1074,8 +1080,10 @@ static uint16_t get_active_timer_gap_minutes(void)
 static uint32_t timer_get_gap_ms(void)
 {
     uint16_t gapMin = get_active_timer_gap_minutes();
+
     if (gapMin == 0)
         return 0;
+
     return (uint32_t)gapMin * 60UL * 1000UL;
 }
 
@@ -1112,6 +1120,7 @@ void ModelHandle_ProcessTimerSlots(void)
 
         return;
     }
+
     if (isTankFull())
        {
            stop_motor();          // motor forced OFF
@@ -1309,45 +1318,6 @@ void ModelHandle_LoadAutoSettings(void)
 
     start_motor();   // resumes from exact phase
 }
-<<<<<<< HEAD
-static uint8_t get_tank_level_percent(void)
-{
-    uint8_t submerged = 0;
-
-    for (int i = 0; i <= 3; i++)
-    {
-        if (adcData.voltages[i] < 0.10f)
-            submerged++;
-    }
-    return (submerged * 100) / 4;
-}
-static void auto_mode_background_control(void)
-{
-    static bool autoWasStartedByLevel = false;
-    uint8_t level = get_tank_level_percent();
-    if (manualActive || semiAutoActive ||
-        timerActive || countdownActive || twistActive)
-    {
-        autoWasStartedByLevel = false;
-        return;
-    }
-    if (!autoActive && level < AUTO_START_LEVEL_PERCENT)
-    {
-        ModelHandle_StartAuto(auto_gap_s,
-                              auto_maxrun_min,
-                              auto_retry_limit);
-        autoWasStartedByLevel = true;
-    }
-    if (autoActive &&
-        autoWasStartedByLevel &&
-        level >= AUTO_STOP_LEVEL_PERCENT)
-    {
-        ModelHandle_StopAuto();
-        autoWasStartedByLevel = false;
-    }
-}
-=======
->>>>>>> ec16c8d (code ok with timer mode getting off at off time)
 static void auto_tick(void)
 {
 
@@ -1444,6 +1414,7 @@ void ModelHandle_StartCountdown(uint32_t seconds)
 {
     clear_all_modes();
     if (seconds == 0) return;
+
     countdownActive   = true;
     countdownMode     = true;
     countdownDuration = seconds;

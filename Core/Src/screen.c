@@ -1167,44 +1167,6 @@ void Screen_HandleSwitches(void)
        ========================================================= */
     if (b == BTN_RESET && ui != UI_DASH)
     {
-<<<<<<< HEAD
-        if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
-        {
-            last_repeat_time = now;
-
-            if (ui == UI_MENU && menu_idx > 0)
-                menu_idx--;
-            else if (ui == UI_TIMER_SLOT_SELECT && currentSlot > 0)
-                currentSlot--;
-            else if (ui == UI_DEVSET_MENU && devset_idx > 0)
-                devset_idx--;
-
-            screenNeedsRefresh = true;
-        }
-    }
-
-    if (sw_down && sw_long_issued[3] && ui != UI_COUNTDOWN_EDIT_MIN)
-    {
-        if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
-        {
-            last_repeat_time = now;
-
-            if (ui == UI_MENU && menu_idx < MAIN_MENU_COUNT - 1)
-                menu_idx++;
-            else if (ui == UI_TIMER_SLOT_SELECT && currentSlot < 5)
-                currentSlot++;
-            else if (ui == UI_DEVSET_MENU && devset_idx < DEVSET_MENU_COUNT - 1)
-                devset_idx++;
-
-            screenNeedsRefresh = true;
-        }
-    }
-
-    /* ==============================
-       COUNTDOWN EDIT MODE (1-by-1)
-    ===============================*/
-
-=======
         ui = UI_DASH;
         screenNeedsRefresh = true;
         return;
@@ -1213,7 +1175,6 @@ void Screen_HandleSwitches(void)
     /* =========================================================
        COUNTDOWN EDIT MODE (Smooth Hold Increase)
        ========================================================= */
->>>>>>> ec16c8d (code ok with timer mode getting off at off time)
     if (ui == UI_COUNTDOWN_EDIT_MIN)
     {
         if (sw_down)
@@ -1221,12 +1182,6 @@ void Screen_HandleSwitches(void)
             if (!prev_down_edit)
             {
                 last_repeat_time = now;
-<<<<<<< HEAD
-
-                if (edit_countdown_min < 999)
-                    edit_countdown_min += 1;
-
-=======
                 edit_countdown_min++;
                 if (edit_countdown_min > 999)
                     edit_countdown_min = 1;
@@ -1238,22 +1193,17 @@ void Screen_HandleSwitches(void)
                 edit_countdown_min++;
                 if (edit_countdown_min > 999)
                     edit_countdown_min = 1;
->>>>>>> ec16c8d (code ok with timer mode getting off at off time)
                 screenNeedsRefresh = true;
             }
         }
 
         if (!sw_down && prev_down_edit)
         {
-            ui = UI_DASH;   // release → exit edit
+            ui = UI_DASH;
             screenNeedsRefresh = true;
         }
 
-<<<<<<< HEAD
-        prev_sw_down_edit = sw_down;
-=======
         prev_down_edit = sw_down;
->>>>>>> ec16c8d (code ok with timer mode getting off at off time)
         return;
     }
     else
