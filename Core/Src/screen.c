@@ -1153,13 +1153,21 @@ static UiButton decode_button_press(void)
 }
 void Screen_HandleSwitches(void)
 {
-    static bool prev_sw_down_edit = false;
+    static uint32_t last_repeat_time = 0;
+    static bool prev_down_edit = false;
+
     UiButton b = decode_button_press();
     uint32_t now = HAL_GetTick();
+
     bool sw_up   = Switch_IsPressed(2);
     bool sw_down = Switch_IsPressed(3);
-    if (sw_up && sw_long_issued[2] && ui != UI_COUNTDOWN_EDIT_MIN)
+
+    /* =========================================================
+       GLOBAL ESCAPE: RESET always returns to DASH (safe exit)
+       ========================================================= */
+    if (b == BTN_RESET && ui != UI_DASH)
     {
+<<<<<<< HEAD
         if (now - last_repeat_time >= CONTINUOUS_STEP_MS)
         {
             last_repeat_time = now;
@@ -1196,104 +1204,254 @@ void Screen_HandleSwitches(void)
        COUNTDOWN EDIT MODE (1-by-1)
     ===============================*/
 
+=======
+        ui = UI_DASH;
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* =========================================================
+       COUNTDOWN EDIT MODE (Smooth Hold Increase)
+       ========================================================= */
+>>>>>>> ec16c8d (code ok with timer mode getting off at off time)
     if (ui == UI_COUNTDOWN_EDIT_MIN)
     {
         if (sw_down)
         {
-            if (!prev_sw_down_edit ||
-                (now - last_repeat_time >= CONTINUOUS_STEP_MS))
+            if (!prev_down_edit)
             {
                 last_repeat_time = now;
+<<<<<<< HEAD
 
                 if (edit_countdown_min < 999)
                     edit_countdown_min += 1;
 
+=======
+                edit_countdown_min++;
+                if (edit_countdown_min > 999)
+                    edit_countdown_min = 1;
+                screenNeedsRefresh = true;
+            }
+            else if (now - last_repeat_time >= 400)
+            {
+                last_repeat_time = now;
+                edit_countdown_min++;
+                if (edit_countdown_min > 999)
+                    edit_countdown_min = 1;
+>>>>>>> ec16c8d (code ok with timer mode getting off at off time)
                 screenNeedsRefresh = true;
             }
         }
-        else if (prev_sw_down_edit)
+
+        if (!sw_down && prev_down_edit)
         {
             ui = UI_DASH;   // release → exit edit
             screenNeedsRefresh = true;
         }
 
+<<<<<<< HEAD
         prev_sw_down_edit = sw_down;
+=======
+        prev_down_edit = sw_down;
+>>>>>>> ec16c8d (code ok with timer mode getting off at off time)
         return;
     }
+    else
+    {
+        prev_down_edit = false;
+    }
 
-    prev_sw_down_edit = false;
+    /* =========================================================
+       HOLD REPEAT (UP / DOWN)
+       ========================================================= */
+    if ((sw_up || sw_down) && (now - last_repeat_time >= 250))
+    {
+        last_repeat_time = now;
 
-    if (b == BTN_NONE)
-        return;
+        if (ui == UI_MENU)
+        {
+            if (sw_up && menu_idx > 0) menu_idx--;
+            if (sw_down && menu_idx < MAIN_MENU_COUNT - 1) menu_idx++;
+        }
+        else if (ui == UI_TIMER_SLOT_SELECT)
+        {
+            if (sw_up && currentSlot > 0) currentSlot--;
+            if (sw_down && currentSlot < 5) currentSlot++;
+
+            timer_page = (currentSlot < 2 ? 0 :
+                         (currentSlot < 5 ? 1 : 2));
+        }
+        else if (ui == UI_DEVSET_MENU)
+        {
+            if (sw_up && devset_idx > 0) devset_idx--;
+            if (sw_down && devset_idx < DEVSET_MENU_COUNT - 1) devset_idx++;
+        }
+        else
+        {
+            if (sw_up)   increase_edit_value();
+            if (sw_down) decrease_edit_value();
+        }
+
+        screenNeedsRefresh = true;
+    }
+
+    if (b == BTN_NONE) return;
 
     refreshInactivityTimer();
 
-    /* ==============================
-       NORMAL BUTTON HANDLING
-    ===============================*/
-
-    switch (b)
+    /* =========================================================
+       DASHBOARD BUTTON ACTIONS
+       ========================================================= */
+    if (ui == UI_DASH)
     {
-        case BTN_RESET:
-            ModelHandle_ToggleManual();
-            ui = UI_DASH;
-            break;
+        switch (b)
+        {
+            case BTN_RESET:
+                ModelHandle_ToggleManual();
+                break;
 
-        case BTN_SELECT:
-            if (!autoActive)
-                ModelHandle_StartAuto(edit_auto_gap_s,
-                                      edit_auto_maxrun_min,
-                                      edit_auto_retry);
-            else
-                ModelHandle_StopAuto();
-            break;
+            case BTN_SELECT:
+                if (!autoActive)
+                    ModelHandle_StartAuto(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
+                else
+                    ModelHandle_StopAuto();
+                break;
 
-        case BTN_SELECT_LONG:
-            ui = UI_MENU;
-            break;
+            case BTN_SELECT_LONG:
+                ui = UI_MENU;
+                menu_idx = 0;
+                menu_view_top = 0;
+                break;
 
-        case BTN_UP:
-            if (!timerActive)
-                ModelHandle_StartTimerNearestSlot();
-            else
-                ModelHandle_StopTimer();
-            break;
+            case BTN_UP:
+                if (!timerActive)
+                    ModelHandle_StartTimerNearestSlot();
+                else
+                    ModelHandle_StopTimer();
+                break;
 
-        case BTN_UP_LONG:
-            if (!semiAutoActive)
-                ModelHandle_StartSemiAuto();
-            else
-                ModelHandle_StopSemiAuto();
-            break;
+            case BTN_UP_LONG:
+                if (!semiAutoActive)
+                    ModelHandle_StartSemiAuto();
+                else
+                    ModelHandle_StopSemiAuto();
+                break;
 
-        case BTN_DOWN:
-            if (!countdownActive)
-            {
-                ModelHandle_StartCountdown(edit_countdown_min * 60);
-                ui = UI_COUNTDOWN;
-            }
-            else
-            {
-                ModelHandle_StopCountdown();
-                ui = UI_DASH;
-            }
-            break;
+            case BTN_DOWN:
+                if (!countdownActive)
+                {
+                    ModelHandle_StartCountdown(edit_countdown_min * 60);
+                    ui = UI_COUNTDOWN;
+                }
+                else
+                {
+                    ModelHandle_StopCountdown();
+                }
+                break;
 
-        case BTN_DOWN_LONG:
-            if (!countdownActive)
-            {
-                edit_countdown_min = 1;
-                ui = UI_COUNTDOWN_EDIT_MIN;
-                screenNeedsRefresh = true;
-            }
-            break;
+            case BTN_DOWN_LONG:
+                if (!countdownActive)
+                    ui = UI_COUNTDOWN_EDIT_MIN;
+                break;
 
-        default:
-            break;
+            default:
+                break;
+        }
+
+        screenNeedsRefresh = true;
+        return;
     }
 
-    screenNeedsRefresh = true;
+    /* =========================================================
+       MAIN MENU
+       ========================================================= */
+    if (ui == UI_MENU)
+    {
+        switch (b)
+        {
+            case BTN_SELECT:
+            case BTN_SELECT_LONG:
+                menu_select();
+                break;
+
+            case BTN_DOWN:
+                if (menu_idx < MAIN_MENU_COUNT - 1) menu_idx++;
+                break;
+
+            case BTN_UP:
+                if (menu_idx > 0) menu_idx--;
+                break;
+
+            default:
+                break;
+        }
+
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* =========================================================
+       TIMER SLOT SELECT
+       ========================================================= */
+    if (ui == UI_TIMER_SLOT_SELECT)
+    {
+        switch (b)
+        {
+            case BTN_SELECT:
+            case BTN_SELECT_LONG:
+                menu_select();
+                break;
+
+            case BTN_UP:
+                if (currentSlot > 0) currentSlot--;
+                break;
+
+            case BTN_DOWN:
+                if (currentSlot < 5) currentSlot++;
+                break;
+
+            default:
+                break;
+        }
+
+        timer_page = (currentSlot < 2 ? 0 :
+                     (currentSlot < 5 ? 1 : 2));
+
+        screenNeedsRefresh = true;
+        return;
+    }
+
+    /* =========================================================
+       GENERIC EDIT SCREENS
+       ========================================================= */
+    if (ui != UI_MENU &&
+        ui != UI_DASH &&
+        ui != UI_TIMER_SLOT_SELECT &&
+        ui != UI_COUNTDOWN)
+    {
+        switch (b)
+        {
+            case BTN_UP:
+                increase_edit_value();
+                break;
+
+            case BTN_DOWN:
+                decrease_edit_value();
+                break;
+
+            case BTN_SELECT:
+                menu_select();
+                break;
+
+            default:
+                break;
+        }
+
+        screenNeedsRefresh = true;
+        return;
+    }
 }
+
 void Screen_Update(void)
 {
     uint32_t now = HAL_GetTick();

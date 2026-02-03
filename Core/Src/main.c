@@ -120,6 +120,7 @@ int main(void)
 {
     /* USER CODE BEGIN 1 */
     /* USER CODE END 1 */
+
      HAL_Init();
     SystemClock_Config();
     ModelHandle_OnPowerUp();
@@ -163,7 +164,7 @@ int main(void)
     /* Infinite loop */
     while (1)
     {
-    	LoRa_Task();
+//    	LoRa_Task();
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
         Screen_HandleSwitches();
