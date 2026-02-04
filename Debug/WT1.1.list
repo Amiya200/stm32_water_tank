@@ -37,15 +37,15 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  16 .debug_macro  0001ceb8  00000000  00000000  0003788c  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 17 .debug_line   00023161  00000000  00000000  00054744  2**0
+ 17 .debug_line   0002316f  00000000  00000000  00054744  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_str    0009afce  00000000  00000000  000778a5  2**0
+ 18 .debug_str    0009afce  00000000  00000000  000778b3  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .comment      00000043  00000000  00000000  00112873  2**0
+ 19 .comment      00000043  00000000  00000000  00112881  2**0
                   CONTENTS, READONLY
- 20 .debug_frame  00008e20  00000000  00000000  001128b8  2**2
+ 20 .debug_frame  00008e20  00000000  00000000  001128c4  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 21 .debug_line_str 00000062  00000000  00000000  0011b6d8  2**0
+ 21 .debug_line_str 00000062  00000000  00000000  0011b6e4  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -1472,10 +1472,10 @@ Disassembly of section .text:
  80010fa:	bf00      	nop
 
 080010fc <adc_read>:
-static float last_voltage = 0.0f;
-static float last_current = 0.0f;
-static float current_zero_correction = 0.0f;
-#define ACS712_GAIN_CORR  1.25f
+
+/* -------------------------------------------------------
+   ADC READER
+-------------------------------------------------------- */
 static float adc_read(uint32_t channel)
 {
  80010fc:	b580      	push	{r7, lr}
@@ -1497,6 +1497,7 @@ static float adc_read(uint32_t channel)
     cfg.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
  8001118:	2306      	movs	r3, #6
  800111a:	613b      	str	r3, [r7, #16]
+
     HAL_ADC_ConfigChannel(hAdc, &cfg);
  800111c:	4b19      	ldr	r3, [pc, #100]	@ (8001184 <adc_read+0x88>)
  800111e:	681b      	ldr	r3, [r3, #0]
@@ -1504,6 +1505,7 @@ static float adc_read(uint32_t channel)
  8001124:	4611      	mov	r1, r2
  8001126:	4618      	mov	r0, r3
  8001128:	f008 f9de 	bl	80094e8 <HAL_ADC_ConfigChannel>
+
     HAL_ADC_Start(hAdc);
  800112c:	4b15      	ldr	r3, [pc, #84]	@ (8001184 <adc_read+0x88>)
  800112e:	681b      	ldr	r3, [r3, #0]
@@ -1515,6 +1517,7 @@ static float adc_read(uint32_t channel)
  800113a:	f04f 31ff 	mov.w	r1, #4294967295
  800113e:	4618      	mov	r0, r3
  8001140:	f007 ffee 	bl	8009120 <HAL_ADC_PollForConversion>
+
     uint16_t raw = HAL_ADC_GetValue(hAdc);
  8001144:	4b0f      	ldr	r3, [pc, #60]	@ (8001184 <adc_read+0x88>)
  8001146:	681b      	ldr	r3, [r3, #0]
@@ -1527,6 +1530,7 @@ static float adc_read(uint32_t channel)
  8001154:	681b      	ldr	r3, [r3, #0]
  8001156:	4618      	mov	r0, r3
  8001158:	f007 ffb6 	bl	80090c8 <HAL_ADC_Stop>
+
     return (raw * ADC_VREF) / ADC_RES;
  800115c:	8afb      	ldrh	r3, [r7, #22]
  800115e:	4618      	mov	r0, r3
@@ -1551,6 +1555,10 @@ static float adc_read(uint32_t channel)
  800118c:	457ff000 	.word	0x457ff000
 
 08001190 <zmpt_calibrate_offset>:
+
+/* -------------------------------------------------------
+   OFFSET CALIBRATION (Voltage)
+-------------------------------------------------------- */
 static void zmpt_calibrate_offset(void)
 {
  8001190:	b580      	push	{r7, lr}
@@ -1579,6 +1587,7 @@ static void zmpt_calibrate_offset(void)
  80011bc:	683b      	ldr	r3, [r7, #0]
  80011be:	f5b3 7f96 	cmp.w	r3, #300	@ 0x12c
  80011c2:	dbee      	blt.n	80011a2 <zmpt_calibrate_offset+0x12>
+
     zmpt_offset = sum / ZMPT_OFFSET_SAMPLES;
  80011c4:	4905      	ldr	r1, [pc, #20]	@ (80011dc <zmpt_calibrate_offset+0x4c>)
  80011c6:	6878      	ldr	r0, [r7, #4]
@@ -1596,10 +1605,10 @@ static void zmpt_calibrate_offset(void)
  80011e0:	20000000 	.word	0x20000000
 
 080011e4 <acs_calibrate_offset>:
-        sum += ACS712_ReadCurrent();
 
-    current_zero_correction = sum / 200.0f;
-}
+/* -------------------------------------------------------
+   OFFSET CALIBRATION (Current)
+-------------------------------------------------------- */
 static void acs_calibrate_offset(void)
 {
  80011e4:	b580      	push	{r7, lr}
@@ -1628,6 +1637,7 @@ static void acs_calibrate_offset(void)
  8001210:	683b      	ldr	r3, [r7, #0]
  8001212:	f5b3 7ffa 	cmp.w	r3, #500	@ 0x1f4
  8001216:	dbee      	blt.n	80011f6 <acs_calibrate_offset+0x12>
+
     acs_zero_offset = sum / ACS712_ZERO_SAMPLES;
  8001218:	4905      	ldr	r1, [pc, #20]	@ (8001230 <acs_calibrate_offset+0x4c>)
  800121a:	6878      	ldr	r0, [r7, #4]
@@ -1645,6 +1655,10 @@ static void acs_calibrate_offset(void)
  8001234:	2000029c 	.word	0x2000029c
 
 08001238 <ACS712_Init>:
+
+/* -------------------------------------------------------
+   INITIALIZATION
+-------------------------------------------------------- */
 void ACS712_Init(ADC_HandleTypeDef *hadc)
 {
  8001238:	b580      	push	{r7, lr}
@@ -1655,9 +1669,14 @@ void ACS712_Init(ADC_HandleTypeDef *hadc)
  8001240:	4a07      	ldr	r2, [pc, #28]	@ (8001260 <ACS712_Init+0x28>)
  8001242:	687b      	ldr	r3, [r7, #4]
  8001244:	6013      	str	r3, [r2, #0]
+
     HAL_Delay(500);
  8001246:	f44f 70fa 	mov.w	r0, #500	@ 0x1f4
  800124a:	f007 fd93 	bl	8008d74 <HAL_Delay>
+
+    /* VERY IMPORTANT:
+       NO LOAD must be connected here
+    */
     acs_calibrate_offset();
  800124e:	f7ff ffc9 	bl	80011e4 <acs_calibrate_offset>
     zmpt_calibrate_offset();
@@ -1671,6 +1690,10 @@ void ACS712_Init(ADC_HandleTypeDef *hadc)
  8001260:	20000294 	.word	0x20000294
 
 08001264 <ZMPT_ReadVoltageRMS>:
+
+/* -------------------------------------------------------
+   TRUE RMS VOLTAGE READ (ZMPT101B)
+-------------------------------------------------------- */
 float ZMPT_ReadVoltageRMS(void)
 {
  8001264:	b590      	push	{r4, r7, lr}
@@ -1682,6 +1705,7 @@ float ZMPT_ReadVoltageRMS(void)
     float sum_sq = 0.0f;
  8001270:	f04f 0300 	mov.w	r3, #0
  8001274:	61bb      	str	r3, [r7, #24]
+
     for (int i = 0; i < ZMPT_RMS_SAMPLES; i++)
  8001276:	2300      	movs	r3, #0
  8001278:	617b      	str	r3, [r7, #20]
@@ -1691,12 +1715,14 @@ float ZMPT_ReadVoltageRMS(void)
  800127c:	2006      	movs	r0, #6
  800127e:	f7ff ff3d 	bl	80010fc <adc_read>
  8001282:	60b8      	str	r0, [r7, #8]
+
         sum_dc += v;
  8001284:	68b9      	ldr	r1, [r7, #8]
  8001286:	69f8      	ldr	r0, [r7, #28]
  8001288:	f7ff fc0e 	bl	8000aa8 <__addsf3>
  800128c:	4603      	mov	r3, r0
  800128e:	61fb      	str	r3, [r7, #28]
+
         float ac = v - zmpt_offset;
  8001290:	4b33      	ldr	r3, [pc, #204]	@ (8001360 <ZMPT_ReadVoltageRMS+0xfc>)
  8001292:	681b      	ldr	r3, [r3, #0]
@@ -1723,12 +1749,14 @@ float ZMPT_ReadVoltageRMS(void)
  80012be:	f5b3 7f48 	cmp.w	r3, #800	@ 0x320
  80012c2:	dbdb      	blt.n	800127c <ZMPT_ReadVoltageRMS+0x18>
     }
+
     float new_offset = sum_dc / ZMPT_RMS_SAMPLES;
  80012c4:	4927      	ldr	r1, [pc, #156]	@ (8001364 <ZMPT_ReadVoltageRMS+0x100>)
  80012c6:	69f8      	ldr	r0, [r7, #28]
  80012c8:	f7ff fdaa 	bl	8000e20 <__aeabi_fdiv>
  80012cc:	4603      	mov	r3, r0
  80012ce:	613b      	str	r3, [r7, #16]
+
     zmpt_offset = (zmpt_offset * 0.90f) + (new_offset * 0.10f);
  80012d0:	4b23      	ldr	r3, [pc, #140]	@ (8001360 <ZMPT_ReadVoltageRMS+0xfc>)
  80012d2:	681b      	ldr	r3, [r3, #0]
@@ -1748,6 +1776,7 @@ float ZMPT_ReadVoltageRMS(void)
  80012f4:	461a      	mov	r2, r3
  80012f6:	4b1a      	ldr	r3, [pc, #104]	@ (8001360 <ZMPT_ReadVoltageRMS+0xfc>)
  80012f8:	601a      	str	r2, [r3, #0]
+
     adc_rms = sqrtf(sum_sq / ZMPT_RMS_SAMPLES);
  80012fa:	491a      	ldr	r1, [pc, #104]	@ (8001364 <ZMPT_ReadVoltageRMS+0x100>)
  80012fc:	69b8      	ldr	r0, [r7, #24]
@@ -1758,7 +1787,11 @@ float ZMPT_ReadVoltageRMS(void)
  800130a:	4603      	mov	r3, r0
  800130c:	4a18      	ldr	r2, [pc, #96]	@ (8001370 <ZMPT_ReadVoltageRMS+0x10c>)
  800130e:	6013      	str	r3, [r2, #0]
-    #define ZMPT_CALIBRATION 239.5f
+    --------------------------- */
+
+    /* New calculation using multimeter voltage */
+    #define ZMPT_CALIBRATION 239.5f  // Updated calibration factor (Multimeter RMS = 5.0 V)
+
     float Vrms = adc_rms * ZMPT_CALIBRATION;
  8001310:	4b17      	ldr	r3, [pc, #92]	@ (8001370 <ZMPT_ReadVoltageRMS+0x10c>)
  8001312:	681b      	ldr	r3, [r3, #0]
@@ -1767,6 +1800,7 @@ float ZMPT_ReadVoltageRMS(void)
  8001318:	f7ff fcce 	bl	8000cb8 <__aeabi_fmul>
  800131c:	4603      	mov	r3, r0
  800131e:	60fb      	str	r3, [r7, #12]
+
     last_voltage =
         last_voltage * (1.0f - ZMPT_FILTER_ALPHA) +
  8001320:	4b15      	ldr	r3, [pc, #84]	@ (8001378 <ZMPT_ReadVoltageRMS+0x114>)
@@ -1790,6 +1824,7 @@ float ZMPT_ReadVoltageRMS(void)
     last_voltage =
  8001346:	4b0c      	ldr	r3, [pc, #48]	@ (8001378 <ZMPT_ReadVoltageRMS+0x114>)
  8001348:	601a      	str	r2, [r3, #0]
+
     g_voltageV = last_voltage;
  800134a:	4b0b      	ldr	r3, [pc, #44]	@ (8001378 <ZMPT_ReadVoltageRMS+0x114>)
  800134c:	681b      	ldr	r3, [r3, #0]
@@ -1816,6 +1851,10 @@ float ZMPT_ReadVoltageRMS(void)
  8001384:	2000028c 	.word	0x2000028c
 
 08001388 <ACS712_ReadCurrent>:
+
+/* -------------------------------------------------------
+   CURRENT READING (ACS712)
+-------------------------------------------------------- */
 float ACS712_ReadCurrent(void)
 {
  8001388:	b590      	push	{r4, r7, lr}
@@ -1824,12 +1863,15 @@ float ACS712_ReadCurrent(void)
     const uint16_t SAMPLES = 2000;
  800138e:	f44f 63fa 	mov.w	r3, #2000	@ 0x7d0
  8001392:	82fb      	strh	r3, [r7, #22]
+
     float sum_dc = 0.0f;
  8001394:	f04f 0300 	mov.w	r3, #0
  8001398:	627b      	str	r3, [r7, #36]	@ 0x24
     float sum_sq = 0.0f;
  800139a:	f04f 0300 	mov.w	r3, #0
  800139e:	623b      	str	r3, [r7, #32]
+
+    /* -------- ADC sampling -------- */
     for (uint16_t i = 0; i < SAMPLES; i++)
  80013a0:	2300      	movs	r3, #0
  80013a2:	83fb      	strh	r3, [r7, #30]
@@ -1845,6 +1887,7 @@ float ACS712_ReadCurrent(void)
  80013b2:	f7ff fb79 	bl	8000aa8 <__addsf3>
  80013b6:	4603      	mov	r3, r0
  80013b8:	627b      	str	r3, [r7, #36]	@ 0x24
+
         float ac = v - acs_zero_offset;
  80013ba:	4b47      	ldr	r3, [pc, #284]	@ (80014d8 <ACS712_ReadCurrent+0x150>)
  80013bc:	681b      	ldr	r3, [r3, #0]
@@ -1871,7 +1914,11 @@ float ACS712_ReadCurrent(void)
  80013e8:	8afb      	ldrh	r3, [r7, #22]
  80013ea:	429a      	cmp	r2, r3
  80013ec:	d3db      	bcc.n	80013a6 <ACS712_ReadCurrent+0x1e>
-    }
+
+    /* -------- Adaptive offset correction --------
+       Tracks slow temperature / supply drift
+       Does NOT follow AC waveform
+    */
     float new_offset = sum_dc / SAMPLES;
  80013ee:	8afb      	ldrh	r3, [r7, #22]
  80013f0:	4618      	mov	r0, r3
@@ -1901,6 +1948,8 @@ float ACS712_ReadCurrent(void)
  8001428:	461a      	mov	r2, r3
  800142a:	4b2b      	ldr	r3, [pc, #172]	@ (80014d8 <ACS712_ReadCurrent+0x150>)
  800142c:	601a      	str	r2, [r3, #0]
+
+    /* -------- True RMS calculation -------- */
     float adc_rms = sqrtf(sum_sq / SAMPLES);
  800142e:	8afb      	ldrh	r3, [r7, #22]
  8001430:	4618      	mov	r0, r3
@@ -1913,6 +1962,8 @@ float ACS712_ReadCurrent(void)
  8001442:	4618      	mov	r0, r3
  8001444:	f00f fe28 	bl	8011098 <sqrtf>
  8001448:	60f8      	str	r0, [r7, #12]
+
+    /* -------- Convert to Amperes -------- */
     float current = (adc_rms / ACS712_SENS_30A) * ACS712_GAIN_CORR;
  800144a:	4926      	ldr	r1, [pc, #152]	@ (80014e4 <ACS712_ReadCurrent+0x15c>)
  800144c:	68f8      	ldr	r0, [r7, #12]
@@ -1923,14 +1974,18 @@ float ACS712_ReadCurrent(void)
  8001458:	f7ff fc2e 	bl	8000cb8 <__aeabi_fmul>
  800145c:	4603      	mov	r3, r0
  800145e:	61bb      	str	r3, [r7, #24]
+       This removes it permanently
+    */
     static float zero_current_corr = 0.0f;
     static uint8_t zero_cal_done = 0;
+
     if (!zero_cal_done)
  8001460:	4b22      	ldr	r3, [pc, #136]	@ (80014ec <ACS712_ReadCurrent+0x164>)
  8001462:	781b      	ldrb	r3, [r3, #0]
  8001464:	2b00      	cmp	r3, #0
  8001466:	d105      	bne.n	8001474 <ACS712_ReadCurrent+0xec>
     {
+        /* Auto-zero once at startup (NO LOAD required) */
         zero_current_corr = current;
  8001468:	4a21      	ldr	r2, [pc, #132]	@ (80014f0 <ACS712_ReadCurrent+0x168>)
  800146a:	69bb      	ldr	r3, [r7, #24]
@@ -1940,6 +1995,7 @@ float ACS712_ReadCurrent(void)
  8001470:	2201      	movs	r2, #1
  8001472:	701a      	strb	r2, [r3, #0]
     }
+
     current -= zero_current_corr;
  8001474:	4b1e      	ldr	r3, [pc, #120]	@ (80014f0 <ACS712_ReadCurrent+0x168>)
  8001476:	681b      	ldr	r3, [r3, #0]
@@ -1948,6 +2004,8 @@ float ACS712_ReadCurrent(void)
  800147c:	f7ff fb12 	bl	8000aa4 <__aeabi_fsub>
  8001480:	4603      	mov	r3, r0
  8001482:	61bb      	str	r3, [r7, #24]
+
+    /* -------- Deadband (noise kill) -------- */
     if (current < 0.05f)
  8001484:	491b      	ldr	r1, [pc, #108]	@ (80014f4 <ACS712_ReadCurrent+0x16c>)
  8001486:	69b8      	ldr	r0, [r7, #24]
@@ -1958,6 +2016,8 @@ float ACS712_ReadCurrent(void)
         current = 0.0f;
  8001492:	f04f 0300 	mov.w	r3, #0
  8001496:	61bb      	str	r3, [r7, #24]
+
+    /* -------- Output smoothing -------- */
     last_current = (last_current * 0.878f) + (current * 0.054f);
  8001498:	4b17      	ldr	r3, [pc, #92]	@ (80014f8 <ACS712_ReadCurrent+0x170>)
  800149a:	681b      	ldr	r3, [r3, #0]
@@ -1977,6 +2037,9 @@ float ACS712_ReadCurrent(void)
  80014bc:	461a      	mov	r2, r3
  80014be:	4b0e      	ldr	r3, [pc, #56]	@ (80014f8 <ACS712_ReadCurrent+0x170>)
  80014c0:	601a      	str	r2, [r3, #0]
+
+
+
     g_currentA = last_current;
  80014c2:	4b0d      	ldr	r3, [pc, #52]	@ (80014f8 <ACS712_ReadCurrent+0x170>)
  80014c4:	681b      	ldr	r3, [r3, #0]
@@ -2005,6 +2068,10 @@ float ACS712_ReadCurrent(void)
  8001504:	20000288 	.word	0x20000288
 
 08001508 <ACS712_Update>:
+
+/* -------------------------------------------------------
+   UPDATE BOTH SENSOR VALUES
+-------------------------------------------------------- */
 void ACS712_Update(void)
 {
  8001508:	b580      	push	{r7, lr}
