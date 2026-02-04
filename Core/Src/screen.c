@@ -848,66 +848,30 @@ static void menu_select(void)
     }
 
     /* =========================================================
-       DEVICE SETUP MENU  ⭐ FIXED SECTION
-       SELECT = Enable / Disable OR Enter Sub Screen
+       DEVICE SETUP MENU
        ========================================================= */
     if (ui == UI_DEVSET_MENU)
     {
         switch(devset_idx)
         {
-            case 0: // Dry Run
-                edit_settings_gap_s = (edit_settings_gap_s > 0) ? 0 : 5;
-                apply_settings_core();
-                break;
+            case 0: edit_settings_gap_s = (edit_settings_gap_s > 0) ? 0 : 5;  apply_settings_core(); break;
+            case 1: edit_settings_retry = (edit_settings_retry > 0) ? 0 : 5;  apply_settings_core(); break;
+            case 2: edit_settings_uv    = (edit_settings_uv > 0)    ? 0 : 180;apply_settings_core(); break;
+            case 3: edit_settings_ov    = (edit_settings_ov > 0)    ? 0 : 260;apply_settings_core(); break;
+            case 4: edit_settings_ol    = (edit_settings_ol > 0)    ? 0 : 6;  apply_settings_core(); break;
+            case 5: edit_settings_ul    = (edit_settings_ul > 0)    ? 0 : 2;  apply_settings_core(); break;
+            case 6: edit_settings_maxrun= (edit_settings_maxrun > 0)? 0 : 60; apply_settings_core(); break;
 
-            case 1: // Testing Gap
-                edit_settings_retry = (edit_settings_retry > 0) ? 0 : 5;
-                apply_settings_core();
-                break;
+            case 7:  ui = UI_DEVSET_EDIT_DATE; break;
+            case 8:  ui = UI_DEVSET_EDIT_TIME; break;
+            case 9:  ui = UI_DEVSET_EDIT_DAY;  break;
 
-            case 2: // Low Volt
-                edit_settings_uv = (edit_settings_uv > 0) ? 0 : 180;
-                apply_settings_core();
-                break;
-
-            case 3: // High Volt
-                edit_settings_ov = (edit_settings_ov > 0) ? 0 : 260;
-                apply_settings_core();
-                break;
-
-            case 4: // Over Load
-                edit_settings_ol = (edit_settings_ol > 0) ? 0 : 6;
-                apply_settings_core();
-                break;
-
-            case 5: // Under Load
-                edit_settings_ul = (edit_settings_ul > 0) ? 0 : 2;
-                apply_settings_core();
-                break;
-
-            case 6: // Max Run
-                edit_settings_maxrun = (edit_settings_maxrun > 0) ? 0 : 60;
-                apply_settings_core();
-                break;
-
-            case 7: // Set Date
-                ui = UI_DEVSET_EDIT_DATE;
-                break;
-
-            case 8: // Set Time
-                ui = UI_DEVSET_EDIT_TIME;
-                break;
-
-            case 9: // Set Day
-                ui = UI_DEVSET_EDIT_DAY;
-                break;
-
-            case 10: // Power Restore
+            case 10:
                 edit_settings_pwrrest = (edit_settings_pwrrest + 1) % 3;
                 ModelHandle_SetPowerRestoreMode(edit_settings_pwrrest);
                 break;
 
-            case 11: // Factory Reset
+            case 11:
                 edit_settings_factory_yes ^= 1;
                 if (edit_settings_factory_yes)
                 {
@@ -916,11 +880,8 @@ static void menu_select(void)
                 }
                 break;
 
-            case 12: // Back
+            case 12:
                 ui = UI_MENU;
-                break;
-
-            default:
                 break;
         }
 
@@ -943,16 +904,8 @@ static void menu_select(void)
             time.month = edit_date_mm;
             time.year  = edit_date_yyyy;
 
-            RTC_SetTimeDate(
-                time.sec,
-                time.min,
-                time.hour,
-                time.dow,
-                time.dom,
-                time.month,
-                time.year
-            );
-
+            RTC_SetTimeDate(time.sec,time.min,time.hour,
+                            time.dow,time.dom,time.month,time.year);
 
             ui = UI_DEVSET_MENU;
         }
@@ -960,6 +913,7 @@ static void menu_select(void)
         screenNeedsRefresh = true;
         return;
     }
+
     if (ui == UI_DEVSET_EDIT_TIME)
     {
         if (edit_time_field == 0)
@@ -971,15 +925,9 @@ static void menu_select(void)
             time.hour = edit_time_hh;
             time.min  = edit_time_min;
             time.sec  = 0;
-            RTC_SetTimeDate(
-                time.sec,
-                time.min,
-                time.hour,
-                time.dow,
-                time.dom,
-                time.month,
-                time.year
-            );
+
+            RTC_SetTimeDate(time.sec,time.min,time.hour,
+                            time.dow,time.dom,time.month,time.year);
 
             ui = UI_DEVSET_MENU;
         }
@@ -987,42 +935,18 @@ static void menu_select(void)
         screenNeedsRefresh = true;
         return;
     }
+
     if (ui == UI_DEVSET_EDIT_DAY)
     {
         time.dow = edit_day_idx2 + 1;
-        RTC_SetTimeDate(
-            time.sec,
-            time.min,
-            time.hour,
-            time.dow,
-            time.dom,
-            time.month,
-            time.year
-        );
+
+        RTC_SetTimeDate(time.sec,time.min,time.hour,
+                        time.dow,time.dom,time.month,time.year);
+
         ui = UI_DEVSET_MENU;
         screenNeedsRefresh = true;
         return;
     }
-
-
-    /* =========================================================
-       RESET CONFIRM
-       ========================================================= */
-    if (ui == UI_RESET_CONFIRM)
-    {
-        if (reset_confirm_yes)
-        {
-            ModelHandle_FactoryReset();
-        }
-
-        ui = UI_DASH;
-        screenNeedsRefresh = true;
-        return;
-    }
-
-    /* =========================================================
-       (Your Existing Timer Edit Flow Continues Below)
-       ========================================================= */
 }
 void increase_edit_value(void)
 {
@@ -1296,16 +1220,40 @@ void Screen_HandleSwitches(void)
     /* =========================================================
        GLOBAL ESCAPE
        ========================================================= */
-    if (b == BTN_RESET && ui != UI_DASH)
+    if (b == BTN_RESET && ui != UI_DASH && ui != UI_RESET_CONFIRM)
     {
         ui = UI_DASH;
         screenNeedsRefresh = true;
         return;
     }
+    if (ui == UI_RESET_CONFIRM)
+    {
+        switch (b)
+        {
+            case BTN_UP:
+            case BTN_DOWN:
+                reset_confirm_yes = !reset_confirm_yes;
+                break;
 
-    /* =========================================================
-       COUNTDOWN EDIT MODE
-       ========================================================= */
+            case BTN_SELECT:
+                if (reset_confirm_yes)
+                {
+                    ModelHandle_FactoryReset();
+                }
+                ui = UI_DASH;   // or UI_MENU if preferred
+                break;
+
+            case BTN_RESET:
+                ui = UI_MENU;
+                break;
+
+            default:
+                break;
+        }
+
+        screenNeedsRefresh = true;
+        return;
+    }
     if (ui == UI_COUNTDOWN_EDIT_MIN)
     {
         if (sw_down)
@@ -1327,7 +1275,6 @@ void Screen_HandleSwitches(void)
                 screenNeedsRefresh = true;
             }
         }
-
         if (!sw_down && prev_down_edit)
         {
             ui = UI_DASH;
@@ -1341,10 +1288,6 @@ void Screen_HandleSwitches(void)
     {
         prev_down_edit = false;
     }
-
-    /* =========================================================
-       COUNTDOWN RUN MODE
-       ========================================================= */
     if (ui == UI_COUNTDOWN)
     {
         if (b == BTN_DOWN && countdownActive)
@@ -1363,10 +1306,6 @@ void Screen_HandleSwitches(void)
             return;
         }
     }
-
-    /* =========================================================
-       HOLD REPEAT — ONLY FOR EDIT SCREENS
-       ========================================================= */
     if ((sw_up || sw_down) &&
         ui != UI_MENU &&
         ui != UI_DEVSET_MENU &&
@@ -1382,15 +1321,9 @@ void Screen_HandleSwitches(void)
 
         screenNeedsRefresh = true;
     }
-
     if (b == BTN_NONE)
         return;
-
     refreshInactivityTimer();
-
-    /* =========================================================
-       DASHBOARD
-       ========================================================= */
     if (ui == UI_DASH)
     {
         switch (b)

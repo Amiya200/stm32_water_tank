@@ -52,9 +52,9 @@
 ../Core/Src/screen.c:730:13:apply_settings_core	2
 ../Core/Src/screen.c:745:13:start_settings_edit_flow	16
 ../Core/Src/screen.c:793:13:goto_menu_top	1
-../Core/Src/screen.c:798:13:menu_select	37
-../Core/Src/screen.c:1027:6:increase_edit_value	54
-../Core/Src/screen.c:1163:6:decrease_edit_value	32
-../Core/Src/screen.c:1238:17:decode_button_press	18
-../Core/Src/screen.c:1285:6:Screen_HandleSwitches	66
-../Core/Src/screen.c:1574:6:Screen_Update	57
+../Core/Src/screen.c:798:13:menu_select	35
+../Core/Src/screen.c:951:6:increase_edit_value	54
+../Core/Src/screen.c:1087:6:decrease_edit_value	32
+../Core/Src/screen.c:1162:17:decode_button_press	18
+../Core/Src/screen.c:1209:6:Screen_HandleSwitches	73
+../Core/Src/screen.c:1507:6:Screen_Update	57
