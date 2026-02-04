@@ -107,50 +107,79 @@ void UART_HandleCommand(const char *pkt)
         ack(!strcmp(s, "ON") ? "AUTO_ON" : "AUTO_OFF");
     }
     else if (!strcmp(cmd, "TIMER")) {
-        char *sub = next_token(&ctx);
-        if (sub && !strcmp(sub, "SET")) {
-            char *slotStr = next_token(&ctx);
-            char *daysStr = next_token(&ctx);
-            char *h1s = next_token(&ctx);
-            char *m1s = next_token(&ctx);
-            char *h2s = next_token(&ctx);
-            char *m2s = next_token(&ctx);
-            char *gapStr = next_token(&ctx);
 
-            if (!slotStr || !daysStr || !h1s || !m1s || !h2s || !m2s || !gapStr) {
+        char *sub = next_token(&ctx);
+
+        if (sub && !strcmp(sub, "SET")) {
+
+            char *slotStr   = next_token(&ctx);
+            char *daysStr   = next_token(&ctx);
+            char *h1s       = next_token(&ctx);
+            char *m1s       = next_token(&ctx);
+            char *h2s       = next_token(&ctx);
+            char *m2s       = next_token(&ctx);
+            char *enableStr = next_token(&ctx);   // NEW
+            char *gapStr    = next_token(&ctx);   // moved down
+
+            if (!slotStr || !daysStr || !h1s || !m1s ||
+                !h2s || !m2s || !enableStr || !gapStr)
+            {
                 err("TIMER_FORMAT");
                 return;
             }
-            int slot = atoi(slotStr);
-            int h1 = atoi(h1s);
-            int m1 = atoi(m1s);
-            int h2 = atoi(h2s);
-            int m2 = atoi(m2s);
-            int gap = atoi(gapStr);
+
+            int slot   = atoi(slotStr);
+            int h1     = atoi(h1s);
+            int m1     = atoi(m1s);
+            int h2     = atoi(h2s);
+            int m2     = atoi(m2s);
+            int enable = atoi(enableStr);
+            int gap    = atoi(gapStr);
+
             if (slot < 1 || slot > 5 ||
                 h1 < 0 || h1 > 23 ||
                 m1 < 0 || m1 > 59 ||
                 h2 < 0 || h2 > 23 ||
                 m2 < 0 || m2 > 59 ||
-                gap < 0 || gap > 60)
+                gap < 0 || gap > 60 ||
+                (enable != 0 && enable != 1))
             {
                 err("TIMER_RANGE");
                 return;
             }
+
             uint8_t idx = slot - 1;
-            timerSlots[idx].enabled     = true;
+
+            timerSlots[idx].enabled     = (enable == 1);
             timerSlots[idx].dayMask     = parseDays(daysStr);
             timerSlots[idx].onHour      = h1;
             timerSlots[idx].onMinute    = m1;
             timerSlots[idx].offHour     = h2;
             timerSlots[idx].offMinute   = m2;
             timerSlots[idx].gapMinutes  = gap;
-            ModelHandle_StartTimer();
+
+            // Only start timer mode if at least one slot is enabled
+            bool anyEnabled = false;
+            for (int i = 0; i < 5; i++) {
+                if (timerSlots[i].enabled) {
+                    anyEnabled = true;
+                    break;
+                }
+            }
+
+            if (anyEnabled) {
+                ModelHandle_StartTimer();
+            } else {
+                ModelHandle_StopAllModesAndMotor();
+            }
+
             ack("TIMER_OK");
         }
         else if (sub && !strcmp(sub, "STOP")) {
+
             for (int i = 0; i < 5; i++)
                 timerSlots[i].enabled = false;
+
             ModelHandle_StopAllModesAndMotor();
             ack("TIMER_STOP");
         }
@@ -158,6 +187,7 @@ void UART_HandleCommand(const char *pkt)
             err("FORMAT");
         }
     }
+
     else if (!strcmp(cmd, "SEMIAUTO")) {
         char *sub = next_token(&ctx);
         if (sub && !strcmp(sub, "ON")) {
