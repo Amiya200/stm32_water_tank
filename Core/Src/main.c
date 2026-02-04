@@ -142,13 +142,13 @@ int main(void)
     HAL_Delay(50);
     ModelHandle_LoadSettingsFromEEPROM();
     HAL_Delay(50);
-    ModelHandle_LoadAutoSettings();   // <-- NEW: load AUTO gap/maxrun/retry
+    ModelHandle_LoadAutoSettings();
     HAL_Delay(50);
     ModelHandle_LoadTimerFromEEPROM();
     HAL_Delay(50);
     ModelHandle_LoadModeState();
     HAL_Delay(50);
-    ModelHandle_LoadCountdown();   // <<< THIS LINE IS MANDATORY
+    ModelHandle_LoadCountdown();
     HAL_Delay(50);
     ModelHandle_LoadTimerFromEEPROM();
     HAL_Delay(50);

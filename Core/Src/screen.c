@@ -1155,26 +1155,16 @@ void Screen_HandleSwitches(void)
 {
     static uint32_t last_repeat_time = 0;
     static bool prev_down_edit = false;
-
     UiButton b = decode_button_press();
     uint32_t now = HAL_GetTick();
-
     bool sw_up   = Switch_IsPressed(2);
     bool sw_down = Switch_IsPressed(3);
-
-    /* =========================================================
-       GLOBAL ESCAPE: RESET always returns to DASH (safe exit)
-       ========================================================= */
     if (b == BTN_RESET && ui != UI_DASH)
     {
         ui = UI_DASH;
         screenNeedsRefresh = true;
         return;
     }
-
-    /* =========================================================
-       COUNTDOWN EDIT MODE (Smooth Hold Increase)
-       ========================================================= */
     if (ui == UI_COUNTDOWN_EDIT_MIN)
     {
         if (sw_down)
@@ -1196,7 +1186,6 @@ void Screen_HandleSwitches(void)
                 screenNeedsRefresh = true;
             }
         }
-
         if (!sw_down && prev_down_edit)
         {
             ui = UI_DASH;
@@ -1210,10 +1199,27 @@ void Screen_HandleSwitches(void)
     {
         prev_down_edit = false;
     }
+    if (ui == UI_COUNTDOWN)
+    {
+        if (b == BTN_DOWN)
+        {
+            if (countdownActive)
+            {
+                ModelHandle_StopCountdown();
+                ui = UI_DASH;
+                screenNeedsRefresh = true;
+            }
+            return;
+        }
+        if (b == BTN_DOWN_LONG && !countdownActive)
+        {
+            edit_countdown_min = 1;
+            ui = UI_COUNTDOWN_EDIT_MIN;
+            screenNeedsRefresh = true;
+            return;
+        }
 
-    /* =========================================================
-       HOLD REPEAT (UP / DOWN)
-       ========================================================= */
+    }
     if ((sw_up || sw_down) && (now - last_repeat_time >= 250))
     {
         last_repeat_time = now;
@@ -1236,7 +1242,7 @@ void Screen_HandleSwitches(void)
             if (sw_up && devset_idx > 0) devset_idx--;
             if (sw_down && devset_idx < DEVSET_MENU_COUNT - 1) devset_idx++;
         }
-        else
+        else if (ui != UI_DASH && ui != UI_COUNTDOWN)
         {
             if (sw_up)   increase_edit_value();
             if (sw_down) decrease_edit_value();
@@ -1301,8 +1307,12 @@ void Screen_HandleSwitches(void)
 
             case BTN_DOWN_LONG:
                 if (!countdownActive)
+                {
+                    edit_countdown_min = 1;   // 🔥 ALWAYS RESET TO 1
                     ui = UI_COUNTDOWN_EDIT_MIN;
+                }
                 break;
+
 
             default:
                 break;
