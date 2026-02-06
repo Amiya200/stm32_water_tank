@@ -117,6 +117,7 @@ SystemSettings sys = {
     .underload   = 0.0f,
     .maxrun_min  = 300
 };
+static bool buzzerContinuous = false;
 static inline void start_motor(void);
 static inline void stop_motor(void);
 static inline void clear_all_modes(void);
@@ -200,7 +201,7 @@ typedef struct __attribute__((packed))
     uint8_t  crc;
 } AutoRuntimeBlock;
 static bool suppressAutoOneCycle = false;
-#define AUTO_START_LEVEL_PERCENT   75
+#define AUTO_START_LEVEL_PERCENT   50
 #define AUTO_STOP_LEVEL_PERCENT    100   // hysteresis
 static uint32_t loadTimer = 0;
 static uint8_t  loadRetryCount = 0;
@@ -511,18 +512,25 @@ static void Buzzer_TriggerAlert(void)
 static void Buzzer_Update(void)
 {
     uint32_t now = HAL_GetTick();
-    bool motorOn = Motor_GetStatus();
-    bool alert   = (now < buzzerAlertUntil);
+
     static bool buzzerState = false;
     bool newState = false;
 
-    if (alert)
+    if (now < buzzerAlertUntil)
     {
-        newState = ((now % 600UL) < 200UL);
+        if (buzzerContinuous)
+        {
+            newState = true;   // continuous ON
+        }
+        else
+        {
+            newState = ((now % 600UL) < 200UL);  // normal alert beep
+        }
     }
-    else if (motorOn)
+    else
     {
-        newState = ((now % 800UL) < 150UL);
+        buzzerContinuous = false;
+        newState = false;
     }
 
     if (newState != buzzerState)
@@ -531,6 +539,7 @@ static void Buzzer_Update(void)
         Buzzer_SetPin(buzzerState);
     }
 }
+
 static inline uint32_t now_ms(void)
 {
     return HAL_GetTick();
@@ -1166,7 +1175,7 @@ static void auto_mode_background_control(void)
         return;
     }
 
-    if (!autoActive && level < AUTO_START_LEVEL_PERCENT)
+    if (!autoActive && level <= AUTO_START_LEVEL_PERCENT)
     {
         ModelHandle_StartAuto(auto_gap_s,
                               auto_maxrun_min,
@@ -1202,8 +1211,6 @@ static void auto_tick(void)
         lastSave = now;
         SaveAutoRuntime();
     }
-
-    /* Tank full protection (highest priority) */
     if (isTankFull())
     {
         stop_motor();
@@ -1215,9 +1222,12 @@ static void auto_tick(void)
                            (uint8_t[]){0},
                            sizeof(AutoRuntimeBlock));
 
-        Buzzer_TriggerAlert();
+        buzzerContinuous = true;
+        buzzerAlertUntil = HAL_GetTick() + 10000UL;  // 10 seconds
+
         return;
     }
+
 
     /* Resume after power restore */
     if (autoResumeBoot)
