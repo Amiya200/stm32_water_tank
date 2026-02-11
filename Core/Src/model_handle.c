@@ -1327,76 +1327,102 @@ static void auto_tick(void)
         return;
 
     uint32_t now = now_ms();
+    uint8_t  level = get_tank_level_percent();
 
-    ModelHandle_CheckDryRun();
+    /* Always update protections */
     ModelHandle_CheckGroundWater();
+    ModelHandle_CheckDryRun();
 
-    if (Auto_HardStopCondition() || isTankFull())
+    /* ================= IMMEDIATE HARD STOP ================= */
+    if (isTankFull() ||
+        senseOverLoad ||
+        senseUnderLoad ||
+        senseOverUnderVolt ||
+        senseMaxRunReached)
     {
         stop_motor();
         autoActive = false;
         autoState  = AUTO_IDLE;
+        auto_retry_count = 0;
         Buzzer_TriggerAlert();
+        return;
+    }
+
+    /* ================= SCHEDULE OFF ================= */
+    if (!timer_any_active_slot() && timerActive)
+    {
+        stop_motor();
+        autoState = AUTO_IDLE;
         return;
     }
 
     switch (autoState)
     {
-        /* ================= INIT ================= */
+        /* ================= AUTO_IDLE ================= */
         case AUTO_IDLE:
         {
-            autoState = AUTO_ON_WAIT;
-            autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
+            bool levelLow = (level <= AUTO_START_LEVEL_PERCENT);
+
+            if (restartActive ||
+                (levelLow && groundWater))
+            {
+                motorOwner = MOTOR_OWNER_AUTO;
+                start_motor();
+
+                autoDeadline = now + ((uint32_t)auto_gap_s * 1000UL);
+                autoState    = AUTO_ON_WAIT;
+            }
         }
         break;
 
-        /* ================= ON GAP ================= */
+        /* ================= AUTO_ON_WAIT ================= */
         case AUTO_ON_WAIT:
         {
-            motorOwner = MOTOR_OWNER_AUTO;
-            start_motor();
+            bool stopAfterOnTime = false;
 
-            /* Complete full ON gap first */
-            if (now >= autoDeadline)
+            /* Monitor faults while running */
+            if (!groundWater || senseDryRun)
             {
-                stop_motor();
+                stopAfterOnTime = true;
+            }
 
-                /* If water available → continue normal cycling */
-                if (senseDryRun)
+            /* Wait full ON duration */
+            if ((int32_t)(now - autoDeadline) >= 0)
+            {
+                if (stopAfterOnTime)
                 {
+                    stop_motor();
+                    auto_retry_count++;
+
+                    autoDeadline = now + ((uint32_t)auto_gap_s * 1000UL);
                     autoState = AUTO_OFF_WAIT;
-                    autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
                 }
                 else
                 {
-                    /* Water NOT available → stay OFF */
-                    autoState = AUTO_OFF_WAIT;
-                    autoDeadline = 0;   // no automatic restart
+                    /* Continue running next ON cycle */
+                    autoDeadline = now + ((uint32_t)auto_gap_s * 1000UL);
                 }
             }
         }
         break;
 
-        /* ================= OFF GAP ================= */
+        /* ================= AUTO_OFF_WAIT ================= */
         case AUTO_OFF_WAIT:
         {
-            stop_motor();
-
-            /* If deadline is 0 → waiting for water */
-            if (autoDeadline == 0)
+            /* Pure OFF delay — do nothing */
+            if ((int32_t)(now - autoDeadline) >= 0)
             {
-                if (senseDryRun)   // water returned
+                bool levelLow = (level <= AUTO_START_LEVEL_PERCENT);
+
+                if (restartActive ||
+                    (levelLow && groundWater))
                 {
-                    autoState = AUTO_ON_WAIT;
-                    autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
-                }
-                return;
-            }
+                    motorOwner = MOTOR_OWNER_AUTO;
+                    start_motor();
 
-            if (now >= autoDeadline)
-            {
-                autoState = AUTO_ON_WAIT;
-                autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
+                    autoDeadline = now + ((uint32_t)auto_gap_s * 1000UL);
+                    autoState    = AUTO_ON_WAIT;
+                }
             }
         }
         break;
