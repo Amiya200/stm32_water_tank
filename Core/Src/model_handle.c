@@ -1105,6 +1105,39 @@ static uint32_t timer_get_gap_ms(void)
 }
 
 
+static uint8_t get_tank_level_percent(void)
+{
+    uint8_t submerged = 0;
+
+    for (int i = 0; i <= 3; i++)
+    {
+        if (adcData.voltages[i] < 0.10f)
+            submerged++;
+    }
+
+    return (submerged * 100) / 4;
+}
+
+static bool Auto_HardStopCondition(void)
+{
+    uint8_t level = get_tank_level_percent();
+
+    if (level >= 100)
+        return true;
+
+    if (senseOverLoad || senseUnderLoad)
+        return true;
+
+    if (senseOverUnderVolt)
+        return true;
+
+    if (senseMaxRunReached)
+        return true;
+
+    return false;
+}
+
+
 void ModelHandle_StartTimer(void)
 {
     ModelHandle_SaveTimerToEEPROM();
@@ -1165,6 +1198,31 @@ void ModelHandle_StartAuto(uint16_t gap_s,
 
     autoDeadline = now_ms() + gap_s * 1000UL;
 }
+
+static bool Auto_StartConditionsMet(void)
+{
+    uint8_t level = get_tank_level_percent();
+
+    bool levelLow       = (level <= 50);
+    bool groundOk       = groundWater;   // already updated
+    bool scheduleMatch  = timer_any_active_slot();
+    bool retryGapReady  = (autoState == AUTO_OFF_WAIT && now_ms() >= autoDeadline);
+
+    if (restartActive)
+        return true;
+
+    if (scheduleMatch)
+        return true;
+
+    if (retryGapReady)
+        return true;
+
+    if (levelLow && groundOk)
+        return true;
+
+    return false;
+}
+
 void ModelHandle_StopAuto(void)
 {
     autoStartedByUART = false;   // <---- IMPORTANT
@@ -1197,19 +1255,8 @@ void ModelHandle_LoadAutoSettings(void)
     auto_retry_count = b.retryCount;
     autoDeadline     = now_ms() + b.remaining_ms;
     autoResumeBoot   = true;
-    start_motor();
-}
-static uint8_t get_tank_level_percent(void)
-{
-    uint8_t submerged = 0;
+    motorOwner = MOTOR_OWNER_AUTO;
 
-    for (int i = 0; i <= 3; i++)
-    {
-        if (adcData.voltages[i] < 0.10f)
-            submerged++;
-    }
-
-    return (submerged * 100) / 4;
 }
 static void auto_mode_background_control(void)
 {
@@ -1249,130 +1296,105 @@ static void auto_mode_background_control(void)
     }
 }
 
+static bool Auto_StopConditionsMet(void)
+{
+    uint8_t level = get_tank_level_percent();
+
+    if (level >= 100)
+        return true;
+
+    if (!groundWater)
+        return true;
+
+    if (senseDryRun)
+        return true;
+
+    if (senseOverLoad || senseUnderLoad)
+        return true;
+
+    if (senseOverUnderVolt)
+        return true;
+
+    if (senseMaxRunReached)
+        return true;
+
+    return false;
+}
 
 static void auto_tick(void)
 {
     if (!autoActive)
         return;
 
-    /* Do not interfere during mode switching delay */
-    if (modeSwitchPending)
-        return;
-
     uint32_t now = now_ms();
 
-    /* Periodically save runtime to EEPROM (every 5 sec) */
-    static uint32_t lastSave = 0;
-    if ((now - lastSave) >= 5000UL)
-    {
-        lastSave = now;
-        SaveAutoRuntime();
-    }
-    if (isTankFull())
+    ModelHandle_CheckDryRun();
+    ModelHandle_CheckGroundWater();
+
+    if (Auto_HardStopCondition() || isTankFull())
     {
         stop_motor();
         autoActive = false;
         autoState  = AUTO_IDLE;
-        auto_retry_count = 0;
-
-        EEPROM_WriteBuffer(EE_ADDR_AUTO_RUNTIME,
-                           (uint8_t[]){0},
-                           sizeof(AutoRuntimeBlock));
-
-        buzzerContinuous = true;
-        buzzerAlertUntil = HAL_GetTick() + 10000UL;  // 10 seconds
-
-        return;
-    }
-
-
-    /* Resume after power restore */
-    if (autoResumeBoot)
-    {
-        autoResumeBoot = false;
-
-        if (autoState == AUTO_ON_WAIT ||
-            autoState == AUTO_DRY_CHECK)
-        {
-            motorOwner = MOTOR_OWNER_AUTO;
-            start_motor();
-        }
-        else
-        {
-            stop_motor();
-        }
-
+        Buzzer_TriggerAlert();
         return;
     }
 
     switch (autoState)
     {
-        /* ===========================
-           AUTO RUN PHASE
-           =========================== */
+        /* ================= INIT ================= */
+        case AUTO_IDLE:
+        {
+            autoState = AUTO_ON_WAIT;
+            autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
+        }
+        break;
+
+        /* ================= ON GAP ================= */
         case AUTO_ON_WAIT:
         {
             motorOwner = MOTOR_OWNER_AUTO;
             start_motor();
 
+            /* Complete full ON gap first */
             if (now >= autoDeadline)
-            {
-                autoState = AUTO_DRY_CHECK;
-            }
-        }
-        break;
-
-        /* ===========================
-           DRY CHECK PHASE
-           =========================== */
-        case AUTO_DRY_CHECK:
-        {
-            ModelHandle_CheckDryRun();
-
-            /* If DRY → stop and wait */
-            if (senseDryRun)
             {
                 stop_motor();
 
-                autoState = AUTO_OFF_WAIT;
-                autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
-
-                Buzzer_TriggerAlert();
-            }
-            else
-            {
-                /* Water available → continue running */
-                autoState = AUTO_ON_WAIT;
-                autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
+                /* If water available → continue normal cycling */
+                if (senseDryRun)
+                {
+                    autoState = AUTO_OFF_WAIT;
+                    autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
+                }
+                else
+                {
+                    /* Water NOT available → stay OFF */
+                    autoState = AUTO_OFF_WAIT;
+                    autoDeadline = 0;   // no automatic restart
+                }
             }
         }
         break;
 
-        /* ===========================
-           OFF WAIT PHASE
-           =========================== */
+        /* ================= OFF GAP ================= */
         case AUTO_OFF_WAIT:
         {
+            stop_motor();
+
+            /* If deadline is 0 → waiting for water */
+            if (autoDeadline == 0)
+            {
+                if (senseDryRun)   // water returned
+                {
+                    autoState = AUTO_ON_WAIT;
+                    autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
+                }
+                return;
+            }
+
             if (now >= autoDeadline)
             {
-                auto_retry_count++;
-                auto_retry_counter = auto_retry_count;
-
-                /* Retry limit check */
-                if (auto_retry_limit &&
-                    auto_retry_count > auto_retry_limit)
-                {
-                    stop_motor();
-                    autoActive = false;
-                    autoState  = AUTO_IDLE;
-                    Buzzer_TriggerAlert();
-                    return;
-                }
-
-                /* Retry start */
-                motorOwner = MOTOR_OWNER_AUTO;
-                start_motor();
-
                 autoState = AUTO_ON_WAIT;
                 autoDeadline = now + (uint32_t)auto_gap_s * 1000UL;
             }
@@ -1380,12 +1402,11 @@ static void auto_tick(void)
         break;
 
         default:
-        {
             autoState = AUTO_IDLE;
-        }
         break;
     }
 }
+
 void ModelHandle_StartCountdown(uint32_t seconds)
 {
     clear_all_modes();
