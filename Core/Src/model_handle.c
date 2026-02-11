@@ -155,8 +155,10 @@ typedef enum {
     MOTOR_OWNER_TIMER,
     MOTOR_OWNER_COUNTDOWN,
     MOTOR_OWNER_TWIST,
-    MOTOR_OWNER_AUTO
+    MOTOR_OWNER_AUTO,
+    MOTOR_OWNER_RESTART     // <<< ADD THIS
 } MotorOwner;
+
 static volatile MotorOwner motorOwner = MOTOR_OWNER_NONE;
 typedef enum {
     LOAD_NORMAL = 0,
@@ -183,7 +185,8 @@ typedef enum {
 #define MODE_SWITCH_DELAY_MS  3000UL   // 3 sec delay (change as needed)
 static bool     modeSwitchPending = false;
 static uint32_t modeSwitchTime    = 0;
-
+static bool restartActive = false;
+static MotorOwner restartPreviousOwner = MOTOR_OWNER_NONE;
 static MotorOwner pendingOwner    = MOTOR_OWNER_NONE;
 static AutoState autoState    = AUTO_IDLE;
 static uint32_t  autoDeadline = 0;
@@ -236,6 +239,39 @@ static void request_mode_switch(MotorOwner newOwner)
     modeSwitchTime = HAL_GetTick() + MODE_SWITCH_DELAY_MS;
     pendingOwner = newOwner;
 }
+void ModelHandle_StartRestart(void)
+{
+    if (manualActive)
+        return;
+
+    if (isTankFull())
+        return;
+
+    if (restartActive)
+        return;
+
+    restartActive = true;
+
+    restartPreviousOwner = motorOwner;
+    motorOwner = MOTOR_OWNER_RESTART;
+
+    start_motor();
+}
+
+
+void ModelHandle_StopRestart(void)
+{
+    if (!restartActive)
+        return;
+
+    restartActive = false;
+
+    stop_motor();
+
+    motorOwner = MOTOR_OWNER_NONE;
+}
+
+
 
 typedef struct __attribute__((packed))
 {
@@ -465,19 +501,41 @@ void ModelHandle_SetPowerRestoreMode(uint8_t mode)
 }
 void ModelHandle_ToggleManual(void)
 {
+    /* Cancel restart if running */
+    if (restartActive)
+    {
+        restartActive = false;
+        motorOwner = MOTOR_OWNER_NONE;
+    }
+
     if (!manualActive)
     {
         clear_all_modes();
         manualActive = true;
-        request_mode_switch(MOTOR_OWNER_MANUAL);
+        motorOwner = MOTOR_OWNER_MANUAL;
     }
     else
     {
         manualActive = false;
+        motorOwner = MOTOR_OWNER_NONE;
         stop_motor();
     }
+
     ModelHandle_SaveModeState();
 }
+
+void ModelHandle_ManualToggleMotor(void)
+{
+    if (!manualActive)
+        return;
+
+    if (Motor_GetStatus())
+        stop_motor();
+    else
+        start_motor();
+}
+
+
 void ModelHandle_StopAllModesAndMotor(void)
 {
     clear_all_modes();
@@ -502,8 +560,8 @@ void ModelHandle_StartTimerNearestSlot(void)
 
 static inline void Buzzer_SetPin(bool on)
 {
-    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+//    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+//                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 static void Buzzer_TriggerAlert(void)
 {
@@ -570,6 +628,11 @@ static bool Motor_StartAllowed(void)
 {
     return (HAL_GetTick() - powerOnMs) >= 7000UL;
 }
+bool ModelHandle_IsRestartActive(void)
+{
+    return restartActive;
+}
+
 static inline void motor_apply(bool on)
 {
 	if (timerActive && timerState == TIMER_STATE_OFF)
@@ -609,10 +672,10 @@ bool Motor_GetStatus(void)
 }
 static inline void start_motor(void)
 {
-    /* HARD BLOCK during TIMER OFF phase */
-    if (timerActive && timerState == TIMER_STATE_OFF)
-        return;
-
+	if (!restartActive &&
+	    timerActive &&
+	    timerState == TIMER_STATE_OFF)
+	    return;
     if (motorOwner == MOTOR_OWNER_NONE)
         return;
 
@@ -630,6 +693,8 @@ static void check_max_run(void)
 
     if (countdownActive)
         return;
+    if (restartActive)
+        ;  // allow maxrun protection to work
 
     uint32_t limit = (uint32_t)sys.maxrun_min * 60000UL;
     if ((HAL_GetTick() - motorOnStartMs) >= limit)
@@ -669,15 +734,14 @@ static inline bool isAnyModeActive(void)
 }
 void ModelHandle_SoftDryRunHandler(void)
 {
-	if (timerActive)
-	        return;
-    /* Do not interfere with AUTO or TIMER */
-    if (autoActive || timerActive)
+    if (manualActive)
         return;
 
-    /* Only protect manual / semi / background */
+    if (autoActive || timerActive)
+        return;
     if (motorOwner != MOTOR_OWNER_NONE &&
-        motorOwner != MOTOR_OWNER_AUTO)
+        motorOwner != MOTOR_OWNER_AUTO &&
+        motorOwner != MOTOR_OWNER_RESTART)
         return;
 
     uint32_t now = now_ms();
@@ -689,13 +753,6 @@ void ModelHandle_SoftDryRunHandler(void)
     ModelHandle_CheckDryRun();
 
     dryOffGapMs = (uint32_t)gap_s * 1000UL;
-
-    if (manualActive || semiAutoActive || countdownActive)
-    {
-        dryState = DRY_IDLE;
-        dryConfirming = false;
-        return;
-    }
 
     if (!isAnyModeActive())
     {
@@ -1508,7 +1565,25 @@ void ModelHandle_Process(void)
 	    }
 	    return;
 	}
+	/* ================= RESTART MODE ================= */
 
+	if (restartActive)
+	{
+	    if (isTankFull())
+	    {
+	        ModelHandle_StopRestart();
+	        Buzzer_TriggerAlert();
+	        leds_from_model();
+	        Buzzer_Update();
+	        return;
+	    }
+	    if (!Motor_GetStatus())
+	        start_motor();
+
+	    leds_from_model();
+	    Buzzer_Update();
+	    return;
+	}
 
 	auto_mode_background_control();
 	ModelHandle_ProcessTimerSlots();
@@ -1527,8 +1602,6 @@ void ModelHandle_Process(void)
     }
     if (manualActive)
     {
-        if (!Motor_GetStatus())
-            start_motor();
         leds_from_model();
         Buzzer_Update();
         return;

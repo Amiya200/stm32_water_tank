@@ -84,5 +84,8 @@ void ModelHandle_LoadSettingsFromEEPROM(void);
 void ModelHandle_SaveSettingsToEEPROM(void);
 void ModelHandle_LoadTimerState(void);
 void ModelHandle_SaveTimerState(void);
+extern void ModelHandle_StartRestart(void);
+extern bool ModelHandle_IsRestartActive(void);
+void ModelHandle_ManualToggleMotor(void);
 
 #endif /* MODEL_HANDLE_H */
