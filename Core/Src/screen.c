@@ -70,6 +70,7 @@ typedef enum {
 } UiButton;
 static UiState ui      = UI_WELCOME;
 static UiState last_ui = UI_NONE;
+static UiState prev_ui = UI_NONE;
 static bool screenNeedsRefresh = false;
 static bool cursorVisible = true;
 static uint32_t lastCursorToggle   = 0;
@@ -220,6 +221,9 @@ static void show_dash(void)
     char l0[17], l1[17];
     uint32_t now = HAL_GetTick();
 
+    /* =========================================================
+       DASH PAGE CYCLING
+       ========================================================= */
     if (dash_cycle_start == 0)
         dash_cycle_start = now;
 
@@ -236,58 +240,109 @@ static void show_dash(void)
         dash_cycle_start = now;
         dash_page = 0;
     }
+
+    /* =========================================================
+       TANK LEVEL CALCULATION
+       ========================================================= */
     int tankPercent = 0;
 
-    /* Check highest level first */
-    if (adcData.voltages[3] < 0.1f)          // 100% sensor
+    if (adcData.voltages[3] < 0.1f)      tankPercent = 100;
+    else if (adcData.voltages[2] < 0.1f) tankPercent = 75;
+    else if (adcData.voltages[1] < 0.1f) tankPercent = 50;
+    else if (adcData.voltages[0] < 0.1f) tankPercent = 25;
+    else                                tankPercent = 0;
+
+    bool tankFull = (tankPercent >= 100);
+    bool motorOn  = Motor_GetStatus();
+
+    /* =========================================================
+       INTELLIGENT MODE DETECTION (NO IDLE)
+       ========================================================= */
+    const char* mode;
+
+    if (ModelHandle_IsRestartActive())
     {
-        tankPercent = 100;
+        mode = "RESTART";
     }
-    else if (adcData.voltages[2] < 0.1f)     // 75% sensor
+    else if (ModelHandle_IsVoltageFault())
     {
-        tankPercent = 75;
+        mode = "VOLTERR";
     }
-    else if (adcData.voltages[1] < 0.1f)     // 50% sensor
+    else if (ModelHandle_IsOverload())
     {
-        tankPercent = 50;
+        mode = "OVERLD ";
     }
-    else if (adcData.voltages[0] < 0.1f)     // 25% sensor
+    else if (ModelHandle_IsUnderload())
     {
-        tankPercent = 25;
+        mode = "UNDERLD";
+    }
+    else if (motorOn)
+    {
+        if (manualActive)         mode = "MANUAL ";
+        else if (semiAutoActive)  mode = "SEMI   ";
+        else if (timerActive)     mode = "TIMER  ";
+        else if (countdownActive) mode = "COUNT  ";
+        else if (twistActive)     mode = "TWIST  ";
+        else if (autoActive)      mode = "AUTO   ";
+        else                      mode = "RUNNING";
     }
     else
     {
-        tankPercent = 0;
+        if (tankFull)
+        {
+            mode = "FULL   ";
+        }
+        else if (autoActive)
+        {
+            mode = "AUTO WT";
+        }
+        else if (timerActive)
+        {
+            mode = "TIMERWT";
+        }
+        else if (countdownActive)
+        {
+            mode = "CD WAIT";
+        }
+        else if (manualActive)
+        {
+            mode = "MANUAL ";
+        }
+        else
+        {
+            mode = "READY  ";
+        }
     }
 
-
-    /* ===== UPDATED MODE STRING WITH RESTART ===== */
-    const char* mode =
-        ModelHandle_IsRestartActive() ? "RSTR " :
-        manualActive    ? "MANUL" :
-        semiAutoActive  ? "SEMI " :
-        timerActive     ? "TIMER" :
-        countdownActive ? "COUNT" :
-        twistActive     ? "TWIST" :
-        autoActive      ? "AUTO " : "IDLE ";
-
-    bool motorOn = Motor_GetStatus();
-
+    /* =========================================================
+       PAGE 0 – MAIN STATUS
+       ========================================================= */
     if (dash_page == 0)
     {
-        snprintf(l0, sizeof(l0), "M:%s %-5s %3d%%",
-                 motorOn ? "ON " : "OFF",
+        snprintf(l0, sizeof(l0), "%-7sM:%s %3d%%",
                  mode,
+                 motorOn ? "ON" : "OFF",
                  tankPercent);
 
-        const char *gw =
-            (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
+        if (tankFull)
+        {
+            snprintf(l1, sizeof(l1), "TANK FULL STOP ");
+        }
+        else
+        {
+            const char *gw =
+                (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
 
-        const char *dry =
-            (adcData.voltages[5] <= 0.01f) ? "YES" : "NO ";
+            const char *dry =
+                (adcData.voltages[5] <= 0.01f) ? "YES" : "NO ";
 
-        snprintf(l1, sizeof(l1), "G.W:%s DRY:%s", gw, dry);
+            snprintf(l1, sizeof(l1), "G.W:%s DRY:%s", gw, dry);
+        }
     }
+
+    /* =========================================================
+       PAGE 1 – DATE & TIME
+       ========================================================= */
     else if (dash_page == 1)
     {
         snprintf(l0, sizeof(l0), "Date:%02u-%02u-%02u",
@@ -300,6 +355,10 @@ static void show_dash(void)
                  time.min,
                  time.sec);
     }
+
+    /* =========================================================
+       PAGE 2 – ELECTRICAL MONITOR
+       ========================================================= */
     else
     {
         snprintf(l0, sizeof(l0), "V:%3.0fV  I:%3.1fA",
@@ -311,9 +370,9 @@ static void show_dash(void)
         else if (ModelHandle_IsUnderload())
             snprintf(l1, sizeof(l1), "UNDER LOAD!");
         else if (ModelHandle_IsVoltageFault())
-            snprintf(l1, sizeof(l1), "VOLT Error!");
+            snprintf(l1, sizeof(l1), "VOLT ERROR!");
         else
-            snprintf(l1, sizeof(l1), "Live Monitor");
+            snprintf(l1, sizeof(l1), "Live Monitor  ");
     }
 
     lcd_line0(l0);
@@ -1267,7 +1326,7 @@ void Screen_HandleSwitches(void)
     bool sw_down = Switch_IsPressed(3);
 
     /* =========================================================
-       COUNTDOWN LONG HOLD AUTO-INCREMENT (3 sec interval)
+       COUNTDOWN HOLD AUTO-INCREMENT
        ========================================================= */
     if (ui == UI_COUNTDOWN_EDIT_MIN)
     {
@@ -1286,16 +1345,68 @@ void Screen_HandleSwitches(void)
         }
         else
         {
-            countdown_hold_active = false;   // stop when released
+            countdown_hold_active = false;
         }
     }
 
     /* =========================================================
-       GLOBAL ESCAPE
+       BACK KEY – STRUCTURED DEVICE FLOW
        ========================================================= */
-    if (b == BTN_RESET && ui != UI_DASH && ui != UI_RESET_CONFIRM)
+    if (b == BTN_RESET)
     {
-        ui = UI_DASH;
+        switch (ui)
+        {
+            /* Deep setting screens → DEVSET MENU */
+            case UI_SETTINGS_GAP:
+            case UI_SETTINGS_RETRY:
+            case UI_SETTINGS_UV:
+            case UI_SETTINGS_OV:
+            case UI_SETTINGS_OL:
+            case UI_SETTINGS_UL:
+            case UI_SETTINGS_MAXRUN:
+            case UI_SETTINGS_PWRREST:
+            case UI_SETTINGS_FACTORY:
+            case UI_DEVSET_EDIT_DATE:
+            case UI_DEVSET_EDIT_TIME:
+            case UI_DEVSET_EDIT_DAY:
+                ui = UI_DEVSET_MENU;
+                break;
+
+            /* Device setup → Main menu */
+            case UI_DEVSET_MENU:
+                ui = UI_MENU;
+                break;
+
+            /* Add device screens → Main menu */
+            case UI_ADD_DEVICE_MENU:
+            case UI_ADD_DEVICE_PAIR:
+            case UI_ADD_DEVICE_REMOVE:
+            case UI_ADD_DEVICE_PAIR_DONE:
+            case UI_ADD_DEVICE_REMOVE_DONE:
+                ui = UI_MENU;
+                break;
+
+            /* Countdown edit → Countdown screen */
+            case UI_COUNTDOWN_EDIT_MIN:
+                ui = UI_COUNTDOWN;
+                break;
+
+            /* Countdown → Dash */
+            case UI_COUNTDOWN:
+                ui = UI_DASH;
+                break;
+
+            /* Main menu → Dash */
+            case UI_MENU:
+                ui = UI_DASH;
+                break;
+
+            /* Default fallback */
+            default:
+                ui = UI_DASH;
+                break;
+        }
+
         screenNeedsRefresh = true;
         return;
     }
@@ -1318,10 +1429,6 @@ void Screen_HandleSwitches(void)
                 ui = UI_DASH;
                 break;
 
-            case BTN_RESET:
-                ui = UI_MENU;
-                break;
-
             default:
                 break;
         }
@@ -1331,7 +1438,7 @@ void Screen_HandleSwitches(void)
     }
 
     /* =========================================================
-       NORMAL 250ms EDIT REPEAT (EXCLUDING COUNTDOWN EDIT)
+       NORMAL EDIT HOLD (250ms repeat except special modes)
        ========================================================= */
     if ((sw_up || sw_down) &&
         ui != UI_MENU &&
@@ -1339,7 +1446,7 @@ void Screen_HandleSwitches(void)
         ui != UI_TIMER_SLOT_SELECT &&
         ui != UI_DASH &&
         ui != UI_COUNTDOWN &&
-        ui != UI_COUNTDOWN_EDIT_MIN &&   // exclude special mode
+        ui != UI_COUNTDOWN_EDIT_MIN &&
         (now - last_repeat_time >= 250))
     {
         last_repeat_time = now;
@@ -1416,15 +1523,14 @@ void Screen_HandleSwitches(void)
                 {
                     edit_countdown_min = 1;
                     ui = UI_COUNTDOWN_EDIT_MIN;
+
                     if (edit_countdown_min < 240)
                         edit_countdown_min++;
 
                     countdown_hold_active = true;
                     countdown_hold_timer  = now;
-                    screenNeedsRefresh = true;
                 }
                 break;
-
 
             default:
                 break;
@@ -1440,11 +1546,17 @@ void Screen_HandleSwitches(void)
     if (ui == UI_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
+        {
             menu_select();
+        }
         else if (b == BTN_DOWN && menu_idx < MAIN_MENU_COUNT - 1)
+        {
             menu_idx++;
+        }
         else if (b == BTN_UP && menu_idx > 0)
+        {
             menu_idx--;
+        }
 
         screenNeedsRefresh = true;
         return;
@@ -1456,11 +1568,17 @@ void Screen_HandleSwitches(void)
     if (ui == UI_DEVSET_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
+        {
             menu_select();
+        }
         else if (b == BTN_DOWN && devset_idx < DEVSET_MENU_COUNT - 1)
+        {
             devset_idx++;
+        }
         else if (b == BTN_UP && devset_idx > 0)
+        {
             devset_idx--;
+        }
 
         screenNeedsRefresh = true;
         return;
@@ -1486,19 +1604,32 @@ void Screen_HandleSwitches(void)
 void Screen_Update(void)
 {
     uint32_t now = HAL_GetTick();
+
+    /* =========================================================
+       CURSOR BLINK (ONLY FOR MAIN MENU)
+       ========================================================= */
     bool cursorBlinkActive = (ui == UI_MENU);
+
     if (cursorBlinkActive && (now - lastCursorToggle >= CURSOR_BLINK_MS))
     {
         cursorVisible = !cursorVisible;
         lastCursorToggle = now;
         draw_menu_cursor();
     }
-    if (ui == UI_WELCOME && now - lastLcdUpdateTime >= WELCOME_MS)
+
+    /* =========================================================
+       WELCOME SCREEN AUTO TRANSITION
+       ========================================================= */
+    if (ui == UI_WELCOME && (now - lastLcdUpdateTime >= WELCOME_MS))
     {
         ui = UI_DASH;
         lastLcdUpdateTime = now;
         screenNeedsRefresh = true;
     }
+
+    /* =========================================================
+       AUTO BACK TO DASH AFTER INACTIVITY
+       ========================================================= */
     if (ui != UI_WELCOME &&
         ui != UI_DASH &&
         (now - lastUserAction >= AUTO_BACK_MS))
@@ -1506,20 +1637,37 @@ void Screen_Update(void)
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
+
+    /* =========================================================
+       DASH & COUNTDOWN REFRESH EVERY 1 SECOND
+       ========================================================= */
     if ((ui == UI_DASH || ui == UI_COUNTDOWN) &&
-        now - lastLcdUpdateTime >= 1000)
+        (now - lastLcdUpdateTime >= 1000))
     {
         lastLcdUpdateTime = now;
         screenNeedsRefresh = true;
     }
+
+    /* =========================================================
+       SCREEN DRAW HANDLING
+       ========================================================= */
     if (screenNeedsRefresh || ui != last_ui)
     {
         bool fullRefresh = (ui != last_ui);
+
+        /* 🔥 STORE PREVIOUS PAGE FOR BACK NAVIGATION */
+        if (ui != last_ui)
+        {
+            prev_ui = last_ui;
+        }
+
         last_ui = ui;
         screenNeedsRefresh = false;
+
         if (fullRefresh)
             lcd_clear();
-        switch(ui)
+
+        switch (ui)
         {
             case UI_WELCOME:              show_welcome();              break;
             case UI_DASH:                 show_dash();                 break;
@@ -1570,6 +1718,7 @@ void Screen_Update(void)
         }
     }
 }
+
 extern void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry);
 extern void ModelHandle_StartTimerNearestSlot(void);
 extern void ModelHandle_StopTimer(void);

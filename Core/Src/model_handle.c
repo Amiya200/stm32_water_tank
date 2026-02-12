@@ -145,7 +145,15 @@ typedef enum {
     MOTOR_OWNER_RESTART     // <<< ADD THIS
 } MotorOwner;
 static volatile MotorOwner motorOwner = MOTOR_OWNER_NONE;
+typedef struct
+{
+    uint8_t pumpOnSound;     // 0 = OFF, 1 = ON
+    uint8_t tankFullSound;   // 0 = OFF, 1 = ON
+    uint8_t tankEmptySound;  // 0 = OFF, 1 = ON
+} BuzzerSettings;
+static BuzzerSettings buzzerSettings = {1,1,1};   // default ON
 static uint32_t cd_deadline = 0;
+#define EE_ADDR_BUZZER_BLOCK 0x0500
 typedef enum {
     LOAD_NORMAL = 0,
     LOAD_FAULT_WAIT,
@@ -421,28 +429,72 @@ void Timer_EEPROM_EnsureValid(void)
         ModelHandle_SaveTimerToEEPROM();
     }
 }
+#define SENSOR_STABLE_TIME_MS   10000UL   // 10 seconds
+#define PROBE_THRESHOLD         0.10f
+static uint8_t get_tank_level_percent(void)
+{
+    static uint8_t lastRawLevel = 0;
+    static uint8_t stableLevel  = 0;
+    static uint32_t levelTimer  = 0;
+
+    uint32_t now = HAL_GetTick();
+    uint8_t rawLevel = 0;
+
+    /* -------- RAW LEVEL DETECTION -------- */
+    if (adcData.voltages[3] < PROBE_THRESHOLD)
+        rawLevel = 100;
+    else if (adcData.voltages[2] < PROBE_THRESHOLD)
+        rawLevel = 75;
+    else if (adcData.voltages[1] < PROBE_THRESHOLD)
+        rawLevel = 50;
+    else if (adcData.voltages[0] < PROBE_THRESHOLD)
+        rawLevel = 25;
+    else
+        rawLevel = 0;
+
+    /* -------- STABILITY CHECK -------- */
+    if (rawLevel != lastRawLevel)
+    {
+        lastRawLevel = rawLevel;
+        levelTimer = now;   // start timing new level
+    }
+
+    if ((now - levelTimer) >= SENSOR_STABLE_TIME_MS)
+    {
+        stableLevel = rawLevel;
+    }
+
+    return stableLevel;
+}
 static bool isTankFull(void)
 {
-    static uint32_t stableStart = 0;
-    static bool lastState = false;
+    static uint32_t stableStartTime = 0;
+    static bool     stableState     = false;
 
-    bool fullDetected = (adcData.voltages[3] < 0.10f);
     uint32_t now = HAL_GetTick();
-    if (fullDetected)
+
+    bool rawFullDetected =
+        (adcData.voltages[3] < PROBE_THRESHOLD);
+
+    if (rawFullDetected)
     {
-        if (!lastState)
+        if (stableStartTime == 0)
         {
-            lastState = true;
-            stableStart = now;
+            stableStartTime = now;
         }
-        if ((now - stableStart) >= 1000UL)
-            return true;
+
+        if ((now - stableStartTime) >= SENSOR_STABLE_TIME_MS)
+        {
+            stableState = true;
+        }
     }
     else
     {
-        lastState = false;
+        stableStartTime = 0;
+        stableState = false;
     }
-    return false;
+
+    return stableState;
 }
 
 void ModelHandle_TimerRecalculateNow(void)
@@ -537,30 +589,37 @@ static inline void Buzzer_SetPin(bool on)
 }
 static void Buzzer_TriggerAlert(void)
 {
-    buzzerAlertUntil = HAL_GetTick() + 30000UL;
+    buzzerAlertUntil = HAL_GetTick() + 30000UL;  // 30 sec
 }
+
 static void Buzzer_Update(void)
 {
     uint32_t now = HAL_GetTick();
-
     static bool buzzerState = false;
     bool newState = false;
 
-    if (now < buzzerAlertUntil)
+    bool motorOn = Motor_GetStatus();
+
+    /* ================= PUMP ON SOUND ================= */
+    if (buzzerSettings.pumpOnSound && motorOn)
     {
-        if (buzzerContinuous)
-        {
-            newState = true;   // continuous ON
-        }
-        else
-        {
-            newState = ((now % 600UL) < 200UL);  // normal alert beep
-        }
+        newState = true;  // continuous ON
     }
-    else
+
+    /* ================= TANK FULL ================= */
+    if (buzzerSettings.tankFullSound &&
+        isTankFull() &&
+        (now < buzzerAlertUntil))
     {
-        buzzerContinuous = false;
-        newState = false;
+        newState = true;  // continuous long beep
+    }
+
+    /* ================= TANK EMPTY ================= */
+    if (buzzerSettings.tankEmptySound &&
+        get_tank_level_percent() == 0 &&
+        (now < buzzerAlertUntil))
+    {
+        newState = ((now % 400UL) < 100UL);  // short beep pattern
     }
 
     if (newState != buzzerState)
@@ -942,6 +1001,20 @@ static uint16_t get_active_timer_gap_minutes(void)
     }
     return 0;
 }
+
+void ModelHandle_SaveBuzzerSettings(void)
+{
+    EEPROM_WriteBuffer(EE_ADDR_BUZZER_BLOCK,
+                       (uint8_t*)&buzzerSettings,
+                       sizeof(buzzerSettings));
+}
+void ModelHandle_LoadBuzzerSettings(void)
+{
+    EEPROM_ReadBuffer(EE_ADDR_BUZZER_BLOCK,
+                      (uint8_t*)&buzzerSettings,
+                      sizeof(buzzerSettings));
+}
+
 void ModelHandle_ProcessTimerSlots(void)
 {
     uint32_t now = HAL_GetTick();
@@ -1045,22 +1118,6 @@ void ModelHandle_ProcessTimerSlots(void)
     }
 }
 
-static uint8_t get_tank_level_percent(void)
-{
-    if (adcData.voltages[3] < 0.10f)   // 100% probe
-        return 100;
-
-    if (adcData.voltages[2] < 0.10f)   // 75% probe
-        return 75;
-
-    if (adcData.voltages[1] < 0.10f)   // 50% probe
-        return 50;
-
-    if (adcData.voltages[0] < 0.10f)   // 25% probe
-        return 25;
-
-    return 0;
-}
 
 void ModelHandle_StartTimer(void)
 {
