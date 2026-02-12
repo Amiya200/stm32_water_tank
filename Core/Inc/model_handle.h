@@ -34,6 +34,14 @@ typedef struct {
     bool     twistActive;
     bool     twistArmed;
 } TwistSettings;
+typedef enum {
+    DRY_IDLE = 0,
+    DRY_WAITING,
+    DRY_FAULT
+} DryFSMState;
+DryFSMState ModelHandle_GetDryState(void);
+uint8_t ModelHandle_GetTankLevelPercent(void);
+bool ModelHandle_IsTankFull(void);
 extern volatile uint8_t  motorStatus;
 extern volatile bool manualActive;
 extern volatile bool countdownActive;

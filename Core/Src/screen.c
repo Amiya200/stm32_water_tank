@@ -154,6 +154,9 @@ static uint8_t addDevMenuIndex  = 0;
 static uint8_t addDevTypeIndex  = 0;
 static uint8_t lastAddDevType   = 0;
 static bool    lastAddActionPair = true;
+extern uint8_t ModelHandle_GetTankLevelPercent(void);
+extern bool ModelHandle_IsTankFull(void);
+extern DryFSMState ModelHandle_GetDryState(void);
 static const char* const addDevTypeNames[] = {
     "Wi-Fi",
     "Receiver",
@@ -242,40 +245,26 @@ static void show_dash(void)
     }
 
     /* =========================================================
-       TANK LEVEL CALCULATION
+       STABLE MODEL VALUES (NO RAW ADC)
        ========================================================= */
-    int tankPercent = 0;
-
-    if (adcData.voltages[3] < 0.1f)      tankPercent = 100;
-    else if (adcData.voltages[2] < 0.1f) tankPercent = 75;
-    else if (adcData.voltages[1] < 0.1f) tankPercent = 50;
-    else if (adcData.voltages[0] < 0.1f) tankPercent = 25;
-    else                                tankPercent = 0;
-
-    bool tankFull = (tankPercent >= 100);
+    uint8_t tankPercent = ModelHandle_GetTankLevelPercent();
+    bool tankFull = ModelHandle_IsTankFull();
     bool motorOn  = Motor_GetStatus();
+    DryFSMState dryState = ModelHandle_GetDryState();
 
     /* =========================================================
-       INTELLIGENT MODE DETECTION (NO IDLE)
+       MODE DETECTION
        ========================================================= */
     const char* mode;
 
     if (ModelHandle_IsRestartActive())
-    {
         mode = "RESTART";
-    }
     else if (ModelHandle_IsVoltageFault())
-    {
         mode = "VOLTERR";
-    }
     else if (ModelHandle_IsOverload())
-    {
         mode = "OVERLD ";
-    }
     else if (ModelHandle_IsUnderload())
-    {
         mode = "UNDERLD";
-    }
     else if (motorOn)
     {
         if (manualActive)         mode = "MANUAL ";
@@ -288,30 +277,12 @@ static void show_dash(void)
     }
     else
     {
-        if (tankFull)
-        {
-            mode = "FULL   ";
-        }
-        else if (autoActive)
-        {
-            mode = "AUTO WT";
-        }
-        else if (timerActive)
-        {
-            mode = "TIMERWT";
-        }
-        else if (countdownActive)
-        {
-            mode = "CD WAIT";
-        }
-        else if (manualActive)
-        {
-            mode = "MANUAL ";
-        }
-        else
-        {
-            mode = "READY  ";
-        }
+        if (tankFull)             mode = "FULL   ";
+        else if (autoActive)      mode = "AUTO WT";
+        else if (timerActive)     mode = "TIMERWT";
+        else if (countdownActive) mode = "CD WAIT";
+        else if (manualActive)    mode = "MANUAL ";
+        else                      mode = "READY  ";
     }
 
     /* =========================================================
@@ -324,9 +295,23 @@ static void show_dash(void)
                  motorOn ? "ON" : "OFF",
                  tankPercent);
 
-        if (tankFull)
+        /* ===== DRY RUN HAS HIGHEST PRIORITY ===== */
+
+        if (dryState == DRY_FAULT)
         {
-            snprintf(l1, sizeof(l1), "TANK FULL STOP ");
+            snprintf(l1, sizeof(l1), "DRY RUN");
+        }
+        else if (dryState == DRY_WAITING)
+        {
+            /* Blink every 500ms */
+            if ((now / 500) % 2)
+                snprintf(l1, sizeof(l1), "DRY RUN");
+            else
+                snprintf(l1, sizeof(l1), "        ");
+        }
+        else if (tankFull)
+        {
+            snprintf(l1, sizeof(l1), "TANK FULL STOP");
         }
         else
         {
@@ -372,7 +357,7 @@ static void show_dash(void)
         else if (ModelHandle_IsVoltageFault())
             snprintf(l1, sizeof(l1), "VOLT ERROR!");
         else
-            snprintf(l1, sizeof(l1), "Live Monitor  ");
+            snprintf(l1, sizeof(l1), "Live Monitor");
     }
 
     lcd_line0(l0);

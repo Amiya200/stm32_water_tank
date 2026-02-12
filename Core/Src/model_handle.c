@@ -51,18 +51,12 @@ volatile bool autoActive      = false;
 static uint32_t dryDeadline     = 0;
 static uint32_t dryConfirmStart = 0;
 static uint32_t dryOffGapMs     = 10000UL;
-typedef enum {
-    DRY_IDLE = 0,
-    DRY_PROBE,
-    DRY_NORMAL
-} DryFSMState;
 #define LOAD_FAULT_CONFIRM_MS 3000UL
 #define LOAD_RETRY_RUN_MS     3000UL
 #define LOAD_LOCK_DEFAULT_MS (20UL * 60UL * 1000UL)
 #define TIMER_RETRY_30MIN_MS (30UL * 60UL * 1000UL)
 static uint32_t buzzerAlertUntil = 0;
 static DryFSMState dryState      = DRY_IDLE;
-static bool        dryConfirming = false;
 volatile uint8_t motorStatus = 0;
 volatile bool senseDryRun         = false;
 volatile bool groundWater         = false;
@@ -761,85 +755,60 @@ static inline bool isAnyModeActive(void)
 }
 void ModelHandle_SoftDryRunHandler(void)
 {
-    if (manualActive)
-        return;
-
-    if (autoActive || timerActive)
-        return;
-    if (motorOwner != MOTOR_OWNER_NONE &&
-        motorOwner != MOTOR_OWNER_AUTO &&
-        motorOwner != MOTOR_OWNER_RESTART)
-        return;
-
-    uint32_t now = now_ms();
-
-    uint16_t gap_s = sys.gap_time_s;
-    if (gap_s == 0)
-        return;
-
-    ModelHandle_CheckDryRun();
-
-    dryOffGapMs = (uint32_t)gap_s * 1000UL;
-
-    if (!isAnyModeActive())
+    if (sys.gap_time_s == 0)
     {
-        stop_motor();
         dryState = DRY_IDLE;
         return;
     }
 
-    switch (dryState)
+    uint32_t now = HAL_GetTick();
+    uint32_t gapMs = (uint32_t)sys.gap_time_s * 1000UL;
+
+    ModelHandle_CheckDryRun();   // updates senseDryRun
+
+    bool motorOn = Motor_GetStatus();
+
+    /* ================= MOTOR RUNNING ================= */
+    if (motorOn)
     {
-        case DRY_IDLE:
-            if (!senseDryRun)
-            {
-                start_motor();
-                dryState = DRY_NORMAL;
-            }
-            else if (now >= dryDeadline)
-            {
-                start_motor();
-                dryState = DRY_PROBE;
-                dryDeadline = now + DRY_PROBE_ON_MS;
-            }
-            break;
+        /* Water present → clear dry state */
+        if (!senseDryRun)
+        {
+            dryState = DRY_IDLE;
+            return;
+        }
 
-        case DRY_PROBE:
+        /* Water missing → start waiting */
+        if (dryState != DRY_WAITING)
+        {
+            dryState = DRY_WAITING;
+            dryDeadline = now + gapMs;
+        }
+
+        /* Timeout reached → STOP motor */
+        if ((int32_t)(now - dryDeadline) >= 0)
+        {
+            stop_motor();
+            dryState = DRY_FAULT;
+            Buzzer_TriggerAlert();
+        }
+    }
+    else
+    {
+        /* ================= MOTOR OFF ================= */
+
+        if (dryState == DRY_FAULT)
+        {
+            /* Clear fault when water returns */
             if (!senseDryRun)
             {
-                dryState = DRY_NORMAL;
-            }
-            else if (now >= dryDeadline)
-            {
-                stop_motor();
                 dryState = DRY_IDLE;
-                dryDeadline = now + dryOffGapMs;
-                Buzzer_TriggerAlert();
             }
-            break;
-
-        case DRY_NORMAL:
-            if (senseDryRun)
-            {
-                if (!dryConfirming)
-                {
-                    dryConfirming = true;
-                    dryConfirmStart = now;
-                }
-                else if ((now - dryConfirmStart) >= DRY_CONFIRM_MS)
-                {
-                    stop_motor();
-                    dryState = DRY_IDLE;
-                    dryConfirming = false;
-                    dryDeadline = now + dryOffGapMs;
-                    Buzzer_TriggerAlert();
-                }
-            }
-            else
-            {
-                dryConfirming = false;
-            }
-            break;
+        }
+        else
+        {
+            dryState = DRY_IDLE;
+        }
     }
 }
 
@@ -1346,7 +1315,7 @@ static void auto_tick(void)
             }
 
             bool faultCondition =
-                (!groundWater || senseDryRun);
+                (!groundWater || (dryState == DRY_FAULT));
 
             if ((int32_t)(now - autoDeadline) >= 0)
             {
@@ -1599,24 +1568,42 @@ static void twist_tick(void)
 static void leds_from_model(void)
 {
     LED_ClearAllIntents();
+
     bool motorOn = Motor_GetStatus();
+
+    /* ========== DRY RUN PRIORITY ========== */
+
+    if (dryState == DRY_WAITING)
+    {
+        LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 400);
+        LED_ApplyIntents();
+        return;
+    }
+
+    if (dryState == DRY_FAULT)
+    {
+        LED_SetIntent(LED_COLOR_RED, LED_MODE_STEADY, 0);
+        LED_ApplyIntents();
+        return;
+    }
+
+    /* ========== NORMAL INDICATIONS ========== */
+
     if (motorOn)
         LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 0);
-    if (!senseDryRun)
-    {
-        if (motorOn)
-            LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 350);
-        else
-            LED_SetIntent(LED_COLOR_RED, LED_MODE_STEADY, 0);
-    }
+
     if (senseMaxRunReached)
         LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 300);
+
     if (senseOverLoad || senseUnderLoad)
         LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 350);
+
     if (senseOverUnderVolt)
         LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_BLINK, 350);
+
     LED_ApplyIntents();
 }
+
 void ModelHandle_Process(void)
 {
     uint32_t now = HAL_GetTick();
@@ -1648,7 +1635,7 @@ void ModelHandle_Process(void)
     {
         motorOwner = MOTOR_OWNER_RESTART;
 
-        if (isTankFull() || protectionFault || senseDryRun)
+        if (isTankFull() || protectionFault || (dryState == DRY_FAULT))
         {
             ModelHandle_StopRestart();
             Buzzer_TriggerAlert();
@@ -1668,7 +1655,7 @@ void ModelHandle_Process(void)
     {
         motorOwner = MOTOR_OWNER_MANUAL;
 
-        if (protectionFault)
+        if (protectionFault || dryState == DRY_FAULT)
         {
             stop_motor();
             Buzzer_TriggerAlert();
@@ -1688,7 +1675,7 @@ void ModelHandle_Process(void)
     {
         motorOwner = MOTOR_OWNER_SEMIAUTO;
 
-        if (isTankFull() || protectionFault || senseDryRun)
+        if (isTankFull() || protectionFault || (dryState == DRY_FAULT))
         {
             stop_motor();
             Buzzer_TriggerAlert();
@@ -1718,7 +1705,7 @@ void ModelHandle_Process(void)
 
         countdown_tick();
 
-        if (isTankFull() || protectionFault || senseDryRun)
+        if (isTankFull() || protectionFault || (dryState == DRY_FAULT))
         {
             ModelHandle_StopCountdown();
             Buzzer_TriggerAlert();
@@ -1755,6 +1742,12 @@ void ModelHandle_Process(void)
     leds_from_model();
     Buzzer_Update();
 }
+
+DryFSMState ModelHandle_GetDryState(void)
+{
+    return dryState;
+}
+
 
 void ModelHandle_ResetAll(void)
 {
@@ -1884,4 +1877,14 @@ bool ModelHandle_IsVoltageFault(void)
 bool ModelHandle_IsMaxRunReached(void)
 {
     return senseMaxRunReached;
+}
+
+uint8_t ModelHandle_GetTankLevelPercent(void)
+{
+    return get_tank_level_percent();
+}
+
+bool ModelHandle_IsTankFull(void)
+{
+    return isTankFull();
 }
