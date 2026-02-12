@@ -75,6 +75,9 @@ static bool cursorVisible = true;
 static uint32_t lastCursorToggle   = 0;
 static uint32_t lastLcdUpdateTime  = 0;
 static uint32_t lastUserAction     = 0;
+static uint32_t countdown_hold_timer = 0;
+static bool countdown_hold_active = false;
+
 #define WELCOME_MS         2500
 #define CURSOR_BLINK_MS     400
 #define AUTO_BACK_MS      60000
@@ -1257,13 +1260,35 @@ static UiButton decode_button_press(void)
 
 void Screen_HandleSwitches(void)
 {
-    static bool prev_down_edit = false;
-
     UiButton b = decode_button_press();
     uint32_t now = HAL_GetTick();
 
     bool sw_up   = Switch_IsPressed(2);
     bool sw_down = Switch_IsPressed(3);
+
+    /* =========================================================
+       COUNTDOWN LONG HOLD AUTO-INCREMENT (3 sec interval)
+       ========================================================= */
+    if (ui == UI_COUNTDOWN_EDIT_MIN)
+    {
+        if (sw_down)
+        {
+            if (countdown_hold_active &&
+                (now - countdown_hold_timer >= 1000))
+            {
+                countdown_hold_timer = now;
+
+                if (edit_countdown_min < 240)
+                    edit_countdown_min++;
+
+                screenNeedsRefresh = true;
+            }
+        }
+        else
+        {
+            countdown_hold_active = false;   // stop when released
+        }
+    }
 
     /* =========================================================
        GLOBAL ESCAPE
@@ -1304,33 +1329,47 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
+
+    /* =========================================================
+       NORMAL 250ms EDIT REPEAT (EXCLUDING COUNTDOWN EDIT)
+       ========================================================= */
     if ((sw_up || sw_down) &&
         ui != UI_MENU &&
         ui != UI_DEVSET_MENU &&
         ui != UI_TIMER_SLOT_SELECT &&
         ui != UI_DASH &&
         ui != UI_COUNTDOWN &&
+        ui != UI_COUNTDOWN_EDIT_MIN &&   // exclude special mode
         (now - last_repeat_time >= 250))
     {
         last_repeat_time = now;
+
         if (sw_up)   increase_edit_value();
         if (sw_down) decrease_edit_value();
+
         screenNeedsRefresh = true;
     }
+
     if (b == BTN_NONE)
         return;
+
     refreshInactivityTimer();
 
+    /* =========================================================
+       DASH SCREEN CONTROLS
+       ========================================================= */
     if (ui == UI_DASH)
     {
         switch (b)
         {
-        case BTN_RESET:
-            ModelHandle_StartRestart();
-            break;
-        case BTN_RESET_LONG:
+            case BTN_RESET:
+                ModelHandle_StartRestart();
+                break;
+
+            case BTN_RESET_LONG:
                 ModelHandle_ToggleManual();
                 break;
+
             case BTN_SELECT:
                 if (!autoActive)
                     ModelHandle_StartAuto(edit_auto_gap_s,
@@ -1345,7 +1384,6 @@ void Screen_HandleSwitches(void)
                 menu_idx = 0;
                 menu_view_top = 0;
                 break;
-
 
             case BTN_UP:
                 if (!timerActive)
@@ -1378,10 +1416,15 @@ void Screen_HandleSwitches(void)
                 {
                     edit_countdown_min = 1;
                     ui = UI_COUNTDOWN_EDIT_MIN;
-                    last_repeat_time = 0;     // reset repeat timing
+                    if (edit_countdown_min < 240)
+                        edit_countdown_min++;
+
+                    countdown_hold_active = true;
+                    countdown_hold_timer  = now;
                     screenNeedsRefresh = true;
                 }
                 break;
+
 
             default:
                 break;
@@ -1390,6 +1433,10 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
+
+    /* =========================================================
+       MAIN MENU
+       ========================================================= */
     if (ui == UI_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
@@ -1403,6 +1450,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
+    /* =========================================================
+       DEVICE SET MENU
+       ========================================================= */
     if (ui == UI_DEVSET_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
@@ -1416,6 +1466,9 @@ void Screen_HandleSwitches(void)
         return;
     }
 
+    /* =========================================================
+       GENERIC EDIT HANDLING
+       ========================================================= */
     if (ui != UI_DASH)
     {
         if (b == BTN_UP)
