@@ -233,15 +233,30 @@ static void show_dash(void)
         dash_cycle_start = now;
         dash_page = 0;
     }
+    int tankPercent = 0;
 
-    /* Tank percentage calculation */
-    int submerged = 0;
-    for (int i = 0; i <= 3; i++)
+    /* Check highest level first */
+    if (adcData.voltages[3] < 0.1f)          // 100% sensor
     {
-        if (adcData.voltages[i] < 0.1f)
-            submerged++;
+        tankPercent = 100;
     }
-    int tankPercent = (submerged * 100) / 4;
+    else if (adcData.voltages[2] < 0.1f)     // 75% sensor
+    {
+        tankPercent = 75;
+    }
+    else if (adcData.voltages[1] < 0.1f)     // 50% sensor
+    {
+        tankPercent = 50;
+    }
+    else if (adcData.voltages[0] < 0.1f)     // 25% sensor
+    {
+        tankPercent = 25;
+    }
+    else
+    {
+        tankPercent = 0;
+    }
+
 
     /* ===== UPDATED MODE STRING WITH RESTART ===== */
     const char* mode =
@@ -992,12 +1007,25 @@ void increase_edit_value(void)
             else edit_gap_min = 240;
             break;
 
-        case UI_AUTO_EDIT_GAP:        edit_auto_gap_s += 5;      break;
-        case UI_AUTO_EDIT_MAXRUN:     edit_auto_maxrun_min += 5; break;
-        case UI_AUTO_EDIT_RETRY:      edit_auto_retry += 5;      break;
+        case UI_AUTO_EDIT_GAP:
+            edit_auto_gap_s += 5;
+            break;
 
-        case UI_TWIST_EDIT_ON:        edit_twist_on_s += 5;      break;
-        case UI_TWIST_EDIT_OFF:       edit_twist_off_s += 5;     break;
+        case UI_AUTO_EDIT_MAXRUN:
+            edit_auto_maxrun_min += 5;
+            break;
+
+        case UI_AUTO_EDIT_RETRY:
+            edit_auto_retry += 5;
+            break;
+
+        case UI_TWIST_EDIT_ON:
+            edit_twist_on_s += 5;
+            break;
+
+        case UI_TWIST_EDIT_OFF:
+            edit_twist_off_s += 5;
+            break;
 
         case UI_TWIST_EDIT_ON_H:
             if (edit_twist_on_hh <= 18) edit_twist_on_hh += 5;
@@ -1019,8 +1047,11 @@ void increase_edit_value(void)
             else edit_twist_off_mm = 59;
             break;
 
-        /* 🚫 REMOVED: UI_COUNTDOWN_EDIT_MIN
-           Countdown edit is handled ONLY in Screen_HandleSwitches() */
+        /* ✅ FIXED: Countdown Edit */
+        case UI_COUNTDOWN_EDIT_MIN:
+            if (edit_countdown_min < 240)
+                edit_countdown_min++;   // 1-minute step
+            break;
 
         case UI_SETTINGS_GAP:
             if (edit_settings_gap_s <= 10) edit_settings_gap_s += 5;
@@ -1099,6 +1130,7 @@ void increase_edit_value(void)
             break;
     }
 }
+
 void decrease_edit_value(void)
 {
     switch(ui)
@@ -1221,9 +1253,10 @@ static UiButton decode_button_press(void)
     }
     return out;
 }
+
+
 void Screen_HandleSwitches(void)
 {
-    static uint32_t last_repeat_time = 0;
     static bool prev_down_edit = false;
 
     UiButton b = decode_button_press();
@@ -1292,19 +1325,10 @@ void Screen_HandleSwitches(void)
     {
         switch (b)
         {
-            case BTN_RESET:
-
-                if (manualActive)
-                {
-                    ModelHandle_ManualToggleMotor();
-                }
-                else
-                {
-                    ModelHandle_StartRestart();
-                }
-                break;
-
-            case BTN_RESET_LONG:
+        case BTN_RESET:
+            ModelHandle_StartRestart();
+            break;
+        case BTN_RESET_LONG:
                 ModelHandle_ToggleManual();
                 break;
             case BTN_SELECT:
@@ -1354,6 +1378,8 @@ void Screen_HandleSwitches(void)
                 {
                     edit_countdown_min = 1;
                     ui = UI_COUNTDOWN_EDIT_MIN;
+                    last_repeat_time = 0;     // reset repeat timing
+                    screenNeedsRefresh = true;
                 }
                 break;
 
