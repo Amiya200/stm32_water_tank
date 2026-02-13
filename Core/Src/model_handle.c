@@ -757,37 +757,45 @@ static inline bool isAnyModeActive(void)
 }
 void ModelHandle_SoftDryRunHandler(void)
 {
+    /* If dry protection disabled globally */
     if (sys.gap_time_s == 0)
     {
         dryState = DRY_IDLE;
         return;
     }
 
-    uint32_t now = HAL_GetTick();
+    /* Dry protection only valid when AUTO or TIMER owns motor */
+    if (motorOwner != MOTOR_OWNER_AUTO &&
+        motorOwner != MOTOR_OWNER_TIMER)
+    {
+        dryState = DRY_IDLE;
+        return;
+    }
+
+    uint32_t now   = HAL_GetTick();
     uint32_t gapMs = (uint32_t)sys.gap_time_s * 1000UL;
 
-    ModelHandle_CheckDryRun();   // updates senseDryRun
-
+    ModelHandle_CheckDryRun();
     bool motorOn = Motor_GetStatus();
 
     /* ================= MOTOR RUNNING ================= */
     if (motorOn)
     {
-        /* Water present → clear dry state */
-        if (!senseDryRun)
+        /* Water Available */
+        if (senseDryRun)
         {
             dryState = DRY_IDLE;
             return;
         }
 
-        /* Water missing → start waiting */
+        /* No Water → Start waiting */
         if (dryState != DRY_WAITING)
         {
             dryState = DRY_WAITING;
             dryDeadline = now + gapMs;
         }
 
-        /* Timeout reached → STOP motor */
+        /* Timeout reached → Stop motor */
         if ((int32_t)(now - dryDeadline) >= 0)
         {
             stop_motor();
@@ -795,14 +803,13 @@ void ModelHandle_SoftDryRunHandler(void)
             Buzzer_TriggerAlert();
         }
     }
+    /* ================= MOTOR OFF ================= */
     else
     {
-        /* ================= MOTOR OFF ================= */
-
         if (dryState == DRY_FAULT)
         {
-            /* Clear fault when water returns */
-            if (!senseDryRun)
+            /* Water returned */
+            if (senseDryRun)
             {
                 dryState = DRY_IDLE;
             }
@@ -1226,6 +1233,7 @@ static void auto_tick(void)
 
     uint32_t now = HAL_GetTick();
     uint8_t  level = get_tank_level_percent();
+    at = now;
 
     ModelHandle_CheckGroundWater();
     ModelHandle_CheckDryRun();
@@ -1237,7 +1245,6 @@ static void auto_tick(void)
         senseMaxRunReached;
 
     /* ================= HARD STOP ================= */
-
     if (isTankFull() || protectionFault)
     {
         ModelHandle_StopAuto();
@@ -1263,6 +1270,18 @@ static void auto_tick(void)
             motorOwner = MOTOR_OWNER_AUTO;
             start_motor();
 
+            /* ---- If Water Available → Run Continuous ---- */
+            if (senseDryRun)
+            {
+                /* Reset retry counter */
+                auto_retry_count = 0;
+
+                /* Reset max run timer continuously */
+                autoRunStartMs = now;
+
+                return;   // 🚀 Ignore deadline completely
+            }
+
             /* ---- Max Run Protection ---- */
             if (auto_maxrun_min > 0)
             {
@@ -1277,16 +1296,11 @@ static void auto_tick(void)
                 }
             }
 
-            /* ---- ON duration expired ---- */
+            /* ---- ON duration expired (No Water Case) ---- */
             if (now >= autoDeadline)
             {
-                bool faultCondition =
-                    (!groundWater || (dryState == DRY_FAULT));
-
                 stop_motor();
-
-                if (faultCondition)
-                    auto_retry_count++;
+                auto_retry_count++;
 
                 autoDeadline = now + (gap * 1000UL);
                 autoState    = AUTO_OFF_WAIT;
