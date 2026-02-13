@@ -258,7 +258,7 @@ static void show_dash(void)
     const char* mode;
 
     if (ModelHandle_IsRestartActive())
-        mode = "RESTART";
+        mode = "POPUP";
     else if (ModelHandle_IsVoltageFault())
         mode = "VOLTERR";
     else if (ModelHandle_IsOverload())
@@ -1335,61 +1335,67 @@ void Screen_HandleSwitches(void)
     }
 
     /* =========================================================
-       BACK KEY – STRUCTURED DEVICE FLOW
+       RESET BUTTON HANDLING
+       RESET = Restart (only on DASH)
+       RESET = Back (on all other screens)
        ========================================================= */
     if (b == BTN_RESET)
     {
-        switch (ui)
+        refreshInactivityTimer();
+
+        if (ui == UI_DASH)
         {
-            /* Deep setting screens → DEVSET MENU */
-            case UI_SETTINGS_GAP:
-            case UI_SETTINGS_RETRY:
-            case UI_SETTINGS_UV:
-            case UI_SETTINGS_OV:
-            case UI_SETTINGS_OL:
-            case UI_SETTINGS_UL:
-            case UI_SETTINGS_MAXRUN:
-            case UI_SETTINGS_PWRREST:
-            case UI_SETTINGS_FACTORY:
-            case UI_DEVSET_EDIT_DATE:
-            case UI_DEVSET_EDIT_TIME:
-            case UI_DEVSET_EDIT_DAY:
-                ui = UI_DEVSET_MENU;
-                break;
+            /* 🔥 Short RESET on DASH = Restart */
+            ModelHandle_StartRestart();
+        }
+        else
+        {
+            /* 🔙 Back navigation */
+            switch (ui)
+            {
+                case UI_SETTINGS_GAP:
+                case UI_SETTINGS_RETRY:
+                case UI_SETTINGS_UV:
+                case UI_SETTINGS_OV:
+                case UI_SETTINGS_OL:
+                case UI_SETTINGS_UL:
+                case UI_SETTINGS_MAXRUN:
+                case UI_SETTINGS_PWRREST:
+                case UI_SETTINGS_FACTORY:
+                case UI_DEVSET_EDIT_DATE:
+                case UI_DEVSET_EDIT_TIME:
+                case UI_DEVSET_EDIT_DAY:
+                    ui = UI_DEVSET_MENU;
+                    break;
 
-            /* Device setup → Main menu */
-            case UI_DEVSET_MENU:
-                ui = UI_MENU;
-                break;
+                case UI_DEVSET_MENU:
+                    ui = UI_MENU;
+                    break;
 
-            /* Add device screens → Main menu */
-            case UI_ADD_DEVICE_MENU:
-            case UI_ADD_DEVICE_PAIR:
-            case UI_ADD_DEVICE_REMOVE:
-            case UI_ADD_DEVICE_PAIR_DONE:
-            case UI_ADD_DEVICE_REMOVE_DONE:
-                ui = UI_MENU;
-                break;
+                case UI_ADD_DEVICE_MENU:
+                case UI_ADD_DEVICE_PAIR:
+                case UI_ADD_DEVICE_REMOVE:
+                case UI_ADD_DEVICE_PAIR_DONE:
+                case UI_ADD_DEVICE_REMOVE_DONE:
+                    ui = UI_MENU;
+                    break;
 
-            /* Countdown edit → Countdown screen */
-            case UI_COUNTDOWN_EDIT_MIN:
-                ui = UI_COUNTDOWN;
-                break;
+                case UI_COUNTDOWN_EDIT_MIN:
+                    ui = UI_COUNTDOWN;
+                    break;
 
-            /* Countdown → Dash */
-            case UI_COUNTDOWN:
-                ui = UI_DASH;
-                break;
+                case UI_COUNTDOWN:
+                    ui = UI_DASH;
+                    break;
 
-            /* Main menu → Dash */
-            case UI_MENU:
-                ui = UI_DASH;
-                break;
+                case UI_MENU:
+                    ui = UI_DASH;
+                    break;
 
-            /* Default fallback */
-            default:
-                ui = UI_DASH;
-                break;
+                default:
+                    ui = UI_DASH;
+                    break;
+            }
         }
 
         screenNeedsRefresh = true;
@@ -1454,10 +1460,6 @@ void Screen_HandleSwitches(void)
     {
         switch (b)
         {
-            case BTN_RESET:
-                ModelHandle_StartRestart();
-                break;
-
             case BTN_RESET_LONG:
                 ModelHandle_ToggleManual();
                 break;
