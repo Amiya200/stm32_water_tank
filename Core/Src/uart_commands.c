@@ -3,10 +3,8 @@
 #include "model_handle.h"
 #include "relay.h"
 #include "rtc_i2c.h"
-#include "stm32f1xx_hal.h"
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 extern bool g_screenUpdatePending;
 extern TimerSlot timerSlots[5];
@@ -14,36 +12,17 @@ extern TimerSlot timerSlots[5];
 static inline void ack(const char *msg) { UART_TransmitPacket(msg); }
 static inline void err(const char *msg) { UART_TransmitPacket(msg); }
 
-/* ---------------------- Helpers ---------------------- */
-
-static void trim_newline(char *s)
-{
-    if (!s) return;
-    s[strcspn(s, "\r\n")] = 0;
-}
-
-static char* next_token(char** ctx)
-{
-    char* s = *ctx;
-    if (!s) return NULL;
-
-    char* colon = strchr(s, ':');
-    if (colon)
-    {
-        *colon = '\0';
-        *ctx = colon + 1;
-    }
-    else
-    {
-        *ctx = NULL;
-    }
-    return s;
-}
-
+/* =========================
+   Cached status report
+   ========================= */
+typedef struct {
+    uint8_t level;
+    uint8_t motorStatus;
+    char mode[12];
+} StatusSnapshot;
 static uint8_t parseDays(const char *daysStr)
 {
     uint8_t mask = 0;
-    if (!daysStr) return 0;
 
     if (strstr(daysStr, "mon")) mask |= (1 << 0);
     if (strstr(daysStr, "tue")) mask |= (1 << 1);
@@ -56,16 +35,21 @@ static uint8_t parseDays(const char *daysStr)
     return mask;
 }
 
-/* ---------------------- STATUS ---------------------- */
-
-typedef struct {
-    uint8_t level;
-    uint8_t motorStatus;
-    char mode[12];
-} StatusSnapshot;
-
 static StatusSnapshot lastSent = {255, 255, "INIT"};
 
+/* Simple ':'-based tokenizer (no strtok) */
+static char* next_token(char** ctx) {
+    char* s = *ctx;
+    if (!s) return NULL;
+    char* colon = strchr(s, ':');
+    if (colon) { *colon = '\0'; *ctx = colon + 1; }
+    else { *ctx = NULL; }
+    return s;
+}
+
+/* =========================
+   STATUS PACKET
+   ========================= */
 void UART_SendStatusPacket(void)
 {
     extern ADC_Data adcData;
@@ -75,23 +59,18 @@ void UART_SendStatusPacket(void)
     extern volatile bool timerActive;
     extern volatile bool countdownActive;
     extern volatile bool twistActive;
-    extern volatile bool autoActive;
 
     int submerged = 0;
-    for (int i = 0; i < 4; i++)
-    {
-        if (adcData.voltages[i] < 0.1f)
-            submerged++;
+    for (int i = 0; i < 5; i++) {
+        if (adcData.voltages[i] < 0.1f) submerged++;
     }
 
     const char *mode = "IDLE";
-
     if (manualActive)         mode = "MANUAL";
     else if (semiAutoActive)  mode = "SEMIAUTO";
     else if (timerActive)     mode = "TIMER";
     else if (countdownActive) mode = "COUNTDOWN";
     else if (twistActive)     mode = "TWIST";
-    else if (autoActive)      mode = "AUTO";
 
     bool changed =
         (lastSent.level != submerged) ||
@@ -103,7 +82,6 @@ void UART_SendStatusPacket(void)
     lastSent.level = submerged;
     lastSent.motorStatus = motorStatus;
     strncpy(lastSent.mode, mode, sizeof(lastSent.mode) - 1);
-    lastSent.mode[sizeof(lastSent.mode)-1] = '\0';
 
     char buf[80];
     snprintf(buf, sizeof(buf),
@@ -114,19 +92,19 @@ void UART_SendStatusPacket(void)
     UART_TransmitPacket(buf);
 }
 
-/* ---------------------- COMMAND HANDLER ---------------------- */
-
+/* =========================
+   COMMAND HANDLER
+   ========================= */
 void UART_HandleCommand(const char *pkt)
 {
     if (!pkt || !*pkt) return;
 
-    char buf[128];
+    char buf[UART_RX_BUFFER_SIZE];
     strncpy(buf, pkt, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
-    if (buf[0] == '@')
-        memmove(buf, buf + 1, strlen(buf));
-
+    /* remove wrappers like '@' and '#' */
+    if (buf[0] == '@') memmove(buf, buf + 1, strlen(buf));
     char *end = strchr(buf, '#');
     if (end) *end = '\0';
 
@@ -134,191 +112,240 @@ void UART_HandleCommand(const char *pkt)
     char *cmd = next_token(&ctx);
     if (!cmd) return;
 
-    trim_newline(cmd);
+    /* ---- BASIC ---- */
+    if (!strcmp(cmd, "PING")) { ack("PONG"); return; }
 
-    /* ---------------- PING ---------------- */
-    if (!strcmp(cmd, "PING"))
-    {
-        ack("PONG");
-        return;
-    }
-
-    /* ---------------- MANUAL ---------------- */
-    else if (!strcmp(cmd, "MANUAL"))
-    {
+    /* ---- MANUAL ---- */
+    else if (!strcmp(cmd, "MANUAL")) {
         char *state = next_token(&ctx);
-        trim_newline(state);
-
-        if (!state) { err("FORMAT"); return; }
-
-        if (!strcmp(state, "ON"))
-            ModelHandle_ToggleManual();
-        else if (!strcmp(state, "OFF"))
-            ModelHandle_StopAllModesAndMotor();
+        if (!state) { err("PARAM"); return; }
+        if (!strcmp(state, "ON"))  ModelHandle_ToggleManual();
+        else if (!strcmp(state, "OFF")) ModelHandle_StopAllModesAndMotor();
         else { err("FORMAT"); return; }
-
         ack("MANUAL_OK");
     }
+    /* ---- AUTO ---- */
 
-    /* ---------------- AUTO ---------------- */
-    else if (!strcmp(cmd, "AUTO"))
-    {
-        char *sub = next_token(&ctx);
-        trim_newline(sub);
+    else if (!strcmp(cmd, "AUTO")) {
+        char *s = next_token(&ctx);
+        if (!s) { err("ERR:AUTO"); return; }
 
-        if (!sub) { err("AUTO_FORMAT"); return; }
-
-        if (!strcmp(sub, "ON"))
-        {
-        	if (!ModelHandle_IsAutoActive()){
-                ModelHandle_StartAuto(
-                    ModelHandle_GetGapTime(),
-                    ModelHandle_GetMaxRunTime(),
-                    ModelHandle_GetRetryCount()
-                );
-                ack("AUTO_ON");
-        	}
-     }
-        else if (!strcmp(sub, "OFF"))
-        {
-            ModelHandle_StopAuto();
-            ack("AUTO_OFF");
+        if (!strcmp(s, "ON")) {
+            ModelHandle_StartAuto(
+                ModelHandle_GetGapTime(),
+                ModelHandle_GetMaxRunTime(),
+                ModelHandle_GetRetryCount()
+            );
+        } else {
+            ModelHandle_StopAllModesAndMotor();
         }
-        else if (!strcmp(sub, "SET"))
-        {
-            char *gapStr   = next_token(&ctx);
-            char *maxStr   = next_token(&ctx);
-            char *retryStr = next_token(&ctx);
 
-            if (!gapStr || !maxStr || !retryStr)
-            {
-                err("AUTO_SET_FORMAT");
-                return;
-            }
-
-            uint16_t gap   = atoi(gapStr);
-            uint16_t max   = atoi(maxStr);
-            uint8_t  retry = atoi(retryStr);
-
-            ModelHandle_SetAutoSettings(gap, max, retry);
-            ack("AUTO_SET_OK");
-        }
-        else
-        {
-            err("AUTO_FORMAT");
-        }
+        ack(!strcmp(s, "ON") ? "AUTO_ON" : "AUTO_OFF");
     }
 
-    /* ---------------- TIMER ---------------- */
-    else if (!strcmp(cmd, "TIMER"))
-    {
+
+
+
+    /* ---- TIMER (slot-based) ---- */
+    else if (!strcmp(cmd, "TIMER")) {
+
         char *sub = next_token(&ctx);
-        trim_newline(sub);
+        if (sub && !strcmp(sub, "SET")) {
 
-        if (sub && !strcmp(sub, "SET"))
-        {
-            char *slotStr   = next_token(&ctx);
-            char *daysStr   = next_token(&ctx);
-            char *h1s       = next_token(&ctx);
-            char *m1s       = next_token(&ctx);
-            char *h2s       = next_token(&ctx);
-            char *m2s       = next_token(&ctx);
-            char *enableStr = next_token(&ctx);
-            char *gapStr    = next_token(&ctx);
+            // Parse the command parameters
+            char *slotStr = next_token(&ctx);    // Slot number
+            char *daysStr = next_token(&ctx);    // Days (mon,tue,wed,...)
+            char *h1s = next_token(&ctx);        // On Hour
+            char *m1s = next_token(&ctx);        // On Minute
+            char *h2s = next_token(&ctx);        // Off Hour
+            char *m2s = next_token(&ctx);        // Off Minute
+            char *gapStr = next_token(&ctx);     // Gap Minutes
 
-            if (!slotStr || !daysStr || !h1s || !m1s ||
-                !h2s || !m2s || !enableStr || !gapStr)
-            {
+            if (!slotStr || !daysStr || !h1s || !m1s || !h2s || !m2s || !gapStr) {
                 err("TIMER_FORMAT");
                 return;
             }
 
+            // Convert each part to integers
             int slot = atoi(slotStr);
-            if (slot < 1 || slot > 5)
+            int h1 = atoi(h1s); // On Hour
+            int m1 = atoi(m1s); // On Minute
+            int h2 = atoi(h2s); // Off Hour
+            int m2 = atoi(m2s); // Off Minute
+            int gap = atoi(gapStr); // Gap Minutes
+
+            // Validate the parsed values
+            if (slot < 1 || slot > 5 ||
+                h1 < 0 || h1 > 23 ||
+                m1 < 0 || m1 > 59 ||
+                h2 < 0 || h2 > 23 ||
+                m2 < 0 || m2 > 59 ||
+                gap < 0 || gap > 60)  // Ensure gap is within 0-60 range
             {
                 err("TIMER_RANGE");
                 return;
             }
 
+            // Get the slot index (0-based)
             uint8_t idx = slot - 1;
 
-            timerSlots[idx].enabled    = atoi(enableStr);
-            timerSlots[idx].dayMask    = parseDays(daysStr);
-            timerSlots[idx].onHour     = atoi(h1s);
-            timerSlots[idx].onMinute   = atoi(m1s);
-            timerSlots[idx].offHour    = atoi(h2s);
-            timerSlots[idx].offMinute  = atoi(m2s);
-            timerSlots[idx].gapMinutes = atoi(gapStr);
+            // Store the parsed values into the corresponding TimerSlot
+            timerSlots[idx].enabled     = true;
+            timerSlots[idx].dayMask     = parseDays(daysStr);  // Parse days into a bitmask
+            timerSlots[idx].onHour      = h1;
+            timerSlots[idx].onMinute    = m1;
+            timerSlots[idx].offHour     = h2;
+            timerSlots[idx].offMinute   = m2;
+            timerSlots[idx].gapMinutes  = gap;  // Store the gapMinutes in the TimerSlot
 
+            // Start the timer (or whatever functionality you want to trigger)
             ModelHandle_StartTimer();
+
+            // Send acknowledgment
             ack("TIMER_OK");
         }
-        else if (sub && !strcmp(sub, "STOP"))
-        {
-            for (int i = 0; i < 5; i++)
-                timerSlots[i].enabled = 0;
 
-            ModelHandle_StopTimer();
+        else if (sub && !strcmp(sub, "STOP")) {
+            // Disable all timers
+            for (int i = 0; i < 5; i++)
+                timerSlots[i].enabled = false;
+
+            // Stop all modes and motor
+            ModelHandle_StopAllModesAndMotor();
+
+            // Acknowledge stop
             ack("TIMER_STOP");
         }
-        else
-        {
+        else {
+            // If the format is invalid
             err("FORMAT");
         }
     }
 
-    /* ---------------- SEMIAUTO ---------------- */
-    else if (!strcmp(cmd, "SEMIAUTO"))
-    {
-        char *sub = next_token(&ctx);
-        trim_newline(sub);
 
-        if (sub && !strcmp(sub, "ON"))
-        {
+    /* ---- SEMIAUTO ---- */
+    else if (!strcmp(cmd, "SEMIAUTO")) {
+        char *sub = next_token(&ctx);
+        if (sub && !strcmp(sub, "ON")) {
             ModelHandle_StartSemiAuto();
             ack("SEMIAUTO_ON");
         }
-        else if (sub && !strcmp(sub, "OFF"))
-        {
-            ModelHandle_StopSemiAuto();
+        else if (sub && !strcmp(sub, "OFF")) {
+            ModelHandle_StopAllModesAndMotor();
             ack("SEMIAUTO_OFF");
         }
         else err("FORMAT");
-    }
-
-    /* ---------------- COUNTDOWN ---------------- */
-    else if (!strcmp(cmd, "COUNTDOWN"))
-    {
-        char *sub = next_token(&ctx);
-        trim_newline(sub);
-
-        if (sub && !strcmp(sub, "ON"))
-        {
-            char *minStr = next_token(&ctx);
-            uint32_t min = minStr ? atoi(minStr) : 1;
-            if (min == 0) min = 1;
-
-            ModelHandle_StartCountdown(min * 60);
-            ack("COUNTDOWN_ON");
-        }
-        else if (sub && !strcmp(sub, "OFF"))
-        {
-            ModelHandle_StopCountdown();
-            ack("COUNTDOWN_OFF");
-        }
-        else err("FORMAT");
-    }
-
-    /* ---------------- STATUS ---------------- */
-    else if (!strcmp(cmd, "STATUS"))
-    {
-        UART_SendStatusPacket();
+        g_screenUpdatePending = true;
         return;
     }
 
-    else
+    /* ---- COUNTDOWN ---- */
+    else if (!strcmp(cmd, "COUNTDOWN")) {
+        char *sub = next_token(&ctx);
+        if (sub && !strcmp(sub, "ON")) {
+            uint16_t min = atoi(next_token(&ctx));
+            if (!min) min = 1;
+            ModelHandle_StartCountdown(min * 60, 1);
+            ack("COUNTDOWN_ON");
+        } else if (sub && !strcmp(sub, "OFF")) {
+            ModelHandle_StopCountdown();
+            ack("COUNTDOWN_OFF");
+        } else err("FORMAT");
+    }
+
+    /* ================= SETTINGS (CORRECT & SAFE) ================= */
+    else if (!strcmp(cmd, "SETTINGS"))
     {
-        err("UNKNOWN");
+        uint16_t dryRun  = 0;
+        uint16_t maxRun  = 0;
+        uint16_t lowV    = 190;
+        uint16_t highV   = 270;
+
+        int16_t  overLoad_i  = 0;
+        int16_t  underLoad_i = 0;
+
+        uint8_t  retry       = 0;
+        uint8_t  pwrRestore  = 0;
+
+        bool gotOverLoad  = false;
+        bool gotUnderLoad = false;
+
+        char *save;
+        char *kv = strtok_r(ctx, ":", &save);   // token stream
+
+        while (kv)
+        {
+            if      (sscanf(kv, "dryRunGap=%hu",  &dryRun)  == 1) {}
+            else if (sscanf(kv, "testingGap=%hhu",&retry)   == 1) {}
+            else if (sscanf(kv, "maxRun=%hu",     &maxRun)  == 1) {}
+            else if (sscanf(kv, "lowVolt=%hu",    &lowV)    == 1) {}
+            else if (sscanf(kv, "highVolt=%hu",   &highV)   == 1) {}
+
+            else if (sscanf(kv, "overLoad=%hd",   &overLoad_i) == 1)
+            {
+                gotOverLoad = true;
+            }
+            else if (sscanf(kv, "underLoad=%hd",  &underLoad_i) == 1)
+            {
+                gotUnderLoad = true;
+            }
+            else if (sscanf(kv, "powerRestore=%hhu", &pwrRestore) == 1) {}
+
+            kv = strtok_r(NULL, ":", &save);
+        }
+
+        /* ================== CLAMP VALUES ================== */
+
+        if (gotOverLoad)
+        {
+            if (overLoad_i < 0)  overLoad_i = 0;
+            if (overLoad_i > 25) overLoad_i = 25;   // max 25A
+        }
+
+        if (gotUnderLoad)
+        {
+            if (underLoad_i < 0)  underLoad_i = 0;
+            if (underLoad_i > 25) underLoad_i = 25;
+        }
+
+        /* ================== APPLY SETTINGS ================== */
+
+        ModelHandle_SetUserSettings(
+            dryRun * 60,   // minutes → seconds
+            retry,
+            lowV,
+            highV,
+            gotOverLoad  ? overLoad_i  : ModelHandle_GetOverloadLimit(),
+            gotUnderLoad ? underLoad_i : ModelHandle_GetUnderloadLimit(),
+            maxRun
+        );
+
+        ModelHandle_SetPowerRestoreMode(pwrRestore);
+
+        /* ================== ACK (FIXED) ================== */
+
+        char dbg[64];
+        snprintf(dbg, sizeof(dbg),
+                 "ACK:UL=%d OL=%d",
+                 gotUnderLoad ? underLoad_i : ModelHandle_GetUnderloadLimit(),
+                 gotOverLoad  ? overLoad_i  : ModelHandle_GetOverloadLimit());
+
+        UART_TransmitPacket(dbg);
+    }
+
+    /* ---- STATUS ---- */
+    else if (!strcmp(cmd, "STATUS")) {
+        static uint32_t lastReply = 0;
+        uint32_t now = HAL_GetTick();
+        if (now - lastReply >= 5000) {   // reply only once every 5 s
+            UART_SendStatusPacket();
+            lastReply = now;
+        }
+        return;
+    }
+
+    else {
+//        err("UNKNOWN");
         return;
     }
 

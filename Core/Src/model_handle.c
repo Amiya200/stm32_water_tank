@@ -1278,8 +1278,7 @@ static void auto_tick(void)
 
         case AUTO_ON_WAIT:
         {
-
-            /* AUTO MAX RUN LIMIT */
+        	start_motor();
             if (auto_maxrun_min > 0)
             {
                 uint32_t maxRunMs =
