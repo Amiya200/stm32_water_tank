@@ -462,33 +462,35 @@ static uint8_t get_tank_level_percent(void)
 }
 static bool isTankFull(void)
 {
-    static uint32_t stableStartTime = 0;
-    static bool     stableState     = false;
+
+    static uint8_t  lastRawLevel = 0;
+    static uint8_t  stableLevel  = 0;
+    static uint32_t levelTimer   = 0;
 
     uint32_t now = HAL_GetTick();
-
-    bool rawFullDetected =
-        (adcData.voltages[3] < PROBE_THRESHOLD);
-
-    if (rawFullDetected)
-    {
-        if (stableStartTime == 0)
-        {
-            stableStartTime = now;
-        }
-
-        if ((now - stableStartTime) >= SENSOR_STABLE_TIME_MS)
-        {
-            stableState = true;
-        }
-    }
+    uint8_t rawLevel = 0;
+    if (adcData.voltages[3] < PROBE_THRESHOLD)          // 100%
+        rawLevel = 100;
+    else if (adcData.voltages[2] < PROBE_THRESHOLD)     // 75%
+        rawLevel = 75;
+    else if (adcData.voltages[1] < PROBE_THRESHOLD)     // 50%
+        rawLevel = 50;
+    else if (adcData.voltages[0] < PROBE_THRESHOLD)     // 25%
+        rawLevel = 25;
     else
+        rawLevel = 0;
+    if (rawLevel != lastRawLevel)
     {
-        stableStartTime = 0;
-        stableState = false;
+        lastRawLevel = rawLevel;
+        levelTimer = now;
     }
 
-    return stableState;
+    if ((now - levelTimer) >= SENSOR_STABLE_TIME_MS)
+    {
+        stableLevel = rawLevel;
+    }
+
+    return stableLevel;
 }
 
 void ModelHandle_TimerRecalculateNow(void)
@@ -1157,7 +1159,8 @@ void ModelHandle_StartAuto(uint16_t gap_s,
 
     uint32_t now = HAL_GetTick();
 
-    uint32_t gap = (sys.gap_time_s == 0) ? 1 : sys.gap_time_s;
+    uint32_t gap = (auto_gap_s == 0) ? 1 : auto_gap_s;
+
 
     autoRunStartMs = now;
     autoDeadline   = now + (gap * 1000UL);
@@ -1260,7 +1263,8 @@ static void auto_tick(void)
         return;
     }
 
-    uint32_t gap = (sys.gap_time_s == 0) ? 1 : sys.gap_time_s;
+    uint32_t gap = (auto_gap_s == 0) ? 1 : auto_gap_s;
+
 
     switch (autoState)
     {
