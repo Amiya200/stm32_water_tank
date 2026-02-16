@@ -124,15 +124,18 @@ void UART_HandleCommand(const char *pkt)
     char *cmd = next_token(&ctx);
     if (!cmd) return;
 
+    /* ================= PING ================= */
     if (!strcmp(cmd, "PING"))
     {
         ack("PONG");
         return;
     }
 
+    /* ================= RESTART ================= */
     else if (!strcmp(cmd, "RESTART"))
     {
         char *sub = next_token(&ctx);
+
         if (sub && !strcmp(sub, "ON"))
         {
             ModelHandle_StartRestart();
@@ -146,6 +149,7 @@ void UART_HandleCommand(const char *pkt)
         else err("FORMAT");
     }
 
+    /* ================= MANUAL ================= */
     else if (!strcmp(cmd, "MANUAL"))
     {
         char *state = next_token(&ctx);
@@ -153,18 +157,22 @@ void UART_HandleCommand(const char *pkt)
 
         if (!strcmp(state, "ON"))
         {
-            ModelHandle_StopAllModesAndMotor();
-            ModelHandle_ToggleManual();
+            if (!ModelHandle_IsManualActive())
+                ModelHandle_ToggleManual();
+
             ack("MANUAL_ON");
         }
         else if (!strcmp(state, "OFF"))
         {
-            ModelHandle_StopAllModesAndMotor();
+            if (ModelHandle_IsManualActive())
+                ModelHandle_ToggleManual();
+
             ack("MANUAL_OFF");
         }
         else err("FORMAT");
     }
 
+    /* ================= SEMIAUTO ================= */
     else if (!strcmp(cmd, "SEMIAUTO"))
     {
         char *state = next_token(&ctx);
@@ -172,18 +180,18 @@ void UART_HandleCommand(const char *pkt)
 
         if (!strcmp(state, "ON"))
         {
-            ModelHandle_StopAllModesAndMotor();
             ModelHandle_StartSemiAuto();
             ack("SEMIAUTO_ON");
         }
         else if (!strcmp(state, "OFF"))
         {
-            ModelHandle_StopAllModesAndMotor();
+            ModelHandle_StopSemiAuto();
             ack("SEMIAUTO_OFF");
         }
         else err("FORMAT");
     }
 
+    /* ================= AUTO ================= */
     else if (!strcmp(cmd, "AUTO"))
     {
         char *state = next_token(&ctx);
@@ -206,9 +214,17 @@ void UART_HandleCommand(const char *pkt)
         else err("FORMAT");
     }
 
+    /* ================= TIMER ================= */
     else if (!strcmp(cmd, "TIMER"))
     {
         char *sub = next_token(&ctx);
+
+        if (sub && !strcmp(sub, "STOP"))
+        {
+            ModelHandle_StopTimer();
+            ack("TIMER_STOP");
+            return;
+        }
 
         if (sub && !strcmp(sub, "SET"))
         {
@@ -227,18 +243,7 @@ void UART_HandleCommand(const char *pkt)
             }
 
             int slot = atoi(slotStr);
-            int h1 = atoi(h1s);
-            int m1 = atoi(m1s);
-            int h2 = atoi(h2s);
-            int m2 = atoi(m2s);
-            int gap = atoi(gapStr);
-
-            if (slot < 1 || slot > 5 ||
-                h1 < 0 || h1 > 23 ||
-                m1 < 0 || m1 > 59 ||
-                h2 < 0 || h2 > 23 ||
-                m2 < 0 || m2 > 59 ||
-                gap < 0 || gap > 60)
+            if (slot < 1 || slot > 5)
             {
                 err("TIMER_RANGE");
                 return;
@@ -246,25 +251,21 @@ void UART_HandleCommand(const char *pkt)
 
             uint8_t idx = slot - 1;
 
-            timerSlots[idx].enabled = true;
-            timerSlots[idx].dayMask = parseDays(daysStr);
-            timerSlots[idx].onHour = h1;
-            timerSlots[idx].onMinute = m1;
-            timerSlots[idx].offHour = h2;
-            timerSlots[idx].offMinute = m2;
-            timerSlots[idx].gapMinutes = gap;
+            timerSlots[idx].enabled   = true;
+            timerSlots[idx].dayMask   = parseDays(daysStr);
+            timerSlots[idx].onHour    = atoi(h1s);
+            timerSlots[idx].onMinute  = atoi(m1s);
+            timerSlots[idx].offHour   = atoi(h2s);
+            timerSlots[idx].offMinute = atoi(m2s);
+            timerSlots[idx].gapMinutes = atoi(gapStr);
 
             ModelHandle_StartTimer();
             ack("TIMER_OK");
         }
-        else if (sub && !strcmp(sub, "STOP"))
-        {
-            ModelHandle_StopTimer();
-            ack("TIMER_STOP");
-        }
         else err("FORMAT");
     }
 
+    /* ================= COUNTDOWN ================= */
     else if (!strcmp(cmd, "COUNTDOWN"))
     {
         char *sub = next_token(&ctx);
@@ -288,6 +289,7 @@ void UART_HandleCommand(const char *pkt)
         else err("FORMAT");
     }
 
+    /* ================= STATUS ================= */
     else if (!strcmp(cmd, "STATUS"))
     {
         UART_SendStatusPacket();
