@@ -38,6 +38,11 @@ static uint16_t Timer_CRC16(const uint8_t *data, uint16_t len)
     }
     return crc;
 }
+#define MOTOR_START_DELAY_MS   10000UL
+#define TANK_FULL_DELAY_MS     10000UL
+static uint32_t bootStartBlockUntil = 0;
+static uint32_t tankFullDetectedAt  = 0;
+static bool     tankFullPendingStop = false;
 TimerSlot timerSlots[5];
 static uint32_t autoRunStartMs = 0;
 volatile bool manualActive    = false;
@@ -49,8 +54,6 @@ volatile bool autoActive      = false;
 #define DRY_PROBE_ON_MS   5000UL
 #define DRY_CONFIRM_MS    1500UL
 static uint32_t dryDeadline     = 0;
-static uint32_t dryConfirmStart = 0;
-static uint32_t dryOffGapMs     = 10000UL;
 #define LOAD_FAULT_CONFIRM_MS 3000UL
 #define LOAD_RETRY_RUN_MS     3000UL
 #define LOAD_LOCK_DEFAULT_MS (20UL * 60UL * 1000UL)
@@ -77,14 +80,13 @@ typedef struct {
     bool    twist_on;
     bool    auto_on;
     bool    motor_on;
-    uint8_t power_restore_mode; /* 0=YES, 1=NO, 2=LAST */
+    uint8_t power_restore_mode;
 } ModeState;
 static ModeState modeState;
 #define EE_ADDR_COUNTDOWN_BLOCK 0x0040
 #define EE_ADDR_MODE_BLOCK     0x0080
 #define EE_ADDR_AUTO_BLOCK     0x00C0
 #define CD_SIGNATURE 0xCD55
-static bool autoResumeBoot = false;
 void ModelHandle_CheckDryRun(void);
 void ModelHandle_CheckLoadFault(void);
 typedef enum {
@@ -94,7 +96,6 @@ typedef enum {
 } TimerState;
 static TimerState timerState = TIMER_STATE_ON;
 static uint32_t   timerStateDeadline = 0;
-static uint8_t AUTO_CRC(const uint8_t* d, uint16_t l);
 typedef struct{
     uint16_t sig;
     uint32_t remaining;
@@ -111,7 +112,6 @@ SystemSettings sys = {
     .underload   = 0.0f,
     .maxrun_min  = 300
 };
-static bool buzzerContinuous = false;
 static inline void start_motor(void);
 static inline void stop_motor(void);
 static inline void clear_all_modes(void);
@@ -126,7 +126,6 @@ static inline bool isAnyModeActive(void);
 static void     auto_tick(void);
 static void     countdown_tick(void);
 static void     twist_tick(void);
-static void     twist_time_logic(void);
 static void     leds_from_model(void);
 typedef enum {
     MOTOR_OWNER_NONE = 0,
@@ -136,16 +135,16 @@ typedef enum {
     MOTOR_OWNER_COUNTDOWN,
     MOTOR_OWNER_TWIST,
     MOTOR_OWNER_AUTO,
-    MOTOR_OWNER_RESTART     // <<< ADD THIS
+    MOTOR_OWNER_RESTART
 } MotorOwner;
 static volatile MotorOwner motorOwner = MOTOR_OWNER_NONE;
 typedef struct
 {
-    uint8_t pumpOnSound;     // 0 = OFF, 1 = ON
-    uint8_t tankFullSound;   // 0 = OFF, 1 = ON
-    uint8_t tankEmptySound;  // 0 = OFF, 1 = ON
+    uint8_t pumpOnSound;
+    uint8_t tankFullSound;
+    uint8_t tankEmptySound;
 } BuzzerSettings;
-static BuzzerSettings buzzerSettings = {1,1,1};   // default ON
+static BuzzerSettings buzzerSettings = {1,1,1};
 static uint32_t cd_deadline = 0;
 #define EE_ADDR_BUZZER_BLOCK 0x0500
 typedef enum {
@@ -170,7 +169,7 @@ typedef enum {
     AUTO_DRY_CHECK,
     AUTO_OFF_WAIT
 } AutoState;
-#define MODE_SWITCH_DELAY_MS  3000UL   // 3 sec delay (change as needed)
+#define MODE_SWITCH_DELAY_MS  3000UL
 static bool     modeSwitchPending = false;
 static uint32_t modeSwitchTime    = 0;
 static bool restartActive = false;
@@ -193,7 +192,7 @@ typedef struct __attribute__((packed))
 } AutoRuntimeBlock;
 static bool suppressAutoOneCycle = false;
 #define AUTO_START_LEVEL_PERCENT   50
-#define AUTO_STOP_LEVEL_PERCENT    100   // hysteresis
+#define AUTO_STOP_LEVEL_PERCENT    100
 static uint32_t loadTimer = 0;
 static uint8_t  loadRetryCount = 0;
 #ifndef EEPROM_PAGE_SIZE
@@ -211,7 +210,6 @@ void EEPROM_WriteBlockSafe(uint16_t addr, uint8_t *data, uint16_t len)
     {
         uint16_t page_space = EEPROM_PAGE_SIZE - (addr % EEPROM_PAGE_SIZE);
         uint16_t chunk = (len < page_space) ? len : page_space;
-
         HAL_I2C_Mem_Write(&hi2c2, EEPROM_I2C_ADDR, addr,
                           EEPROM_ADDR_SIZE, data, chunk, 1000);
         HAL_Delay(6);
@@ -224,56 +222,80 @@ void EEPROM_WriteBlockSafe(uint16_t addr, uint8_t *data, uint16_t len)
 typedef struct __attribute__((packed))
 {
     uint16_t sig;
-    uint8_t  gap;
+    uint16_t gap;
     uint8_t  retry;
     uint16_t uv;
     uint16_t ov;
-    uint8_t  maxrun;
+    uint16_t maxrun;
     uint16_t over10;
     uint16_t under10;
-    uint8_t  crc;
+    uint16_t crc;
 } SystemEEPROMBlock;
 
-#define EE_ADDR_SYS_BLOCK      0x0000
+#define EE_ADDR_SYS_BLOCK  0x0000
 #define SYS_SIG 0x5A5A
+static uint16_t SYS_CRC16(const uint8_t *data, uint16_t len)
+{
+    uint16_t crc = 0xFFFF;
 
-static bool autoStartedByUART = false;
-static uint32_t autoStartTime = 0;
+    while (len--)
+    {
+        crc ^= *data++;
+        for (uint8_t i = 0; i < 8; i++)
+            crc = (crc & 1) ?
+                  (crc >> 1) ^ 0xA001 :
+                  (crc >> 1);
+    }
+
+    return crc;
+}
+
 static bool autoBackgroundEnabled = true;
 void ModelHandle_SaveSettingsToEEPROM(void)
 {
     SystemEEPROMBlock b;
-    b.sig   = SYS_SIG;
-    b.gap   = sys.gap_time_s;
-    b.retry = sys.retry_count;
-    b.uv    = sys.uv_limit;
-    b.ov    = sys.ov_limit;
-    b.maxrun = sys.maxrun_min;
+    memset(&b, 0, sizeof(b));
+
+    b.sig     = SYS_SIG;
+    b.gap     = sys.gap_time_s;
+    b.retry   = sys.retry_count;
+    b.uv      = sys.uv_limit;
+    b.ov      = sys.ov_limit;
+    b.maxrun  = sys.maxrun_min;
     b.over10  = (uint16_t)(sys.overload * 10.0f);
     b.under10 = (uint16_t)(sys.underload * 10.0f);
 
-    b.crc = 0;
-    uint8_t *p = (uint8_t*)&b;
-    for(int i=0;i<sizeof(b)-1;i++) b.crc ^= p[i];
+    b.crc = SYS_CRC16((uint8_t*)&b, sizeof(b) - 2);
 
-    EEPROM_WriteBuffer(EE_ADDR_SYS_BLOCK, (uint8_t*)&b, sizeof(b));
+    EEPROM_WriteBlockSafe(EE_ADDR_SYS_BLOCK,
+                          (uint8_t*)&b,
+                          sizeof(b));
 }
+
 void ModelHandle_LoadSettingsFromEEPROM(void)
 {
     SystemEEPROMBlock b;
-    EEPROM_ReadBuffer(EE_ADDR_SYS_BLOCK, (uint8_t*)&b, sizeof(b));
-    uint8_t crc = 0;
-    uint8_t *p = (uint8_t*)&b;
-    for(int i=0;i<sizeof(b)-1;i++) crc ^= p[i];
-    if(b.sig != SYS_SIG || crc != b.crc) return;
+    EEPROM_ReadBuffer(EE_ADDR_SYS_BLOCK,
+                      (uint8_t*)&b,
+                      sizeof(b));
+
+    if (b.sig != SYS_SIG)
+        return;
+
+    uint16_t crc = SYS_CRC16((uint8_t*)&b, sizeof(b) - 2);
+
+    if (crc != b.crc)
+        return;
+
     sys.gap_time_s  = b.gap;
     sys.retry_count = b.retry;
     sys.uv_limit    = b.uv;
     sys.ov_limit    = b.ov;
     sys.maxrun_min  = b.maxrun;
-    sys.overload    = b.over10 / 10.0f;
+    sys.overload    = b.over10  / 10.0f;
     sys.underload   = b.under10 / 10.0f;
 }
+
 void ModelHandle_SaveModeState(void)
 {
     modeState.manual_on          = manualActive;
@@ -623,13 +645,17 @@ static uint32_t powerOnMs     = 0;
 void ModelHandle_OnPowerUp(void)
 {
     powerOnMs = HAL_GetTick();
-    bootBlockUntil = powerOnMs + 5000UL;
+
+    bootStartBlockUntil = powerOnMs + MOTOR_START_DELAY_MS;
+
     autoDeadline = 0;
+
     if (autoActive)
     {
         motorOwner = MOTOR_OWNER_AUTO;
     }
 }
+
 
 
 static inline bool Motor_IsRelayOn(void)
@@ -678,10 +704,17 @@ bool Motor_GetStatus(void)
 }
 static inline void start_motor(void)
 {
-	if (!restartActive &&
-	    timerActive &&
-	    timerState == TIMER_STATE_OFF)
-	    return;
+    uint32_t now = HAL_GetTick();
+
+    /* 10s delay after reset */
+    if (now < bootStartBlockUntil)
+        return;
+
+    if (!restartActive &&
+        timerActive &&
+        timerState == TIMER_STATE_OFF)
+        return;
+
     if (motorOwner == MOTOR_OWNER_NONE)
         return;
 
@@ -1457,27 +1490,6 @@ void ModelHandle_StopTwist(void)
     stop_motor();
     ModelHandle_SaveModeState();
 }
-static void twist_time_logic(void)
-{
-    if (!twistSettings.twistArmed) return;
-    if (!twistActive &&
-        time.hour == twistSettings.onHour &&
-        time.min  == twistSettings.onMinute)
-    {
-        twistActive = true;
-        twistSettings.twistActive = true;
-        twist_on_phase = true;
-        twist_deadline = now_ms() +
-                         twistSettings.onDurationSeconds * 1000UL;
-        start_motor();
-    }
-    if (twistActive &&
-        time.hour == twistSettings.offHour &&
-        time.min  == twistSettings.offMinute)
-    {
-        ModelHandle_StopTwist();
-    }
-}
 static void twist_tick(void)
 {
 	if (!twistActive) return;
@@ -1540,24 +1552,15 @@ static void leds_from_model(void)
 void ModelHandle_Process(void)
 {
     uint32_t now = HAL_GetTick();
-
-    /* =========================================================
-       1️⃣ DELAYED MODE SWITCH HANDLER
-    ========================================================== */
     if (modeSwitchPending)
     {
         if (now >= modeSwitchTime)
         {
             modeSwitchPending = false;
             motorOwner = pendingOwner;
-            start_motor();
         }
         return;
     }
-
-    /* =========================================================
-       2️⃣ GLOBAL SENSOR & PROTECTION CHECKS
-    ========================================================== */
     ModelHandle_CheckGroundWater();
     ModelHandle_CheckDryRun();
     ModelHandle_CheckLoadFault();
@@ -1569,18 +1572,7 @@ void ModelHandle_Process(void)
         senseUnderLoad ||
         senseOverUnderVolt ||
         senseMaxRunReached;
-
-    /* =========================================================
-       3️⃣ TIMER SLOT PROCESSING (HIGH PRIORITY MODE)
-    ========================================================== */
     ModelHandle_ProcessTimerSlots();
-
-    /* =========================================================
-       4️⃣ PRIORITY ENGINE (FINAL OWNER DECISION)
-       Priority Order:
-       Restart > Timer > Manual > Semi > Countdown > Twist > Auto
-    ========================================================== */
-
     if (restartActive)
         motorOwner = MOTOR_OWNER_RESTART;
     else if (timerActive)
@@ -1597,93 +1589,81 @@ void ModelHandle_Process(void)
         motorOwner = MOTOR_OWNER_AUTO;
     else
         motorOwner = MOTOR_OWNER_NONE;
-    switch (motorOwner)
+    if (Motor_GetStatus() && isTankFull())
     {
-    case MOTOR_OWNER_RESTART:
-    {
-        if (isTankFull() ||
-            senseOverLoad ||
-            senseUnderLoad ||
-            senseOverUnderVolt ||
-            senseMaxRunReached)
+        if (!tankFullPendingStop)
         {
-            ModelHandle_StopRestart();
+            tankFullPendingStop = true;
+            tankFullDetectedAt = now;
         }
-        else
+        if ((now - tankFullDetectedAt) >= TANK_FULL_DELAY_MS)
         {
-            start_motor();
+            stop_motor();
+            tankFullPendingStop = false;
         }
     }
-
+    else
+    {
+        tankFullPendingStop = false;
+    }
+    switch (motorOwner)
+    {
+        case MOTOR_OWNER_RESTART:
+        {
+            if (protectionFault)
+            {
+                ModelHandle_StopRestart();
+            }
+            else
+            {
+                if (!isTankFull())
+                    start_motor();
+            }
+        }
         break;
-
         case MOTOR_OWNER_MANUAL:
         {
-            start_motor();
-
-            if (senseOverUnderVolt ||
-                senseMaxRunReached)
-            {
+            if (!protectionFault)
+                start_motor();
+            else
                 stop_motor();
-            }
         }
         break;
-
         case MOTOR_OWNER_SEMIAUTO:
         {
-            start_motor();
-
-            if (isTankFull() ||
-                senseDryRun ||
-                senseOverLoad ||
-                senseUnderLoad ||
-                senseOverUnderVolt ||
-                senseMaxRunReached)
-            {
+            if (protectionFault || senseDryRun)
                 stop_motor();
-            }
+            else
+                start_motor();
         }
         break;
-
         case MOTOR_OWNER_TIMER:
         {
-            if (isTankFull() ||
-                senseDryRun ||
-                senseOverLoad ||
-                senseUnderLoad ||
-                senseOverUnderVolt ||
-                senseMaxRunReached)
-            {
+            if (protectionFault || senseDryRun)
                 stop_motor();
-            }
         }
         break;
-
         case MOTOR_OWNER_COUNTDOWN:
         {
             countdown_tick();
         }
         break;
-
         case MOTOR_OWNER_TWIST:
         {
             twist_tick();
         }
         break;
-
         case MOTOR_OWNER_AUTO:
         {
             auto_tick();
         }
         break;
-
         default:
         {
             stop_motor();
         }
         break;
     }
-
     if (motorOwner == MOTOR_OWNER_NONE ||
         motorOwner == MOTOR_OWNER_AUTO)
     {
@@ -1697,7 +1677,6 @@ DryFSMState ModelHandle_GetDryState(void)
 {
     return dryState;
 }
-
 
 void ModelHandle_ResetAll(void)
 {
@@ -1727,12 +1706,6 @@ void ModelHandle_SetUserSettings(uint16_t gap_s,
     sys.underload = (float)underload;
     sys.maxrun_min = maxrun_min;
     ModelHandle_SaveSettingsToEEPROM();
-}
-static uint8_t AUTO_CRC(const uint8_t* d, uint16_t l)
-{
-    uint8_t c = 0;
-    while(l--) c ^= *d++;
-    return c;
 }
 
 void ModelHandle_SetAutoSettings(uint16_t gap_s,

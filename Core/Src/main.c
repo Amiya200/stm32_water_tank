@@ -115,44 +115,36 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 /**
   * @brief  The application entry point.
   */
+void EEPROM_ClearAll(void)
+{
+    uint8_t zero[16];
+    memset(zero, 0xFF, sizeof(zero));
+
+    for (uint16_t addr = 0; addr < 0x0800; addr += 16)
+    {
+        EEPROM_WriteBlockSafe(addr, zero, 16);
+        HAL_Delay(5);
+    }
+}
 
 int main(void)
 {
-    /* USER CODE BEGIN 1 */
-    /* USER CODE END 1 */
-
-
-	HAL_Init();
+    HAL_Init();
     SystemClock_Config();
-    ModelHandle_OnPowerUp();
-    /* Initialize HAL peripherals */
+
+    /* ================== PERIPHERAL INIT ================== */
     MX_GPIO_Init();
     MX_ADC1_Init();
     MX_SPI1_Init();
     MX_USART1_UART_Init();
     MX_I2C2_Init();
     MX_TIM3_Init();
+
     RTC_Init();
-    /* Set time ONLY ONCE — comment this line after first flash */
-//    RTC_SetTimeDate(0, 54, 10, 5, 6, 2, 2026);
-    Timer_EEPROM_EnsureValid();
-    RTC_GetTimeDate();
     lcd_init();
     ADC_Init(&hadc1);
     LoRa_Init();
-    HAL_Delay(50);
-    ModelHandle_LoadSettingsFromEEPROM();
-    HAL_Delay(50);
-    ModelHandle_LoadAutoSettings();
-    HAL_Delay(50);
-    ModelHandle_LoadTimerFromEEPROM();
-    HAL_Delay(50);
-    ModelHandle_LoadModeState();
-    HAL_Delay(50);
-    ModelHandle_LoadCountdown();
-    HAL_Delay(50);
-    ModelHandle_LoadTimerFromEEPROM();
-    HAL_Delay(50);
+
     Screen_Init();
     UART_Init();
     Switches_Init();
@@ -160,30 +152,57 @@ int main(void)
     LED_Init();
     ACS712_Init(&hadc1);
 
+    HAL_Delay(100);   // Allow EEPROM + I2C stable
+
+    /* ================== EEPROM LOAD SECTION ================== */
+    EEPROM_ClearAll();
+    HAL_Delay(100);
+
+    Timer_EEPROM_EnsureValid();
+
+    ModelHandle_LoadSettingsFromEEPROM();
+    ModelHandle_LoadAutoSettings();
+    ModelHandle_LoadTimerFromEEPROM();
+    ModelHandle_LoadModeState();
+    ModelHandle_LoadCountdown();
+    ModelHandle_LoadBuzzerSettings();
+
+    HAL_Delay(50);
+
+    /* ================== NOW START POWER-UP LOGIC ================== */
+
+    ModelHandle_OnPowerUp();
+
+    RTC_GetTimeDate();
+
     loraMode = LORA_MODE_RECEIVER;
-    /* USER CODE END 2 */
-    /* Infinite loop */
+
+    /* ================== MAIN LOOP ================== */
     while (1)
     {
-//    	LoRa_Task();
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
-        Screen_HandleSwitches();
-        Screen_Update();
+
         RTC_GetTimeDate();
-        ModelHandle_CheckAutoTimerActivation();
+
+        /* UART */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
-        ModelHandle_CheckDryRun();
+
+        /* CORE ENGINE */
+        ModelHandle_CheckAutoTimerActivation();
         ModelHandle_Process();
-        ModelHandle_ProcessDryRun();
+
+        /* UI */
+        Screen_HandleSwitches();
+        Screen_Update();
         LED_Task();
+
         HAL_Delay(10);
     }
-    /* USER CODE BEGIN 3 */
 }
 
 /**
