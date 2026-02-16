@@ -95,5 +95,9 @@ void ModelHandle_SaveTimerState(void);
 extern void ModelHandle_StartRestart(void);
 extern bool ModelHandle_IsRestartActive(void);
 void ModelHandle_ManualToggleMotor(void);
+bool     ModelHandle_IsManualActive(void);
+uint16_t ModelHandle_GetAutoGap(void);
+uint16_t ModelHandle_GetAutoMaxRun(void);
+uint8_t  ModelHandle_GetAutoRetry(void);
 
 #endif /* MODEL_HANDLE_H */

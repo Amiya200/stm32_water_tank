@@ -220,38 +220,6 @@ void EEPROM_WriteBlockSafe(uint16_t addr, uint8_t *data, uint16_t len)
         len  -= chunk;
     }
 }
-static void request_mode_switch(MotorOwner newOwner)
-{
-    stop_motor();                     // immediately stop
-    modeSwitchPending = true;
-    modeSwitchTime = HAL_GetTick() + MODE_SWITCH_DELAY_MS;
-    pendingOwner = newOwner;
-}
-void ModelHandle_StartRestart(void)
-{
-    if (isTankFull())
-        return;
-
-    restartActive = true;
-    motorOwner = MOTOR_OWNER_RESTART;
-    start_motor();
-}
-
-
-
-void ModelHandle_StopRestart(void)
-{
-    if (!restartActive)
-        return;
-
-    restartActive = false;
-
-    stop_motor();
-
-    motorOwner = MOTOR_OWNER_NONE;
-}
-
-
 
 typedef struct __attribute__((packed))
 {
@@ -358,6 +326,32 @@ static void restore_previous_mode(void)
 
     if (isAnyModeActive())
         start_motor();
+}
+
+static void request_mode_switch(MotorOwner newOwner)
+{
+    stop_motor();                     // immediately stop
+    modeSwitchPending = true;
+    modeSwitchTime = HAL_GetTick() + MODE_SWITCH_DELAY_MS;
+    pendingOwner = newOwner;
+}
+void ModelHandle_StartRestart(void)
+{
+    if (isTankFull())
+        return;
+    backup_current_mode();
+    restartActive = true;
+    motorOwner    = MOTOR_OWNER_RESTART;
+    start_motor();
+}
+void ModelHandle_StopRestart(void)
+{
+    if (!restartActive)
+        return;
+    restartActive = false;
+    stop_motor();
+    restore_previous_mode();
+    ModelHandle_SaveModeState();
 }
 
 void ModelHandle_LoadModeState(void)
@@ -613,10 +607,8 @@ static inline void clear_all_modes(void)
     autoActive      = false;
     manualOverride  = false;
     countdownMode   = false;
-
-    /* 🔴 CRITICAL FIX */
-    autoBackgroundEnabled = false;
 }
+
 
 static uint32_t motorOnStartMs = 0;
 static uint32_t powerOnMs     = 0;
@@ -737,6 +729,11 @@ static inline bool isAnyModeActive(void)
 }
 void ModelHandle_SoftDryRunHandler(void)
 {
+    if (countdownActive)
+    {
+        dryState = DRY_IDLE;
+        return;
+    }
     if (sys.gap_time_s == 0)
     {
         dryState = DRY_IDLE;
@@ -800,12 +797,7 @@ static inline uint32_t get_load_lock_duration_ms(void)
 
 void ModelHandle_CheckLoadFault(void)
 {
-    /* Only check when motor is actually running */
-    if (!Motor_GetStatus())
-        return;
-
-    /* Allow protection for AUTO and TIMER explicitly */
-    if (!(autoActive || timerActive))
+	if (!Motor_GetStatus())
         return;
 
     float I = g_currentA;
@@ -823,9 +815,7 @@ void ModelHandle_CheckLoadFault(void)
     bool fault = overload || underload || voltFault;
     uint32_t now = HAL_GetTick();
 
-    uint32_t lockMs = (timerActive && timer_any_active_slot())
-                        ? TIMER_RETRY_30MIN_MS
-                        : get_load_lock_duration_ms();
+    uint32_t lockMs = get_load_lock_duration_ms();
 
     switch (loadState)
     {
@@ -860,10 +850,9 @@ void ModelHandle_CheckLoadFault(void)
             else if ((now - loadTimer) >= lockMs && loadRetryCount < 1)
             {
                 loadRetryCount++;
-                if (autoActive ||
-                    (timerActive && timerState == TIMER_STATE_ON))
+
+                if (isAnyModeActive())
                 {
-                    motorOwner = autoActive ? MOTOR_OWNER_AUTO : MOTOR_OWNER_TIMER;
                     start_motor();
                 }
 
@@ -891,6 +880,7 @@ void ModelHandle_CheckLoadFault(void)
             break;
     }
 }
+
 static uint8_t get_today_mask(void)
 {
     uint8_t d = time.dow;
@@ -972,9 +962,13 @@ void ModelHandle_ProcessTimerSlots(void)
     if (!timerActive && slotActive)
     {
         backup_current_mode();
-        clear_all_modes();
 
+        clear_all_modes();      // clear first
+        senseMaxRunReached = false;   // 🔥 ADD THIS
         timerActive = true;
+        autoActive  = false;    // ensure auto disabled
+        autoState   = AUTO_IDLE;
+
         motorOwner  = MOTOR_OWNER_TIMER;
         timerState  = TIMER_STATE_ON;
         timerStateDeadline = 0;
@@ -983,7 +977,6 @@ void ModelHandle_ProcessTimerSlots(void)
     /* ================= EXIT TIMER MODE ================= */
     if (timerActive && !slotActive)
     {
-        motorOwner = MOTOR_OWNER_TIMER;
         stop_motor();
 
         timerActive = false;
@@ -997,32 +990,23 @@ void ModelHandle_ProcessTimerSlots(void)
 
     if (!timerActive)
         return;
+
     if (isTankFull() ||
         senseOverLoad ||
         senseUnderLoad ||
         senseOverUnderVolt ||
-        senseMaxRunReached ||
-        (senseDryRun == false))
-
+        senseMaxRunReached)
     {
         stop_motor();
         return;
     }
 
-    /* ================= GAP SELECTION LOGIC ================= */
     uint16_t slotGap = get_active_timer_gap_minutes();
     uint16_t mainGap = sys.gap_time_s / 60;
 
-    uint16_t appliedGapMin = 0;
-
-    if (slotGap > 0)
-        appliedGapMin = slotGap;
-    else if (mainGap > 0)
-        appliedGapMin = mainGap;
-
+    uint16_t appliedGapMin = (slotGap > 0) ? slotGap : mainGap;
     uint32_t gapMs = appliedGapMin * 60UL * 1000UL;
 
-    /* ================= NO GAP MODE (Continuous ON) ================= */
     if (gapMs == 0)
     {
         motorOwner = MOTOR_OWNER_TIMER;
@@ -1030,11 +1014,9 @@ void ModelHandle_ProcessTimerSlots(void)
         return;
     }
 
-    /* ================= GAP MODE ================= */
     switch (timerState)
     {
         case TIMER_STATE_ON:
-
             if (timerStateDeadline == 0)
             {
                 timerStateDeadline = now + gapMs;
@@ -1051,7 +1033,6 @@ void ModelHandle_ProcessTimerSlots(void)
         break;
 
         case TIMER_STATE_OFF:
-
             if (now >= timerStateDeadline)
             {
                 timerState = TIMER_STATE_ON;
@@ -1092,10 +1073,12 @@ void ModelHandle_CheckAutoTimerActivation(void)
 }
 void ModelHandle_StartSemiAuto(void)
 {
+    restartActive = false;
     clear_all_modes();
+    timerActive = false;
+    autoActive  = false;
     semiAutoActive = true;
     motorOwner     = MOTOR_OWNER_SEMIAUTO;
-
     start_motor();
     ModelHandle_SaveModeState();
 }
@@ -1170,19 +1153,16 @@ static void auto_mode_background_control(void)
 {
     if (!autoBackgroundEnabled)
         return;
-
+    if (timerActive)
+        return;
     uint32_t now = HAL_GetTick();
-
     if (now < bootBlockUntil)
         return;
-
     if (manualActive || semiAutoActive ||
-        timerActive || countdownActive ||
-        twistActive)
+        countdownActive || twistActive ||
+        autoActive)
         return;
-
     uint8_t level = get_tank_level_percent();
-
     if (!autoActive &&
         level <= AUTO_START_LEVEL_PERCENT)
     {
@@ -1192,7 +1172,6 @@ static void auto_mode_background_control(void)
             auto_retry_limit
         );
     }
-
     if (autoActive &&
         level >= AUTO_STOP_LEVEL_PERCENT)
     {
@@ -1335,6 +1314,8 @@ void ModelHandle_StartCountdown(uint32_t seconds)
 
     clear_all_modes();
 
+    senseMaxRunReached = false;   // ✅ ADD THIS
+
     countdownActive   = true;
     countdownMode     = true;
     countdownDuration = seconds;
@@ -1345,6 +1326,7 @@ void ModelHandle_StartCountdown(uint32_t seconds)
 
     ModelHandle_SaveModeState();
 }
+
 
 void ModelHandle_StopCountdown(void)
 {
@@ -1362,7 +1344,6 @@ static void countdown_tick(void)
 
     uint32_t now = now_ms();
 
-    /* ================= SAFETY STOP ================= */
     if (isTankFull() ||
         senseOverLoad ||
         senseUnderLoad ||
@@ -1374,22 +1355,19 @@ static void countdown_tick(void)
         return;
     }
 
-    /* ================= TIME EXPIRED ================= */
     if (now >= cd_deadline)
     {
         ModelHandle_StopCountdown();
         return;
     }
 
-    /* ================= UPDATE REMAINING TIME ================= */
     uint32_t remainingMs = cd_deadline - now;
     countdownDuration = remainingMs / 1000UL;
 
-    /* ================= PERIODIC EEPROM SAVE ================= */
     static uint32_t lastSaveMs = 0;
 
-    /* Save every 2 seconds to protect EEPROM life */
-    if ((now - lastSaveMs) >= 2000UL)
+    /* Save every 30 seconds instead of 2 seconds */
+    if ((now - lastSaveMs) >= 30000UL)
     {
         SaveCountdown();
         lastSaveMs = now;
@@ -1568,6 +1546,9 @@ void ModelHandle_Process(void)
 {
     uint32_t now = HAL_GetTick();
 
+    /* =========================================================
+       1️⃣ DELAYED MODE SWITCH HANDLER
+    ========================================================== */
     if (modeSwitchPending)
     {
         if (now >= modeSwitchTime)
@@ -1579,6 +1560,9 @@ void ModelHandle_Process(void)
         return;
     }
 
+    /* =========================================================
+       2️⃣ GLOBAL SENSOR & PROTECTION CHECKS
+    ========================================================== */
     ModelHandle_CheckGroundWater();
     ModelHandle_CheckDryRun();
     ModelHandle_CheckLoadFault();
@@ -1591,102 +1575,140 @@ void ModelHandle_Process(void)
         senseOverUnderVolt ||
         senseMaxRunReached;
 
-    /* ================= RESTART ================= */
+    /* =========================================================
+       3️⃣ TIMER SLOT PROCESSING (HIGH PRIORITY MODE)
+    ========================================================== */
+    ModelHandle_ProcessTimerSlots();
+
+    /* =========================================================
+       4️⃣ PRIORITY ENGINE (FINAL OWNER DECISION)
+       Priority Order:
+       Restart > Timer > Manual > Semi > Countdown > Twist > Auto
+    ========================================================== */
+
     if (restartActive)
-    {
         motorOwner = MOTOR_OWNER_RESTART;
-
-        if (isTankFull() ||
-            protectionFault ||
-            (dryState == DRY_FAULT) ||
-            (senseDryRun == false))   // ❌ dry condition
-        	{
-            ModelHandle_StopRestart();
-            Buzzer_TriggerAlert();
-        }
-        else
-        {
-            start_motor();
-        }
-
-        leds_from_model();
-        Buzzer_Update();
-        return;
-    }
-    if (manualActive)
-    {
+    else if (timerActive)
+        motorOwner = MOTOR_OWNER_TIMER;
+    else if (manualActive)
         motorOwner = MOTOR_OWNER_MANUAL;
-        if (protectionFault)
-        {
-            stop_motor();
-            Buzzer_TriggerAlert();
-        }
-        else
-        {
-            start_motor();
-        }
-        leds_from_model();
-        Buzzer_Update();
-        return;
-    }
-    if (semiAutoActive)
-    {
+    else if (semiAutoActive)
         motorOwner = MOTOR_OWNER_SEMIAUTO;
-        if (isTankFull() ||
-            protectionFault ||
-            (senseDryRun == false))
-{
-            stop_motor();
-            Buzzer_TriggerAlert();
-        }
-        else
-        {
-            start_motor();
-        }
-        leds_from_model();
-        Buzzer_Update();
-        return;
-    }
-    if (timerActive)
-    {
-        ModelHandle_ProcessTimerSlots();
-        leds_from_model();
-        Buzzer_Update();
-        return;
-    }
-    if (countdownActive)
-    {
+    else if (countdownActive)
         motorOwner = MOTOR_OWNER_COUNTDOWN;
-        countdown_tick();
-        if (isTankFull() ||
-            protectionFault ||
-            (senseDryRun == false))
-{
-            ModelHandle_StopCountdown();
-            Buzzer_TriggerAlert();
-        }
-        else
-        {
-            start_motor();
-        }
-        leds_from_model();
-        Buzzer_Update();
-        return;
-    }
-    if (autoActive)
-    {
-        auto_tick();
-        leds_from_model();
-        Buzzer_Update();
-        return;
-    }
-    auto_mode_background_control();
-    if (!isAnyModeActive())
-    {
+    else if (twistActive)
+        motorOwner = MOTOR_OWNER_TWIST;
+    else if (autoActive)
+        motorOwner = MOTOR_OWNER_AUTO;
+    else
         motorOwner = MOTOR_OWNER_NONE;
-        stop_motor();
+
+    /* =========================================================
+       5️⃣ EXECUTION ENGINE
+    ========================================================== */
+
+    switch (motorOwner)
+    {
+        /* ================= RESTART ================= */
+        case MOTOR_OWNER_RESTART:
+        {
+            if (isTankFull() || protectionFault)
+            {
+                ModelHandle_StopRestart();
+            }
+            else
+            {
+                start_motor();
+            }
+        }
+        break;
+
+        case MOTOR_OWNER_MANUAL:
+        {
+            if (protectionFault)
+            {
+                stop_motor();
+            }
+            else
+            {
+                start_motor();
+            }
+        }
+        break;
+        case MOTOR_OWNER_SEMIAUTO:
+        {
+            if (isTankFull() || protectionFault)
+            {
+                stop_motor();
+            }
+            else
+            {
+                start_motor();
+            }
+        }
+        break;
+
+
+        /* ================= TIMER ================= */
+        case MOTOR_OWNER_TIMER:
+        {
+            /* Timer mode already controls motor internally */
+            if (protectionFault || isTankFull())
+                stop_motor();
+        }
+        break;
+
+        /* ================= COUNTDOWN ================= */
+        case MOTOR_OWNER_COUNTDOWN:
+        {
+            countdown_tick();
+
+            if (isTankFull() || protectionFault)
+            {
+                ModelHandle_StopCountdown();
+            }
+        }
+        break;
+
+        /* ================= TWIST ================= */
+        case MOTOR_OWNER_TWIST:
+        {
+            twist_tick();
+
+            if (protectionFault)
+                stop_motor();
+        }
+        break;
+
+        /* ================= AUTO ================= */
+        case MOTOR_OWNER_AUTO:
+        {
+            auto_tick();
+        }
+        break;
+
+        /* ================= NONE ================= */
+        case MOTOR_OWNER_NONE:
+        default:
+        {
+            stop_motor();
+        }
+        break;
     }
 
+    /* =========================================================
+       6️⃣ AUTO BACKGROUND START LOGIC
+       (Only when no strong owner active)
+    ========================================================== */
+    if (motorOwner == MOTOR_OWNER_NONE ||
+        motorOwner == MOTOR_OWNER_AUTO)
+    {
+        auto_mode_background_control();
+    }
+
+    /* =========================================================
+       7️⃣ UI UPDATE
+    ========================================================== */
     leds_from_model();
     Buzzer_Update();
 }
@@ -1836,3 +1858,22 @@ bool ModelHandle_IsTankFull(void)
 {
     return isTankFull();
 }
+bool ModelHandle_IsManualActive(void)
+{
+    return manualActive;
+}
+uint16_t ModelHandle_GetAutoGap(void)
+{
+    return auto_gap_s;
+}
+
+uint16_t ModelHandle_GetAutoMaxRun(void)
+{
+    return auto_maxrun_min;
+}
+
+uint8_t ModelHandle_GetAutoRetry(void)
+{
+    return auto_retry_limit;
+}
+
