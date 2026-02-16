@@ -159,7 +159,7 @@ static bool previousManual    = false;
 static bool previousSemi      = false;
 static bool previousCountdown = false;
 static bool previousAuto      = false;
-static uint16_t auto_gap_s       = 10;
+static uint16_t auto_gap_s = 120;
 static uint16_t auto_maxrun_min  = 12;
 static uint8_t  auto_retry_limit = 5;
 static uint8_t  auto_retry_count = 0;
@@ -653,6 +653,11 @@ void ModelHandle_OnPowerUp(void)
     if (autoActive)
     {
         motorOwner = MOTOR_OWNER_AUTO;
+        autoState = AUTO_ON_WAIT;
+        uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
+        uint32_t gapMs  = gapSec * 1000UL;
+        autoRunStartMs = HAL_GetTick();
+        autoDeadline   = autoRunStartMs + gapMs;
     }
 }
 
@@ -1133,35 +1138,33 @@ void ModelHandle_StopSemiAuto(void)
     stop_motor();
     ModelHandle_SaveModeState();
 }
-
 void ModelHandle_StartAuto(uint16_t gap_s,
                            uint16_t maxrun_min,
-                           uint16_t retry)
+                           uint8_t retry)
 {
     if (autoActive)
         return;
 
     clear_all_modes();
 
-    autoActive       = true;
-    autoBackgroundEnabled = true;
+    /* AUTO cycle now uses sys.gap_time_s */
     auto_maxrun_min  = maxrun_min;
     auto_retry_limit = retry;
     auto_retry_count = 0;
 
-    autoState = AUTO_ON_WAIT;
+    autoActive = true;
+    autoState  = AUTO_ON_WAIT;
 
     uint32_t now = HAL_GetTick();
 
-    uint32_t gap = (auto_gap_s == 0) ? 1 : auto_gap_s;
-
+    uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
+    uint32_t gapMs  = gapSec * 1000UL;
 
     autoRunStartMs = now;
-    autoDeadline   = now + (gap * 1000UL);
+    autoDeadline   = now + gapMs;
 
     request_mode_switch(MOTOR_OWNER_AUTO);
 }
-
 
 void ModelHandle_StopAuto(void)
 {
@@ -1181,17 +1184,33 @@ void ModelHandle_LoadAutoSettings(void)
     EEPROM_ReadBuffer(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
     EEPROM_ReadBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
 
-    /* ===== VALIDATION ===== */
+    /* HARD VALIDATION */
 
-    if (auto_gap_s == 0xFFFF || auto_gap_s > 3600)
-        auto_gap_s = 10;   // default 10 sec
+    if (auto_gap_s < 30 || auto_gap_s > 3600)
+    {
+        auto_gap_s = 120;   // force 2 min
+        EEPROM_WriteBlockSafe(0x0300,
+                              (uint8_t*)&auto_gap_s,
+                              sizeof(auto_gap_s));
+    }
 
     if (auto_maxrun_min == 0xFFFF || auto_maxrun_min > 600)
-        auto_maxrun_min = 30;  // default 30 min
+    {
+        auto_maxrun_min = 30;
+        EEPROM_WriteBlockSafe(0x0302,
+                              (uint8_t*)&auto_maxrun_min,
+                              sizeof(auto_maxrun_min));
+    }
 
     if (auto_retry_limit == 0xFF || auto_retry_limit > 20)
-        auto_retry_limit = 3;  // default 3 retry
+    {
+        auto_retry_limit = 3;
+        EEPROM_WriteBlockSafe(0x0304,
+                              (uint8_t*)&auto_retry_limit,
+                              sizeof(auto_retry_limit));
+    }
 }
+
 
 static void auto_mode_background_control(void)
 {
@@ -1210,11 +1229,12 @@ static void auto_mode_background_control(void)
     if (!autoActive &&
         level <= AUTO_START_LEVEL_PERCENT)
     {
-        ModelHandle_StartAuto(
-            auto_gap_s,
-            auto_maxrun_min,
-            auto_retry_limit
-        );
+    	ModelHandle_StartAuto(
+    	    sys.gap_time_s,
+    	    auto_maxrun_min,
+    	    auto_retry_limit
+    	);
+
     }
     if (autoActive &&
         level >= AUTO_STOP_LEVEL_PERCENT)
@@ -1229,6 +1249,10 @@ static void auto_tick(void)
         return;
 
     uint32_t now = HAL_GetTick();
+
+    /* MASTER GAP FROM sys.gap_time_s */
+    uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
+    uint32_t gapMs  = gapSec * 1000UL;
 
     ModelHandle_CheckGroundWater();
     ModelHandle_CheckDryRun();
@@ -1246,16 +1270,6 @@ static void auto_tick(void)
         return;
     }
 
-    if (auto_retry_limit > 0 &&
-        auto_retry_count >= auto_retry_limit)
-    {
-        ModelHandle_StopAuto();
-        Buzzer_TriggerAlert();
-        return;
-    }
-
-    uint32_t gap = (auto_gap_s == 0) ? 1 : auto_gap_s;
-
     switch (autoState)
     {
         case AUTO_ON_WAIT:
@@ -1263,53 +1277,26 @@ static void auto_tick(void)
             if (!groundWater)
             {
                 stop_motor();
+                autoDeadline = now + gapMs;
                 autoState = AUTO_OFF_WAIT;
-                autoDeadline = now + (gap * 1000UL);
                 return;
             }
 
             motorOwner = MOTOR_OWNER_AUTO;
             start_motor();
 
-            if (senseDryRun == true)
+            if (senseDryRun)
             {
-                auto_retry_count = 0;
-                autoDeadline = now + (gap * 1000UL);
-
-                if (auto_maxrun_min > 0)
-                {
-                    uint32_t maxRunMs =
-                        (uint32_t)auto_maxrun_min * 60000UL;
-
-                    if ((now - autoRunStartMs) >= maxRunMs)
-                    {
-                        ModelHandle_StopAuto();
-                        Buzzer_TriggerAlert();
-                        return;
-                    }
-                }
-
+                stop_motor();
+                autoDeadline = now + gapMs;
+                autoState = AUTO_OFF_WAIT;
                 return;
-            }
-
-            if (auto_maxrun_min > 0)
-            {
-                uint32_t maxRunMs =
-                    (uint32_t)auto_maxrun_min * 60000UL;
-
-                if ((now - autoRunStartMs) >= maxRunMs)
-                {
-                    ModelHandle_StopAuto();
-                    Buzzer_TriggerAlert();
-                    return;
-                }
             }
 
             if (now >= autoDeadline)
             {
                 stop_motor();
-                auto_retry_count++;
-                autoDeadline = now + (gap * 1000UL);
+                autoDeadline = now + gapMs;
                 autoState = AUTO_OFF_WAIT;
             }
         }
@@ -1319,19 +1306,9 @@ static void auto_tick(void)
         {
             stop_motor();
 
-            if (senseDryRun == true && groundWater)
-            {
-                auto_retry_count = 0;
-                autoRunStartMs = now;
-                autoDeadline = now + (gap * 1000UL);
-                autoState = AUTO_ON_WAIT;
-                return;
-            }
-
             if (now >= autoDeadline)
             {
-                autoRunStartMs = now;
-                autoDeadline = now + (gap * 1000UL);
+                autoDeadline = now + gapMs;
                 autoState = AUTO_ON_WAIT;
             }
         }
@@ -1690,7 +1667,7 @@ void ModelHandle_ResetAll(void)
     countdownDuration = 0;
     UART_SendStatusPacket();
 }
-void ModelHandle_SetUserSettings(uint16_t gap_s,
+void ModelHandle_SetUserSettings(uint16_t gap_minutes,
                                  uint8_t  retry,
                                  uint16_t uv_limit,
                                  uint16_t ov_limit,
@@ -1698,27 +1675,41 @@ void ModelHandle_SetUserSettings(uint16_t gap_s,
                                  int16_t  underload,
                                  uint16_t maxrun_min)
 {
-    sys.gap_time_s  = gap_s;
+    /* Convert minutes → seconds */
+    sys.gap_time_s  = (uint32_t)gap_minutes * 60UL;
+
     sys.retry_count = retry;
     sys.uv_limit    = uv_limit;
     sys.ov_limit    = ov_limit;
-    sys.overload  = (float)overload;
-    sys.underload = (float)underload;
-    sys.maxrun_min = maxrun_min;
+    sys.overload    = (float)overload;
+    sys.underload   = (float)underload;
+    sys.maxrun_min  = maxrun_min;
+
     ModelHandle_SaveSettingsToEEPROM();
+
+    /* LIVE UPDATE AUTO */
+    if (autoActive)
+    {
+        uint32_t now = HAL_GetTick();
+        uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
+        autoDeadline = now + (gapSec * 1000UL);
+    }
 }
 
 void ModelHandle_SetAutoSettings(uint16_t gap_s,
                                  uint16_t maxrun_min,
                                  uint8_t retry)
 {
-    auto_gap_s       = gap_s;
+    auto_gap_s       = (gap_s < 30) ? 120 : gap_s;
     auto_maxrun_min  = maxrun_min;
     auto_retry_limit = retry;
-    EEPROM_WriteBuffer(0x0300, (uint8_t*)&auto_gap_s, sizeof(auto_gap_s));
-    EEPROM_WriteBuffer(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
-    EEPROM_WriteBuffer(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
+
+    EEPROM_WriteBlockSafe(0x0300, (uint8_t*)&auto_gap_s, sizeof(auto_gap_s));
+    EEPROM_WriteBlockSafe(0x0302, (uint8_t*)&auto_maxrun_min, sizeof(auto_maxrun_min));
+    EEPROM_WriteBlockSafe(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit));
 }
+
+
 bool ModelHandle_IsAutoActive(void)
 {
     return autoActive;

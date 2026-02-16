@@ -72,7 +72,7 @@ void ModelHandle_ClearManualOverride(void);
 void Timer_EEPROM_EnsureValid(void);
 void ModelHandle_StartSemiAuto(void);
 static uint16_t SYS_CRC16(const uint8_t *d, uint16_t l);
-void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint16_t retry);
+void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry);
 void ModelHandle_StopAuto(void);
 void ModelHandle_StopAllModesAndMotor(void);
 bool Motor_GetStatus(void);
