@@ -196,6 +196,7 @@ typedef struct __attribute__((packed))
     uint8_t  crc;
 } AutoRuntimeBlock;
 static bool suppressAutoOneCycle = false;
+static uint32_t autoBootIgnoreUntil = 0;
 #define AUTO_START_LEVEL_PERCENT   50
 #define AUTO_STOP_LEVEL_PERCENT    100
 static uint32_t loadTimer = 0;
@@ -673,6 +674,7 @@ void ModelHandle_OnPowerUp(void)
     bootStartBlockUntil = powerOnMs + MOTOR_START_DELAY_MS;
 
     autoDeadline = 0;
+
     if (timer_any_active_slot())
     {
         timerActive = true;
@@ -685,15 +687,15 @@ void ModelHandle_OnPowerUp(void)
     if (autoActive)
     {
         motorOwner = MOTOR_OWNER_AUTO;
-        autoState = AUTO_ON_WAIT;
+        autoState  = AUTO_ON_WAIT;
 
         uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
         autoDeadline = HAL_GetTick() + (gapSec * 1000UL);
+
+        /* 🔥 Ignore groundwater for first 3 seconds after boot */
+        autoBootIgnoreUntil = HAL_GetTick() + 3000UL;
     }
 }
-
-
-
 
 static inline bool Motor_IsRelayOn(void)
 {
@@ -791,7 +793,7 @@ static void check_max_run(void)
 }
 void ModelHandle_CheckDryRun(void)
 {
-    if (manualActive || countdownActive)
+    if (manualActive)
     {
         senseDryRun = false;
         return;
@@ -1319,6 +1321,8 @@ static void auto_mode_background_control(void)
         ModelHandle_StopAuto();
     }
 }
+static uint32_t autoTestStartTime = 0;
+static bool     autoTestRunning   = false;
 
 static void auto_tick(void)
 {
@@ -1327,15 +1331,7 @@ static void auto_tick(void)
 
     uint32_t now = HAL_GetTick();
 
-    /* Use master gap from sys */
-    uint16_t slotGapMin = get_active_timer_gap_minutes();
-    uint32_t gapSec;
-
-    if (slotGapMin > 0)
-        gapSec = slotGapMin * 60UL;
-    else
-        gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
-
+    uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
     uint32_t gapMs  = gapSec * 1000UL;
 
     ModelHandle_CheckGroundWater();
@@ -1348,7 +1344,14 @@ static void auto_tick(void)
         senseMaxRunReached;
 
     /* ===== HARD STOP CONDITIONS ===== */
-    if (isTankFull() || protectionFault)
+    if (isTankFull())
+    {
+        ModelHandle_StopAuto();
+        Buzzer_TriggerAlert();
+        return;
+    }
+
+    if (protectionFault)
     {
         ModelHandle_StopAuto();
         Buzzer_TriggerAlert();
@@ -1357,30 +1360,32 @@ static void auto_tick(void)
 
     switch (autoState)
     {
-    /* ================= ON PHASE ================= */
+    /* ===================== ON PHASE ===================== */
     case AUTO_ON_WAIT:
     {
-        /* No groundwater → go OFF phase */
-        if (!groundWater)
+        /* Start motor if not running */
+        if (!Motor_GetStatus())
         {
-            stop_motor();
-            autoDeadline = now + gapMs;
-            autoState = AUTO_OFF_WAIT;
+            motorOwner = MOTOR_OWNER_AUTO;
+            start_motor();
+            autoTestStartTime = now;
+            autoTestRunning   = true;
             return;
         }
 
-        /* Ensure motor is running */
-        motorOwner = MOTOR_OWNER_AUTO;
-        start_motor();
+        /* Wait stabilization time before checking water */
+        if (autoTestRunning && ((now - autoTestStartTime) < gapMs))
+            return;
 
-        /* Dry condition detected */
-        if (!senseDryRun)
+        autoTestRunning = false;
+
+        /* 🔥 WATER CHECK AFTER STABILIZATION */
+        if (!groundWater || !senseDryRun)
         {
             stop_motor();
 
             auto_retry_count++;
 
-            /* Retry limit reached */
             if (auto_retry_count >= auto_retry_limit)
             {
                 ModelHandle_StopAuto();
@@ -1389,41 +1394,16 @@ static void auto_tick(void)
             }
 
             autoDeadline = now + gapMs;
-            autoState = AUTO_OFF_WAIT;
+            autoState    = AUTO_OFF_WAIT;
             return;
         }
 
-        /* Deadline reached */
-        if (now >= autoDeadline)
-        {
-            if (senseDryRun)
-            {
-                /* Water present → continue running */
-                autoDeadline = now + gapMs;
-                /* stay in AUTO_ON_WAIT */
-            }
-            else
-            {
-                /* Dry exactly at deadline */
-                stop_motor();
-
-                auto_retry_count++;
-
-                if (auto_retry_count >= auto_retry_limit)
-                {
-                    ModelHandle_StopAuto();
-                    Buzzer_TriggerAlert();
-                    return;
-                }
-
-                autoDeadline = now + gapMs;
-                autoState = AUTO_OFF_WAIT;
-            }
-        }
+        /* If water available → keep running until tank full */
+        /* No need to stop here */
     }
     break;
 
-    /* ================= OFF PHASE ================= */
+    /* ===================== OFF WAIT ===================== */
     case AUTO_OFF_WAIT:
     {
         stop_motor();
@@ -1431,13 +1411,12 @@ static void auto_tick(void)
         if (now >= autoDeadline)
         {
             autoState = AUTO_ON_WAIT;
-            autoDeadline = now + gapMs;
         }
     }
     break;
 
     default:
-        autoState = AUTO_IDLE;
+        autoState = AUTO_ON_WAIT;
     break;
     }
 }
@@ -1473,45 +1452,6 @@ static void countdown_tick(void)
         return;
 
     uint32_t now = now_ms();
-
-    bool dryEnabled      = (sys.gap_time_s  > 0);
-    bool overloadEnabled = (sys.overload    > 0.0f);
-    bool underloadEnabled= (sys.underload   > 0.0f);
-    bool voltEnabled     = (sys.uv_limit    > 0 ||
-                            sys.ov_limit    > 0);
-    bool maxrunEnabled   = (sys.maxrun_min  > 0);
-
-    bool stopRequired = false;
-
-    /* Tank Full always stops */
-    if (isTankFull())
-        stopRequired = true;
-
-    /* Dry run only if enabled */
-    if (dryEnabled && senseDryRun)
-        stopRequired = true;
-
-    /* Load protections only if enabled */
-    if (overloadEnabled && senseOverLoad)
-        stopRequired = true;
-
-    if (underloadEnabled && senseUnderLoad)
-        stopRequired = true;
-
-    if (voltEnabled && senseOverUnderVolt)
-        stopRequired = true;
-
-    if (maxrunEnabled && senseMaxRunReached)
-        stopRequired = true;
-
-    if (stopRequired)
-    {
-        ModelHandle_StopCountdown();
-        Buzzer_TriggerAlert();
-        return;
-    }
-
-    /* Normal countdown expiration */
     if (now >= cd_deadline)
     {
         ModelHandle_StopCountdown();
@@ -1520,8 +1460,6 @@ static void countdown_tick(void)
 
     uint32_t remainingMs = cd_deadline - now;
     countdownDuration = remainingMs / 1000UL;
-
-    start_motor();  // ensure motor keeps running
 }
 
 static uint16_t CD_CRC(const uint8_t* d,uint16_t l){
@@ -1652,6 +1590,19 @@ uint32_t ap = 0 ;
 #define RESTART_WATER_LOSS_CONFIRM_MS  5000UL   // 5 sec delay
 static uint32_t restartWaterLossStart = 0;
 static bool     restartWaterLossPending = false;
+#define COUNTDOWN_GAP_MS   15000UL   // 15 seconds fixed gap
+
+typedef enum {
+    CD_RUN_TEST = 0,
+    CD_WAIT_GAP,
+    CD_RUN_CONTINUOUS
+} CountdownState;
+
+static CountdownState cdState = CD_RUN_TEST;
+static uint32_t cdTestStartTime = 0;
+static uint32_t cdGapDeadline = 0;
+static uint32_t cdWaterLossStart = 0;
+static bool     cdWaterLossPending = false;
 
 void ModelHandle_Process(void)
 {
@@ -1954,6 +1905,89 @@ void ModelHandle_Process(void)
         break;
         case MOTOR_OWNER_COUNTDOWN:
         {
+            uint32_t gapMs = COUNTDOWN_GAP_MS;
+
+            /* ===== HARD STOP CONDITIONS ===== */
+            if (isTankFull() || protectionFault)
+            {
+                ModelHandle_StopCountdown();
+                Buzzer_TriggerAlert();
+                break;
+            }
+
+            /* ===== STATE MACHINE ===== */
+            switch (cdState)
+            {
+                /* ================= TEST PHASE ================= */
+                case CD_RUN_TEST:
+                {
+                    if (!Motor_GetStatus())
+                    {
+                        start_motor();
+                        cdTestStartTime = now;
+                        break;
+                    }
+
+                    /* Run motor for 15 sec before checking water */
+                    if ((now - cdTestStartTime) < gapMs)
+                        break;
+
+                    if (senseDryRun)
+                    {
+                        cdState = CD_RUN_CONTINUOUS;
+                        cdWaterLossPending = false;
+                    }
+                    else
+                    {
+                        stop_motor();
+                        cdState = CD_WAIT_GAP;
+                        cdGapDeadline = now + gapMs;
+                    }
+                }
+                break;
+
+                /* ================= WAIT GAP ================= */
+                case CD_WAIT_GAP:
+                {
+                    stop_motor();
+
+                    if (now >= cdGapDeadline)
+                        cdState = CD_RUN_TEST;
+                }
+                break;
+
+                /* ================= CONTINUOUS ================= */
+                case CD_RUN_CONTINUOUS:
+                {
+                    start_motor();
+
+                    if (!senseDryRun)
+                    {
+                        if (!cdWaterLossPending)
+                        {
+                            cdWaterLossPending = true;
+                            cdWaterLossStart = now;
+                        }
+
+                        if ((now - cdWaterLossStart) >= gapMs)
+                        {
+                            stop_motor();
+                            cdState = CD_WAIT_GAP;
+                            cdGapDeadline = now + gapMs;
+                            cdWaterLossPending = false;
+                        }
+                    }
+                    else
+                    {
+                        cdWaterLossPending = false;
+                    }
+                }
+                break;
+
+                default:
+                    cdState = CD_RUN_TEST;
+                break;
+            }
             countdown_tick();
         }
         break;
