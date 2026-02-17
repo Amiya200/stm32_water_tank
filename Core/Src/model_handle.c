@@ -1608,10 +1608,11 @@ static uint32_t cdTestStartTime = 0;
 static uint32_t cdGapDeadline = 0;
 static uint32_t cdWaterLossStart = 0;
 static bool     cdWaterLossPending = false;
-
+static bool dr;
 void ModelHandle_Process(void)
 {
     uint32_t now = HAL_GetTick();
+
     if (modeSwitchPending)
     {
         if (now >= modeSwitchTime)
@@ -1621,17 +1622,29 @@ void ModelHandle_Process(void)
         }
         return;
     }
+
     ModelHandle_CheckGroundWater();
     ModelHandle_CheckDryRun();
+
+    bool dryEnabled = (sys.gap_time_s > 0);
+    dr =  dryEnabled;
     ModelHandle_CheckLoadFault();
     check_max_run();
-    ModelHandle_SoftDryRunHandler();
+
+    /* 🔥 Only run soft dry handler if enabled */
+    if (dryEnabled)
+        ModelHandle_SoftDryRunHandler();
+
     bool protectionFault =
         senseOverLoad ||
         senseUnderLoad ||
         senseOverUnderVolt ||
         senseMaxRunReached;
+
     ModelHandle_ProcessTimerSlots();
+
+    /* ================= OWNER SELECTION ================= */
+
     if (restartActive)
         motorOwner = MOTOR_OWNER_RESTART;
     else if (timerActive)
@@ -1648,6 +1661,9 @@ void ModelHandle_Process(void)
         motorOwner = MOTOR_OWNER_AUTO;
     else
         motorOwner = MOTOR_OWNER_NONE;
+
+    /* ================= TANK FULL DELAY ================= */
+
     if (Motor_GetStatus() && isTankFull())
     {
         if (!tankFullPendingStop)
@@ -1655,6 +1671,7 @@ void ModelHandle_Process(void)
             tankFullPendingStop = true;
             tankFullDetectedAt = now;
         }
+
         if ((now - tankFullDetectedAt) >= TANK_FULL_DELAY_MS)
         {
             stop_motor();
@@ -1665,363 +1682,322 @@ void ModelHandle_Process(void)
     {
         tankFullPendingStop = false;
     }
+
+    /* ================= OWNER STATE MACHINE ================= */
+
     switch (motorOwner)
     {
+    /* =======================================================
+       RESTART MODE
+       ======================================================= */
     case MOTOR_OWNER_RESTART:
     {
-        uint32_t now = HAL_GetTick();
+        uint32_t gapMs = dryEnabled ?
+                         (uint32_t)sys.gap_time_s * 1000UL :
+                         0;
 
-        bool overloadEnabled  = (sys.overload    > 0.0f);
-        bool underloadEnabled = (sys.underload   > 0.0f);
-        bool voltEnabled      = (sys.uv_limit    > 0 || sys.ov_limit > 0);
-        bool maxrunEnabled    = (sys.maxrun_min  > 0);
-        uint32_t gapMs = (uint32_t)sys.gap_time_s * 1000UL;
-        if (gapMs == 0)
-            gapMs = 10000UL;
         if (isTankFull())
         {
             ModelHandle_StopRestart();
             Buzzer_TriggerAlert();
             break;
         }
-        if ((overloadEnabled  && senseOverLoad) ||
-            (underloadEnabled && senseUnderLoad) ||
-            (voltEnabled      && senseOverUnderVolt) ||
-            (maxrunEnabled    && senseMaxRunReached))
+
+        if (protectionFault)
         {
             stop_motor();
-            restartState    = RESTART_WAIT_GAP;
-            restartDeadline = now + gapMs;
+            if (dryEnabled)
+            {
+                restartState    = RESTART_WAIT_GAP;
+                restartDeadline = now + gapMs;
+            }
             break;
         }
+
         switch (restartState)
         {
-            case RESTART_RUN_TEST:
+        case RESTART_RUN_TEST:
+        {
+            start_motor();
+
+            if (!dryEnabled || senseDryRun)
             {
-                start_motor();
-                if (senseDryRun == true)
-                {
-                    restartState    = RESTART_RUN_CONTINUOUS;
-                    restartDeadline = 0;
-                    break;
-                }
-                if (restartDeadline == 0)
-                {
-                    restartDeadline = now + gapMs;
-                }
-                if (now >= restartDeadline)
-                {
-                    stop_motor();
-                    restartState    = RESTART_WAIT_GAP;
-                    restartDeadline = now + gapMs;
-                }
+                restartState = RESTART_RUN_CONTINUOUS;
+                restartDeadline = 0;
+                break;
             }
-            break;
-            case RESTART_WAIT_GAP:
+
+            if (restartDeadline == 0)
+                restartDeadline = now + gapMs;
+
+            if (dryEnabled && now >= restartDeadline)
             {
                 stop_motor();
-
-                if (now >= restartDeadline)
-                {
-                    restartState    = RESTART_RUN_TEST;
-                    restartDeadline = 0;
-                }
+                restartState    = RESTART_WAIT_GAP;
+                restartDeadline = now + gapMs;
             }
-            break;
+        }
+        break;
 
-            case RESTART_RUN_CONTINUOUS:
-            {
-                start_motor();
-                if (senseDryRun == false)
-                {
-                    if (!restartWaterLossPending)
-                    {
-                        restartWaterLossPending = true;
-                        restartWaterLossStart   = now;
-                    }
-                    if ((now - restartWaterLossStart) >= RESTART_WATER_LOSS_CONFIRM_MS)
-                    {
-                        stop_motor();
-                        restartState    = RESTART_WAIT_GAP;
-                        restartDeadline = now + gapMs;
+        case RESTART_WAIT_GAP:
+        {
+            stop_motor();
 
-                        restartWaterLossPending = false;
-                    }
-                }
-                else
-                {
-                    restartWaterLossPending = false;
-                }
-            }
-            break;
-            default:
+            if (!dryEnabled || now >= restartDeadline)
             {
                 restartState    = RESTART_RUN_TEST;
                 restartDeadline = 0;
             }
-            break;
+        }
+        break;
+
+        case RESTART_RUN_CONTINUOUS:
+        {
+            start_motor();
+
+            if (dryEnabled && !senseDryRun)
+            {
+                if (!restartWaterLossPending)
+                {
+                    restartWaterLossPending = true;
+                    restartWaterLossStart   = now;
+                }
+
+                if ((now - restartWaterLossStart) >= RESTART_WATER_LOSS_CONFIRM_MS)
+                {
+                    stop_motor();
+                    restartState    = RESTART_WAIT_GAP;
+                    restartDeadline = now + gapMs;
+                    restartWaterLossPending = false;
+                }
+            }
+            else
+            {
+                restartWaterLossPending = false;
+            }
+        }
+        break;
+
+        default:
+            restartState = RESTART_RUN_TEST;
+            restartDeadline = 0;
+        break;
         }
     }
     break;
 
-        case MOTOR_OWNER_MANUAL:
+    /* =======================================================
+       MANUAL
+       ======================================================= */
+    case MOTOR_OWNER_MANUAL:
+        if (!protectionFault)
+            start_motor();
+        else
+            stop_motor();
+    break;
+
+    /* =======================================================
+       SEMI AUTO
+       ======================================================= */
+    case MOTOR_OWNER_SEMIAUTO:
+    {
+        uint32_t gapMs = dryEnabled ?
+                         (uint32_t)sys.gap_time_s * 1000UL :
+                         0;
+
+        if (isTankFull() || protectionFault)
         {
-            if (!protectionFault)
-                start_motor();
-            else
-                stop_motor();
-        }
-        break;
-        case MOTOR_OWNER_SEMIAUTO:
-        {
-            uint32_t now = HAL_GetTick();
-
-            bool overloadEnabled  = (sys.overload    > 0.0f);
-            bool underloadEnabled = (sys.underload   > 0.0f);
-            bool voltEnabled      = (sys.uv_limit    > 0 || sys.ov_limit > 0);
-            bool maxrunEnabled    = (sys.maxrun_min  > 0);
-
-            uint32_t gapMs = (sys.gap_time_s == 0 ? 10 : sys.gap_time_s) * 1000UL;
-
-            /* ================= TANK FULL ================= */
-            if (isTankFull())
+            stop_motor();
+            if (dryEnabled)
             {
-                stop_motor();
-                semiState = SEMI_WAIT_GAP;
+                semiState    = SEMI_WAIT_GAP;
                 semiDeadline = now + gapMs;
-                Buzzer_TriggerAlert();
+            }
+            break;
+        }
+
+        switch (semiState)
+        {
+        case SEMI_RUN_TEST:
+        {
+            if (!Motor_GetStatus())
+            {
+                start_motor();
+                semiTestStartTime = now;
                 break;
             }
 
-            /* ================= HARD PROTECTION ================= */
-            if ((overloadEnabled  && senseOverLoad) ||
-                (underloadEnabled && senseUnderLoad) ||
-                (voltEnabled      && senseOverUnderVolt) ||
-                (maxrunEnabled    && senseMaxRunReached))
+            if (dryEnabled && (now - semiTestStartTime) < gapMs)
+                break;
+
+            if (!dryEnabled || senseDryRun)
+            {
+                semiState = SEMI_RUN_CONTINUOUS;
+                semiWaterLossPending = false;
+            }
+            else
             {
                 stop_motor();
                 semiState    = SEMI_WAIT_GAP;
                 semiDeadline = now + gapMs;
-                break;
-            }
-
-            switch (semiState)
-            {
-                /* ================= TEST PHASE ================= */
-                case SEMI_RUN_TEST:
-                {
-                	if (isTankFull())
-                	        {
-                	            stop_motor();
-                	            semiAutoActive = false;
-                	            semiState = SEMI_RUN_TEST;
-                	            semiWaterLossPending = false;
-                	            Buzzer_TriggerAlert();
-                	            break;
-                	        }
-
-                    if (!Motor_GetStatus())
-                    {
-                        start_motor();
-                        semiTestStartTime = now;
-                        break;
-                    }
-
-                    /* Wait for user-defined test duration */
-                    if ((now - semiTestStartTime) < gapMs)
-                    {
-                        break;
-                    }
-
-                    /* After test time → check water */
-                    if (senseDryRun == true)
-                    {
-                        semiState = SEMI_RUN_CONTINUOUS;
-                        semiWaterLossPending = false;
-                    }
-                    else
-                    {
-                        stop_motor();
-                        semiState    = SEMI_WAIT_GAP;
-                        semiDeadline = now + gapMs;
-                    }
-                }
-                break;
-
-                /* ================= WAIT GAP ================= */
-                case SEMI_WAIT_GAP:
-                {
-                    stop_motor();
-
-                    if (now >= semiDeadline)
-                    {
-                        semiState = SEMI_RUN_TEST;
-                    }
-                }
-                break;
-
-                /* ================= CONTINUOUS ================= */
-                case SEMI_RUN_CONTINUOUS:
-                {
-                    if (!Motor_GetStatus())
-                        start_motor();
-
-                    if (senseDryRun == false)
-                    {
-                        if (!semiWaterLossPending)
-                        {
-                            semiWaterLossPending = true;
-                            semiWaterLossStart   = now;
-                        }
-
-                        if ((now - semiWaterLossStart) >= gapMs)
-                        {
-                            stop_motor();
-                            semiState    = SEMI_WAIT_GAP;
-                            semiDeadline = now + gapMs;
-                            semiWaterLossPending = false;
-                        }
-                    }
-                    else
-                    {
-                        semiWaterLossPending = false;
-                    }
-                }
-                break;
-
-                default:
-                {
-                    semiState = SEMI_RUN_TEST;
-                    semiTestStartTime = 0;
-                    semiWaterLossPending = false;
-                }
-                break;
             }
         }
         break;
 
-
-
-        case MOTOR_OWNER_TIMER:
-        {
-            if (protectionFault || isTankFull())
-                stop_motor();
-        }
-        break;
-        case MOTOR_OWNER_COUNTDOWN:
-        {
-            uint32_t gapMs = COUNTDOWN_GAP_MS;
-
-            /* ===== HARD STOP CONDITIONS ===== */
-            if (isTankFull() || protectionFault)
-            {
-                ModelHandle_StopCountdown();
-                Buzzer_TriggerAlert();
-                break;
-            }
-
-            /* ===== STATE MACHINE ===== */
-            switch (cdState)
-            {
-                /* ================= TEST PHASE ================= */
-                case CD_RUN_TEST:
-                {
-                    if (!Motor_GetStatus())
-                    {
-                        start_motor();
-                        cdTestStartTime = now;
-                        break;
-                    }
-
-                    /* Run motor for 15 sec before checking water */
-                    if ((now - cdTestStartTime) < gapMs)
-                        break;
-
-                    if (senseDryRun)
-                    {
-                        cdState = CD_RUN_CONTINUOUS;
-                        cdWaterLossPending = false;
-                    }
-                    else
-                    {
-                        stop_motor();
-                        cdState = CD_WAIT_GAP;
-                        cdGapDeadline = now + gapMs;
-                    }
-                }
-                break;
-
-                /* ================= WAIT GAP ================= */
-                case CD_WAIT_GAP:
-                {
-                    stop_motor();
-
-                    if (now >= cdGapDeadline)
-                        cdState = CD_RUN_TEST;
-                }
-                break;
-
-                /* ================= CONTINUOUS ================= */
-                case CD_RUN_CONTINUOUS:
-                {
-                    start_motor();
-
-                    if (!senseDryRun)
-                    {
-                        if (!cdWaterLossPending)
-                        {
-                            cdWaterLossPending = true;
-                            cdWaterLossStart = now;
-                        }
-
-                        if ((now - cdWaterLossStart) >= gapMs)
-                        {
-                            stop_motor();
-                            cdState = CD_WAIT_GAP;
-                            cdGapDeadline = now + gapMs;
-                            cdWaterLossPending = false;
-                        }
-                    }
-                    else
-                    {
-                        cdWaterLossPending = false;
-                    }
-                }
-                break;
-
-                default:
-                    cdState = CD_RUN_TEST;
-                break;
-            }
-            countdown_tick();
-        }
-        break;
-        case MOTOR_OWNER_TWIST:
-        {
-            twist_tick();
-        }
-        break;
-        case MOTOR_OWNER_AUTO:
-        {
-            auto_tick();
-        }
-        break;
-        default:
+        case SEMI_WAIT_GAP:
         {
             stop_motor();
+            if (!dryEnabled || now >= semiDeadline)
+                semiState = SEMI_RUN_TEST;
         }
         break;
+
+        case SEMI_RUN_CONTINUOUS:
+        {
+            start_motor();
+
+            if (dryEnabled && !senseDryRun)
+            {
+                if (!semiWaterLossPending)
+                {
+                    semiWaterLossPending = true;
+                    semiWaterLossStart = now;
+                }
+
+                if ((now - semiWaterLossStart) >= gapMs)
+                {
+                    stop_motor();
+                    semiState = SEMI_WAIT_GAP;
+                    semiDeadline = now + gapMs;
+                    semiWaterLossPending = false;
+                }
+            }
+            else
+            {
+                semiWaterLossPending = false;
+            }
+        }
+        break;
+
+        default:
+            semiState = SEMI_RUN_TEST;
+        break;
+        }
     }
+    break;
+
+    /* =======================================================
+       TIMER
+       ======================================================= */
+    case MOTOR_OWNER_TIMER:
+        if (protectionFault || isTankFull())
+            stop_motor();
+    break;
+
+    /* =======================================================
+       COUNTDOWN
+       ======================================================= */
+    case MOTOR_OWNER_COUNTDOWN:
+    {
+        uint32_t gapMs = COUNTDOWN_GAP_MS;
+
+        if (isTankFull() || protectionFault)
+        {
+            ModelHandle_StopCountdown();
+            Buzzer_TriggerAlert();
+            break;
+        }
+
+        switch (cdState)
+        {
+        case CD_RUN_TEST:
+        {
+            if (!Motor_GetStatus())
+            {
+                start_motor();
+                cdTestStartTime = now;
+                break;
+            }
+
+            if ((now - cdTestStartTime) < gapMs)
+                break;
+
+            if (!dryEnabled || senseDryRun)
+            {
+                cdState = CD_RUN_CONTINUOUS;
+                cdWaterLossPending = false;
+            }
+            else
+            {
+                stop_motor();
+                cdState = CD_WAIT_GAP;
+                cdGapDeadline = now + gapMs;
+            }
+        }
+        break;
+
+        case CD_WAIT_GAP:
+            stop_motor();
+            if (now >= cdGapDeadline)
+                cdState = CD_RUN_TEST;
+        break;
+
+        case CD_RUN_CONTINUOUS:
+        {
+            start_motor();
+
+            if (dryEnabled && !senseDryRun)
+            {
+                if (!cdWaterLossPending)
+                {
+                    cdWaterLossPending = true;
+                    cdWaterLossStart = now;
+                }
+
+                if ((now - cdWaterLossStart) >= gapMs)
+                {
+                    stop_motor();
+                    cdState = CD_WAIT_GAP;
+                    cdGapDeadline = now + gapMs;
+                    cdWaterLossPending = false;
+                }
+            }
+            else
+            {
+                cdWaterLossPending = false;
+            }
+        }
+        break;
+
+        default:
+            cdState = CD_RUN_TEST;
+        break;
+        }
+
+        countdown_tick();
+    }
+    break;
+
+    case MOTOR_OWNER_TWIST:
+        twist_tick();
+    break;
+
+    case MOTOR_OWNER_AUTO:
+        auto_tick();
+    break;
+
+    default:
+        stop_motor();
+    break;
+    }
+
     if (motorOwner == MOTOR_OWNER_NONE ||
         motorOwner == MOTOR_OWNER_AUTO)
     {
         auto_mode_background_control();
 
-        /* Re-evaluate auto after schedule re-opens */
         if (autoActive && is_schedule_allowing_run())
-        {
             autoState = AUTO_ON_WAIT;
-        }
     }
 
     leds_from_model();
