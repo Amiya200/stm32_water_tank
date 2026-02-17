@@ -113,6 +113,7 @@ SystemSettings sys = {
     .underload   = 0.0f,
     .maxrun_min  = 300
 };
+static uint32_t semiTestStartTime = 0;
 static inline void start_motor(void);
 static inline void stop_motor(void);
 static inline void clear_all_modes(void);
@@ -745,14 +746,23 @@ static inline void start_motor(void)
 {
     uint32_t now = HAL_GetTick();
 
-    if (now < bootStartBlockUntil)
+    if (now < bootStartBlockUntil &&
+        motorOwner != MOTOR_OWNER_MANUAL &&
+        motorOwner != MOTOR_OWNER_SEMIAUTO &&
+        motorOwner != MOTOR_OWNER_TIMER &&
+        motorOwner != MOTOR_OWNER_COUNTDOWN &&
+        motorOwner != MOTOR_OWNER_TWIST)
+    {
         return;
+    }
 
     if (motorOwner == MOTOR_OWNER_NONE)
         return;
 
     motor_apply(true);
 }
+
+
 
 
 static inline void stop_motor(void)
@@ -781,7 +791,7 @@ static void check_max_run(void)
 }
 void ModelHandle_CheckDryRun(void)
 {
-    if (manualActive || semiAutoActive || countdownActive)
+    if (manualActive || countdownActive)
     {
         senseDryRun = false;
         return;
@@ -1170,15 +1180,35 @@ void ModelHandle_CheckAutoTimerActivation(void)
         start_motor();
     }
 }
+typedef enum {
+    SEMI_RUN_TEST = 0,
+    SEMI_WAIT_GAP,
+    SEMI_RUN_CONTINUOUS
+} SemiState;
+
+static SemiState semiState = SEMI_RUN_TEST;
+static uint32_t  semiDeadline = 0;
+
+static uint32_t semiWaterLossStart = 0;
+static bool     semiWaterLossPending = false;
+
 void ModelHandle_StartSemiAuto(void)
 {
     restartActive = false;
+
     clear_all_modes();
-    timerActive = false;
-    autoActive  = false;
+
     semiAutoActive = true;
     motorOwner     = MOTOR_OWNER_SEMIAUTO;
+
+    semiState      = SEMI_RUN_TEST;
+    semiDeadline   = 0;
+    semiWaterLossPending = false;
+
+    senseMaxRunReached = false;
+
     start_motor();
+
     ModelHandle_SaveModeState();
 }
 
@@ -1788,28 +1818,133 @@ void ModelHandle_Process(void)
         break;
         case MOTOR_OWNER_SEMIAUTO:
         {
+            uint32_t now = HAL_GetTick();
+
+            bool overloadEnabled  = (sys.overload    > 0.0f);
+            bool underloadEnabled = (sys.underload   > 0.0f);
+            bool voltEnabled      = (sys.uv_limit    > 0 || sys.ov_limit > 0);
+            bool maxrunEnabled    = (sys.maxrun_min  > 0);
+
+            uint32_t gapMs = (sys.gap_time_s == 0 ? 10 : sys.gap_time_s) * 1000UL;
+
+            /* ================= TANK FULL ================= */
             if (isTankFull())
             {
                 stop_motor();
-
-                semiAutoActive = false;
-                motorOwner     = MOTOR_OWNER_NONE;
-
-                ModelHandle_SaveModeState();
+                semiState = SEMI_WAIT_GAP;
+                semiDeadline = now + gapMs;
                 Buzzer_TriggerAlert();
-
                 break;
             }
-            if (protectionFault || senseDryRun)
+
+            /* ================= HARD PROTECTION ================= */
+            if ((overloadEnabled  && senseOverLoad) ||
+                (underloadEnabled && senseUnderLoad) ||
+                (voltEnabled      && senseOverUnderVolt) ||
+                (maxrunEnabled    && senseMaxRunReached))
             {
                 stop_motor();
+                semiState    = SEMI_WAIT_GAP;
+                semiDeadline = now + gapMs;
+                break;
             }
-            else
+
+            switch (semiState)
             {
-                start_motor();
+                /* ================= TEST PHASE ================= */
+                case SEMI_RUN_TEST:
+                {
+                	if (isTankFull())
+                	        {
+                	            stop_motor();
+                	            semiAutoActive = false;
+                	            semiState = SEMI_RUN_TEST;
+                	            semiWaterLossPending = false;
+                	            Buzzer_TriggerAlert();
+                	            break;
+                	        }
+
+                    if (!Motor_GetStatus())
+                    {
+                        start_motor();
+                        semiTestStartTime = now;
+                        break;
+                    }
+
+                    /* Wait for user-defined test duration */
+                    if ((now - semiTestStartTime) < gapMs)
+                    {
+                        break;
+                    }
+
+                    /* After test time → check water */
+                    if (senseDryRun == true)
+                    {
+                        semiState = SEMI_RUN_CONTINUOUS;
+                        semiWaterLossPending = false;
+                    }
+                    else
+                    {
+                        stop_motor();
+                        semiState    = SEMI_WAIT_GAP;
+                        semiDeadline = now + gapMs;
+                    }
+                }
+                break;
+
+                /* ================= WAIT GAP ================= */
+                case SEMI_WAIT_GAP:
+                {
+                    stop_motor();
+
+                    if (now >= semiDeadline)
+                    {
+                        semiState = SEMI_RUN_TEST;
+                    }
+                }
+                break;
+
+                /* ================= CONTINUOUS ================= */
+                case SEMI_RUN_CONTINUOUS:
+                {
+                    if (!Motor_GetStatus())
+                        start_motor();
+
+                    if (senseDryRun == false)
+                    {
+                        if (!semiWaterLossPending)
+                        {
+                            semiWaterLossPending = true;
+                            semiWaterLossStart   = now;
+                        }
+
+                        if ((now - semiWaterLossStart) >= gapMs)
+                        {
+                            stop_motor();
+                            semiState    = SEMI_WAIT_GAP;
+                            semiDeadline = now + gapMs;
+                            semiWaterLossPending = false;
+                        }
+                    }
+                    else
+                    {
+                        semiWaterLossPending = false;
+                    }
+                }
+                break;
+
+                default:
+                {
+                    semiState = SEMI_RUN_TEST;
+                    semiTestStartTime = 0;
+                    semiWaterLossPending = false;
+                }
+                break;
             }
         }
         break;
+
+
 
         case MOTOR_OWNER_TIMER:
         {
