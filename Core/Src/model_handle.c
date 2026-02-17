@@ -359,21 +359,6 @@ static void request_mode_switch(MotorOwner newOwner)
     modeSwitchTime = HAL_GetTick() + MODE_SWITCH_DELAY_MS;
     pendingOwner = newOwner;
 }
-void ModelHandle_StartRestart(void)
-{
-    if (isTankFull())
-        return;
-
-    backup_current_mode();
-
-    restartActive = true;
-    motorOwner    = MOTOR_OWNER_RESTART;
-
-    senseMaxRunReached = false;
-
-    start_motor();
-}
-
 void ModelHandle_StopRestart(void)
 {
     if (!restartActive)
@@ -448,6 +433,13 @@ void Timer_EEPROM_EnsureValid(void)
 }
 #define PROBE_THRESHOLD 0.30f
 #define SENSOR_STABLE_TIME_MS 1500UL
+static bool is_schedule_allowing_run(void)
+{
+    if (!timer_any_active_slot())
+        return false;
+
+    return true;
+}
 
 static uint8_t read_raw_tank_level(void)
 {
@@ -490,6 +482,28 @@ static uint8_t get_tank_level_percent(void)
 static bool isTankFull(void)
 {
     return (get_tank_level_percent() == 100);
+}
+
+void ModelHandle_StartRestart(void)
+{
+    if (isTankFull())
+        return;
+
+    backup_current_mode();
+
+    restartActive = true;
+    motorOwner    = MOTOR_OWNER_RESTART;
+
+    senseMaxRunReached = false;
+
+    /* Calculate remaining percentage */
+    uint8_t currentLevel = get_tank_level_percent();
+    uint8_t remaining = 100 - currentLevel;
+
+    if (remaining == 0)
+        return;
+
+    start_motor();
 }
 
 void ModelHandle_TimerRecalculateNow(void)
@@ -1276,7 +1290,14 @@ static void auto_tick(void)
     uint32_t now = HAL_GetTick();
 
     /* Use master gap from sys */
-    uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
+    uint16_t slotGapMin = get_active_timer_gap_minutes();
+    uint32_t gapSec;
+
+    if (slotGapMin > 0)
+        gapSec = slotGapMin * 60UL;
+    else
+        gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
+
     uint32_t gapMs  = gapSec * 1000UL;
 
     ModelHandle_CheckGroundWater();
@@ -1757,7 +1778,14 @@ void ModelHandle_Process(void)
         motorOwner == MOTOR_OWNER_AUTO)
     {
         auto_mode_background_control();
+
+        /* Re-evaluate auto after schedule re-opens */
+        if (autoActive && is_schedule_allowing_run())
+        {
+            autoState = AUTO_ON_WAIT;
+        }
     }
+
     leds_from_model();
     Buzzer_Update();
 }
