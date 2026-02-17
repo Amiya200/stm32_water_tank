@@ -1289,6 +1289,8 @@ void ModelHandle_LoadAutoSettings(void)
                               sizeof(auto_retry_limit));
     }
 }
+static uint32_t autoWaterLossStart = 0;
+static bool     autoWaterLossPending = false;
 
 
 static void auto_mode_background_control(void)
@@ -1342,8 +1344,6 @@ static void auto_tick(void)
         senseUnderLoad ||
         senseOverUnderVolt ||
         senseMaxRunReached;
-
-    /* ===== HARD STOP CONDITIONS ===== */
     if (isTankFull())
     {
         ModelHandle_StopAuto();
@@ -1360,10 +1360,8 @@ static void auto_tick(void)
 
     switch (autoState)
     {
-    /* ===================== ON PHASE ===================== */
     case AUTO_ON_WAIT:
     {
-        /* Start motor if not running */
         if (!Motor_GetStatus())
         {
             motorOwner = MOTOR_OWNER_AUTO;
@@ -1372,38 +1370,45 @@ static void auto_tick(void)
             autoTestRunning   = true;
             return;
         }
-
-        /* Wait stabilization time before checking water */
         if (autoTestRunning && ((now - autoTestStartTime) < gapMs))
             return;
 
         autoTestRunning = false;
-
-        /* 🔥 WATER CHECK AFTER STABILIZATION */
+        /* Water loss detection with confirmation */
         if (!groundWater || !senseDryRun)
         {
-            stop_motor();
-
-            auto_retry_count++;
-
-            if (auto_retry_count >= auto_retry_limit)
+            if (!autoWaterLossPending)
             {
-                ModelHandle_StopAuto();
-                Buzzer_TriggerAlert();
-                return;
+                autoWaterLossPending = true;
+                autoWaterLossStart = now;
             }
 
-            autoDeadline = now + gapMs;
-            autoState    = AUTO_OFF_WAIT;
-            return;
-        }
+            /* Confirm loss for gap time */
+            if ((now - autoWaterLossStart) >= gapMs)
+            {
+                stop_motor();
 
-        /* If water available → keep running until tank full */
-        /* No need to stop here */
+                auto_retry_count++;
+
+                if (auto_retry_count >= auto_retry_limit)
+                {
+                    ModelHandle_StopAuto();
+                    Buzzer_TriggerAlert();
+                    return;
+                }
+
+                autoDeadline = now + gapMs;
+                autoState = AUTO_OFF_WAIT;
+                autoWaterLossPending = false;
+                return;
+            }
+        }
+        else
+        {
+            autoWaterLossPending = false;
+        }
     }
     break;
-
-    /* ===================== OFF WAIT ===================== */
     case AUTO_OFF_WAIT:
     {
         stop_motor();
