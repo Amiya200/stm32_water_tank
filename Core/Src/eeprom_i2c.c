@@ -3,7 +3,7 @@
 extern I2C_HandleTypeDef hi2c2;
 #define EEPROM_I2C_ADDR (0x50 << 1)
 #define EEPROM_TIMEOUT     100
-#define EEPROM_PAGE_SIZE   16
+#define EEPROM_PAGE_SIZE   32
 
 HAL_StatusTypeDef EEPROM_WriteByte(uint16_t addr, uint8_t data)
 {

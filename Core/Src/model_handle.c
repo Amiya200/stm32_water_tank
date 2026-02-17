@@ -20,7 +20,8 @@ extern float g_currentA;
 extern float g_voltageV;
 #define TIMER_EE_SIGNATURE  0x544D
 #define TIMER_EE_VERSION    1
-#define EE_ADDR_TIMER_BLOCK 0x7000
+#define EE_ADDR_TIMER_BLOCK 0x0600
+
 typedef struct {
     uint16_t signature;
     uint8_t  version;
@@ -196,13 +197,13 @@ static bool suppressAutoOneCycle = false;
 static uint32_t loadTimer = 0;
 static uint8_t  loadRetryCount = 0;
 #ifndef EEPROM_PAGE_SIZE
-#define EEPROM_PAGE_SIZE 16
+#define EEPROM_PAGE_SIZE 32
 #endif
 #ifndef EEPROM_I2C_ADDR
 #define EEPROM_I2C_ADDR (0x50 << 1)
 #endif
 #ifndef EEPROM_ADDR_SIZE
-#define EEPROM_ADDR_SIZE I2C_MEMADD_SIZE_8BIT
+#define EEPROM_ADDR_SIZE I2C_MEMADD_SIZE_16BIT
 #endif
 void EEPROM_WriteBlockSafe(uint16_t addr, uint8_t *data, uint16_t len)
 {
@@ -222,7 +223,7 @@ void EEPROM_WriteBlockSafe(uint16_t addr, uint8_t *data, uint16_t len)
 typedef struct __attribute__((packed))
 {
     uint16_t sig;
-    uint16_t gap;
+    uint32_t gap;
     uint8_t  retry;
     uint16_t uv;
     uint16_t ov;
@@ -279,13 +280,14 @@ void ModelHandle_LoadSettingsFromEEPROM(void)
                       (uint8_t*)&b,
                       sizeof(b));
 
-    if (b.sig != SYS_SIG)
-        return;
-
     uint16_t crc = SYS_CRC16((uint8_t*)&b, sizeof(b) - 2);
 
-    if (crc != b.crc)
+    if (b.sig != SYS_SIG || crc != b.crc)
+    {
+        // EEPROM invalid → write defaults once
+        ModelHandle_SaveSettingsToEEPROM();
         return;
+    }
 
     sys.gap_time_s  = b.gap;
     sys.retry_count = b.retry;
@@ -1667,7 +1669,7 @@ void ModelHandle_ResetAll(void)
     countdownDuration = 0;
     UART_SendStatusPacket();
 }
-void ModelHandle_SetUserSettings(uint16_t gap_minutes,
+void ModelHandle_SetUserSettings(uint32_t gap_seconds,
                                  uint8_t  retry,
                                  uint16_t uv_limit,
                                  uint16_t ov_limit,
@@ -1675,9 +1677,11 @@ void ModelHandle_SetUserSettings(uint16_t gap_minutes,
                                  int16_t  underload,
                                  uint16_t maxrun_min)
 {
-    /* Convert minutes → seconds */
-    sys.gap_time_s  = (uint32_t)gap_minutes * 60UL;
+    /* Sanity limit (optional but recommended) */
+    if (gap_seconds > 86400UL)      // Max 24 hours
+        gap_seconds = 86400UL;
 
+    sys.gap_time_s  = gap_seconds;
     sys.retry_count = retry;
     sys.uv_limit    = uv_limit;
     sys.ov_limit    = ov_limit;
@@ -1687,7 +1691,7 @@ void ModelHandle_SetUserSettings(uint16_t gap_minutes,
 
     ModelHandle_SaveSettingsToEEPROM();
 
-    /* LIVE UPDATE AUTO */
+    /* Live update AUTO deadline */
     if (autoActive)
     {
         uint32_t now = HAL_GetTick();

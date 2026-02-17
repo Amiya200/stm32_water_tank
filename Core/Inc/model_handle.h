@@ -85,7 +85,13 @@ void ModelHandle_SetDryRun(bool on);
 void ModelHandle_SetOverLoad(bool on);
 void ModelHandle_SetOverUnderVolt(bool on);
 void ModelHandle_ClearMaxRunFlag(void);
-void ModelHandle_SetUserSettings(uint16_t gap_s,  uint8_t retry, uint16_t uv_limit, uint16_t ov_limit, int16_t overload, int16_t underload ,uint16_t maxrun_min);
+void ModelHandle_SetUserSettings(uint32_t gap_seconds,
+                                 uint8_t  retry,
+                                 uint16_t uv_limit,
+                                 uint16_t ov_limit,
+                                 int16_t  overload,
+                                 int16_t  underload,
+                                 uint16_t maxrun_min);
 void ModelHandle_SetAutoSettings(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry);
 void ModelHandle_OnPowerUp(void);
 void ModelHandle_LoadSettingsFromEEPROM(void);

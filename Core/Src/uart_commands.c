@@ -342,8 +342,6 @@ void UART_HandleCommand(const char *pkt)
         }
         else err("@FORMAT#");
     }
-
-    /* ================= STATUS ================= */
     else if (!strcmp(cmd, "STATUS"))
     {
         UART_SendStatusPacket();

@@ -115,17 +115,6 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 /**
   * @brief  The application entry point.
   */
-void EEPROM_ClearAll(void)
-{
-    uint8_t zero[16];
-    memset(zero, 0xFF, sizeof(zero));
-
-    for (uint16_t addr = 0; addr < 0x0800; addr += 16)
-    {
-        EEPROM_WriteBlockSafe(addr, zero, 16);
-        HAL_Delay(5);
-    }
-}
 
 int main(void)
 {
@@ -144,7 +133,6 @@ int main(void)
     lcd_init();
     ADC_Init(&hadc1);
     LoRa_Init();
-
     Screen_Init();
     UART_Init();
     Switches_Init();
@@ -152,12 +140,7 @@ int main(void)
     LED_Init();
     ACS712_Init(&hadc1);
 
-    HAL_Delay(100);   // Allow EEPROM + I2C stable
-
-    /* ================== EEPROM LOAD SECTION ================== */
-    EEPROM_ClearAll();
     HAL_Delay(100);
-
     Timer_EEPROM_EnsureValid();
 
     ModelHandle_LoadSettingsFromEEPROM();
