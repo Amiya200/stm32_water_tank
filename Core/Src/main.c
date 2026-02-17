@@ -105,7 +105,6 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
 {
     if (hadc->Instance == ADC1)
     {
-        // Optional: handle mid-buffer events (for faster updates)
     }
 }
 

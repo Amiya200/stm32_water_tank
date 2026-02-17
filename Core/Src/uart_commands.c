@@ -313,11 +313,17 @@ void UART_HandleCommand(const char *pkt)
             char *h2s = next_token(&ctx);
             char *m2s = next_token(&ctx);
             char *gapStr = next_token(&ctx);
+            char *extra = next_token(&ctx);   // <-- NEW (handles extra field)
 
             if (!slotStr || !daysStr || !h1s || !m1s || !h2s || !m2s || !gapStr)
             {
                 err("@TIMER_FORMAT#");
                 return;
+            }
+
+            if (extra != NULL)   // If extra token exists, shift gap
+            {
+                gapStr = extra;
             }
 
             int slot = atoi(slotStr);
