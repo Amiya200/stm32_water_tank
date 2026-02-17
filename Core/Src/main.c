@@ -120,7 +120,6 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
 
-    /* ================== PERIPHERAL INIT ================== */
     MX_GPIO_Init();
     MX_ADC1_Init();
     MX_SPI1_Init();

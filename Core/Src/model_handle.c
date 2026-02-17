@@ -181,6 +181,9 @@ static uint32_t autoDeadline = 0;
 #define AUTO_SIG 0xA055
 static bool     twist_on_phase = false;
 static uint32_t bootBlockUntil = 0;
+#define RESTART_DRY_CONFIRM_MS 5000UL
+static uint32_t restartDryStartTime = 0;
+static bool     restartDryPending   = false;
 static uint32_t twist_deadline = 0;
 typedef struct __attribute__((packed))
 {
@@ -483,6 +486,15 @@ static bool isTankFull(void)
 {
     return (get_tank_level_percent() == 100);
 }
+typedef enum {
+    RESTART_RUN_TEST = 0,
+    RESTART_WAIT_GAP,
+    RESTART_RUN_CONTINUOUS
+} RestartState;
+
+
+static RestartState restartState = RESTART_RUN_TEST;
+static uint32_t restartDeadline = 0;
 
 void ModelHandle_StartRestart(void)
 {
@@ -492,19 +504,15 @@ void ModelHandle_StartRestart(void)
     backup_current_mode();
 
     restartActive = true;
-    motorOwner    = MOTOR_OWNER_RESTART;
+    restartState  = RESTART_RUN_TEST;
+    restartDeadline = 0;
 
+    motorOwner = MOTOR_OWNER_RESTART;
     senseMaxRunReached = false;
-
-    /* Calculate remaining percentage */
-    uint8_t currentLevel = get_tank_level_percent();
-    uint8_t remaining = 100 - currentLevel;
-
-    if (remaining == 0)
-        return;
 
     start_motor();
 }
+
 
 void ModelHandle_TimerRecalculateNow(void)
 {
@@ -1610,6 +1618,10 @@ static void leds_from_model(void)
         LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_BLINK, 350);
     LED_ApplyIntents();
 }
+uint32_t ap = 0 ;
+#define RESTART_WATER_LOSS_CONFIRM_MS  5000UL   // 5 sec delay
+static uint32_t restartWaterLossStart = 0;
+static bool     restartWaterLossPending = false;
 
 void ModelHandle_Process(void)
 {
@@ -1671,48 +1683,100 @@ void ModelHandle_Process(void)
     {
     case MOTOR_OWNER_RESTART:
     {
-        bool dryEnabled      = (sys.gap_time_s  > 0);
-        bool overloadEnabled = (sys.overload    > 0.0f);
-        bool underloadEnabled= (sys.underload   > 0.0f);
-        bool voltEnabled     = (sys.uv_limit    > 0 ||
-                                sys.ov_limit    > 0);
-        bool maxrunEnabled   = (sys.maxrun_min  > 0);
+        uint32_t now = HAL_GetTick();
 
-        bool restartFault = false;
-
-        /* 100% tank always stops */
+        bool overloadEnabled  = (sys.overload    > 0.0f);
+        bool underloadEnabled = (sys.underload   > 0.0f);
+        bool voltEnabled      = (sys.uv_limit    > 0 || sys.ov_limit > 0);
+        bool maxrunEnabled    = (sys.maxrun_min  > 0);
+        uint32_t gapMs = (uint32_t)sys.gap_time_s * 1000UL;
+        if (gapMs == 0)
+            gapMs = 10000UL;
         if (isTankFull())
-            restartFault = true;
-
-        /* Dry run only if enabled */
-        if (dryEnabled && senseDryRun)
-            restartFault = true;
-
-        /* Load protections only if enabled */
-        if (overloadEnabled && senseOverLoad)
-            restartFault = true;
-
-        if (underloadEnabled && senseUnderLoad)
-            restartFault = true;
-
-        if (voltEnabled && senseOverUnderVolt)
-            restartFault = true;
-
-        if (maxrunEnabled && senseMaxRunReached)
-            restartFault = true;
-
-        if (restartFault)
         {
             ModelHandle_StopRestart();
             Buzzer_TriggerAlert();
+            break;
         }
-        else
+        if ((overloadEnabled  && senseOverLoad) ||
+            (underloadEnabled && senseUnderLoad) ||
+            (voltEnabled      && senseOverUnderVolt) ||
+            (maxrunEnabled    && senseMaxRunReached))
         {
-            start_motor();
+            stop_motor();
+            restartState    = RESTART_WAIT_GAP;
+            restartDeadline = now + gapMs;
+            break;
+        }
+        switch (restartState)
+        {
+            case RESTART_RUN_TEST:
+            {
+                start_motor();
+                if (senseDryRun == true)
+                {
+                    restartState    = RESTART_RUN_CONTINUOUS;
+                    restartDeadline = 0;
+                    break;
+                }
+                if (restartDeadline == 0)
+                {
+                    restartDeadline = now + gapMs;
+                }
+                if (now >= restartDeadline)
+                {
+                    stop_motor();
+                    restartState    = RESTART_WAIT_GAP;
+                    restartDeadline = now + gapMs;
+                }
+            }
+            break;
+            case RESTART_WAIT_GAP:
+            {
+                stop_motor();
+
+                if (now >= restartDeadline)
+                {
+                    restartState    = RESTART_RUN_TEST;
+                    restartDeadline = 0;
+                }
+            }
+            break;
+
+            case RESTART_RUN_CONTINUOUS:
+            {
+                start_motor();
+                if (senseDryRun == false)
+                {
+                    if (!restartWaterLossPending)
+                    {
+                        restartWaterLossPending = true;
+                        restartWaterLossStart   = now;
+                    }
+                    if ((now - restartWaterLossStart) >= RESTART_WATER_LOSS_CONFIRM_MS)
+                    {
+                        stop_motor();
+                        restartState    = RESTART_WAIT_GAP;
+                        restartDeadline = now + gapMs;
+
+                        restartWaterLossPending = false;
+                    }
+                }
+                else
+                {
+                    restartWaterLossPending = false;
+                }
+            }
+            break;
+            default:
+            {
+                restartState    = RESTART_RUN_TEST;
+                restartDeadline = 0;
+            }
+            break;
         }
     }
     break;
-
 
         case MOTOR_OWNER_MANUAL:
         {

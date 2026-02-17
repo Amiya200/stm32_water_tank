@@ -214,11 +214,13 @@ void UART_HandleCommand(const char *pkt)
         }
         else err("@FORMAT#");
     }
+
+    /* ================= SETTINGS ================= */
     else if (!strcmp(cmd, "SETTINGS"))
     {
         if (!ctx) return;
 
-        uint32_t dryRun  = ModelHandle_GetGapTime();
+        uint16_t dryRun  = ModelHandle_GetGapTime();
         uint8_t  retry   = ModelHandle_GetRetryCount();
         uint16_t maxRun  = ModelHandle_GetMaxRunTime();
         uint16_t lowV    = ModelHandle_GetUnderVolt();
@@ -239,33 +241,15 @@ void UART_HandleCommand(const char *pkt)
                 char *key = pair;
                 char *val = eq + 1;
 
-                if (!strcmp(key, "dryRunGap"))
-                {
-                    uint32_t min = atoi(val);
-                    dryRun = min * 60UL;
-                }
-                else if (!strcmp(key, "testingGap"))
-                    retry = atoi(val);
-
-                else if (!strcmp(key, "maxRun"))
-                    maxRun = atoi(val);
-
-                else if (!strcmp(key, "lowVolt"))
-                    lowV = atoi(val);
-
-                else if (!strcmp(key, "highVolt"))
-                    highV = atoi(val);
-
-                else if (!strcmp(key, "overLoad"))
-                    overL = atoi(val);
-
-                else if (!strcmp(key, "underLoad"))
-                    underL = atoi(val);
-
-                else if (!strcmp(key, "powerRestore"))
-                    pwrRes = atoi(val);
+                if (!strcmp(key, "dryRunGap")) dryRun = atoi(val);
+                else if (!strcmp(key, "testingGap")) retry = atoi(val);
+                else if (!strcmp(key, "maxRun")) maxRun = atoi(val);
+                else if (!strcmp(key, "lowVolt")) lowV = atoi(val);
+                else if (!strcmp(key, "highVolt")) highV = atoi(val);
+                else if (!strcmp(key, "overLoad")) overL = atoi(val);
+                else if (!strcmp(key, "underLoad")) underL = atoi(val);
+                else if (!strcmp(key, "powerRestore")) pwrRes = atoi(val);
             }
-
             pair = strtok_r(NULL, ";", &saveptr);
         }
 
@@ -284,6 +268,7 @@ void UART_HandleCommand(const char *pkt)
         ack("@SETTINGS_OK#");
     }
 
+    /* ================= COUNTDOWN ================= */
     else if (!strcmp(cmd, "COUNTDOWN"))
     {
         char *sub = next_token(&ctx);
