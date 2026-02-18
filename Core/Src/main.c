@@ -97,7 +97,6 @@ void Debug_Print(char *msg) {
 
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
 
@@ -147,41 +146,25 @@ int main(void)
     ModelHandle_LoadModeState();
     ModelHandle_LoadCountdown();
     ModelHandle_LoadBuzzerSettings();
-
     HAL_Delay(50);
-
-    /* ================== NOW START POWER-UP LOGIC ================== */
-
     ModelHandle_OnPowerUp();
-
     RTC_GetTimeDate();
-
     loraMode = LORA_MODE_RECEIVER;
-
-    /* ================== MAIN LOOP ================== */
     while (1)
     {
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
-
         RTC_GetTimeDate();
-
-        /* UART */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
-
-        /* CORE ENGINE */
         ModelHandle_CheckAutoTimerActivation();
         ModelHandle_Process();
-
-        /* UI */
         Screen_HandleSwitches();
         Screen_Update();
         LED_Task();
-
         HAL_Delay(10);
     }
 }

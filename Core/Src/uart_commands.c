@@ -347,7 +347,6 @@ void UART_HandleCommand(const char *pkt)
                 err("@TIMER_RANGE#");
                 return;
             }
-
             uint8_t idx = slot - 1;
 
             timerSlots[idx].enabled = true;
