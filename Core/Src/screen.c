@@ -1025,8 +1025,11 @@ void increase_edit_value(uint8_t step)
             break;
 
         case UI_COUNTDOWN_EDIT_MIN:
-            edit_countdown_min += step;
-            if (edit_countdown_min > 240) edit_countdown_min = 240;
+            if (edit_countdown_min < 15)
+                edit_countdown_min += 1;
+
+            if (edit_countdown_min > 15)
+                edit_countdown_min = 15;
             break;
 
         case UI_SETTINGS_GAP:
@@ -1463,8 +1466,8 @@ void Screen_HandleSwitches(void)
             case BTN_DOWN_LONG:
                 if (!countdownActive)
                 {
-                    edit_countdown_min = 1;
                     ui = UI_COUNTDOWN_EDIT_MIN;
+                    screenNeedsRefresh = true;
                 }
                 break;
 
@@ -1504,21 +1507,41 @@ void Screen_HandleSwitches(void)
         return;
     }
 
-    /* ================= COUNTDOWN EDIT (DOWN INCREASE) ================= */
+    /* ================= COUNTDOWN EDIT SCREEN ================= */
     if (ui == UI_COUNTDOWN_EDIT_MIN)
     {
-        if (b == BTN_DOWN)
-            increase_edit_value(1);
-        else if (b == BTN_DOWN_LONG)
-            increase_edit_value(1);
-        else if (b == BTN_SELECT)
-            ui = UI_COUNTDOWN;
+        switch (b)
+        {
+            /* Short press → +1 */
+            case BTN_DOWN:
+                if (edit_countdown_min < 15)
+                    edit_countdown_min++;
+                break;
+
+            /* Long press → continuous +1 (handled by decoder repeat) */
+            case BTN_DOWN_LONG:
+                if (edit_countdown_min < 15)
+                    edit_countdown_min++;
+                break;
+
+            /* Confirm and go back to countdown screen */
+            case BTN_SELECT:
+                ui = UI_COUNTDOWN;
+                break;
+
+            /* Back button → directly go to HOME */
+            case BTN_RESET:
+                ui = UI_DASH;
+                break;
+
+            default:
+                break;
+        }
 
         screenNeedsRefresh = true;
         return;
     }
 
-    /* ================= OTHER EDIT SCREENS ================= */
     if (ui != UI_DASH)
     {
         if (b == BTN_UP)
