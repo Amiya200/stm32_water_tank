@@ -1786,14 +1786,17 @@ void ModelHandle_Process(void)
         {
         case SEMI_RUN_TEST:
         {
-            if (!Motor_GetStatus())
+            /* Detect first entry into this state */
+            if (semiTestStartTime == 0)
             {
-                start_motor();
                 semiTestStartTime = now;
                 semiWaterLossPending = false;
+                start_motor();
             }
             if (dryEnabled && (now - semiTestStartTime) >= gapMs)
             {
+                semiTestStartTime = 0;   // reset for next cycle
+
                 if (senseDryRun)
                 {
                     semiState = SEMI_RUN_CONTINUOUS;
@@ -1807,6 +1810,7 @@ void ModelHandle_Process(void)
             }
             if (!dryEnabled)
             {
+                semiTestStartTime = 0;
                 semiState = SEMI_RUN_CONTINUOUS;
             }
         }
