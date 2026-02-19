@@ -47,7 +47,7 @@ static uint16_t Timer_CRC16(const uint8_t *data, uint16_t len)
     }
     return crc;
 }
-#define MOTOR_START_DELAY_MS   20000UL
+#define MOTOR_START_DELAY_MS   5000UL
 #define TANK_FULL_DELAY_MS     20000UL
 static uint32_t bootStartBlockUntil = 0;
 static uint32_t tankFullDetectedAt  = 0;
@@ -726,6 +726,7 @@ static inline void clear_all_modes(void)
 void ModelHandle_OnPowerUp(void)
 {
     powerOnMs = HAL_GetTick();
+    autoBootIgnoreUntil = powerOnMs + 15000UL;   // FIX
     bootStartBlockUntil = powerOnMs + MOTOR_START_DELAY_MS;
     autoDeadline = 0;
     if (timer_any_active_slot())
@@ -737,12 +738,23 @@ void ModelHandle_OnPowerUp(void)
     }
     if (autoActive)
     {
-        motorOwner = MOTOR_OWNER_AUTO;
-        autoState  = AUTO_ON_WAIT;
-        uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
-        autoDeadline = HAL_GetTick() + (gapSec * 1000UL);
-        autoBootIgnoreUntil = HAL_GetTick() + 3000UL;
+        uint8_t level = get_tank_level_percent();
+
+        if (level <= AUTO_START_LEVEL_PERCENT)   // 50%
+        {
+            motorOwner = MOTOR_OWNER_AUTO;
+            autoState  = AUTO_ON_WAIT;
+
+            uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
+            autoDeadline = HAL_GetTick() + (gapSec * 1000UL);
+        }
+        else
+        {
+            autoActive = false;      // ❌ STOP AUTO
+            motorOwner = MOTOR_OWNER_NONE;
+        }
     }
+
 }
 
 static inline bool Motor_IsRelayOn(void)
@@ -791,10 +803,16 @@ bool Motor_GetStatus(void)
 static inline void start_motor(void)
 {
     uint32_t now = HAL_GetTick();
-    if (now < bootStartBlockUntil)
-       {
-           return;
-       }
+    if (now < bootStartBlockUntil &&
+        motorOwner != MOTOR_OWNER_MANUAL &&
+        motorOwner != MOTOR_OWNER_SEMIAUTO &&
+        motorOwner != MOTOR_OWNER_TIMER &&
+        motorOwner != MOTOR_OWNER_COUNTDOWN &&
+        motorOwner != MOTOR_OWNER_TWIST)
+    {
+        return;
+    }
+
     if (now < bootStartBlockUntil &&
         motorOwner != MOTOR_OWNER_MANUAL &&
         motorOwner != MOTOR_OWNER_SEMIAUTO &&
@@ -817,21 +835,24 @@ static void check_max_run(void)
 {
     if (sys.maxrun_min == 0 || !Motor_GetStatus())
         return;
+
     if (countdownActive)
         return;
-    if (restartActive);
+
+    if (restartActive)
+        return;
+
     uint32_t limit = (uint32_t)sys.maxrun_min * 60000UL;
+
     if ((HAL_GetTick() - motorOnStartMs) >= limit)
     {
         senseMaxRunReached = true;
         clear_all_modes();
         stop_motor();
         ModelHandle_SaveModeState();
-        if (buzzerSettings.tankFullSound)
-            Buzzer_StartEvent(BUZZ_TANK_FULL);
-
     }
 }
+
 void ModelHandle_CheckDryRun(void)
 {
     if (manualActive)
@@ -1253,15 +1274,21 @@ static void auto_mode_background_control(void)
     if (timerActive)
         return;
     uint32_t now = HAL_GetTick();
+    if (now < autoBootIgnoreUntil)
+        return;
+
     if (now < bootBlockUntil)
         return;
+
     if (manualActive || semiAutoActive ||
         countdownActive || twistActive ||
         autoActive)
         return;
     uint8_t level = get_tank_level_percent();
     if (!autoActive &&
-        level <= AUTO_START_LEVEL_PERCENT)
+        level <= AUTO_START_LEVEL_PERCENT &&
+        powerRestoreMode != 1)   // Only if not forced OFF
+
     {
     	ModelHandle_StartAuto(
     	    sys.gap_time_s,
@@ -1371,26 +1398,46 @@ void ModelHandle_StartCountdown(uint32_t seconds)
 {
     if (seconds == 0)
         return;
+
     clear_all_modes();
+
     senseMaxRunReached = false;
+
     countdownActive   = true;
     countdownMode     = true;
     countdownDuration = seconds;
     cd_deadline       = now_ms() + seconds * 1000UL;
+
+    /* ✅ IMPORTANT: RESET STATE MACHINE */
+    cdState           = CD_RUN_TEST;
+    cdTestStartTime   = 0;
+    cdGapDeadline     = 0;
+    cdWaterLossPending = false;
+
     motorOwner = MOTOR_OWNER_COUNTDOWN;
+
     start_motor();
+
     ModelHandle_SaveModeState();
 }
+
 
 void ModelHandle_StopCountdown(void)
 {
     countdownActive = false;
     countdownMode   = false;
     countdownDuration = 0;
+
+    /* reset state */
+    cdState = CD_RUN_TEST;
+    cdTestStartTime = 0;
+    cdGapDeadline = 0;
+
     SaveCountdown();
     stop_motor();
     ModelHandle_SaveModeState();
 }
+
 
 static void countdown_tick(void)
 {
@@ -1807,7 +1854,6 @@ void ModelHandle_Process(void)
         }
     }
     break;
-
     case MOTOR_OWNER_TIMER:
         if (protectionFault || isTankFull())
             stop_motor();
@@ -1824,17 +1870,13 @@ void ModelHandle_Process(void)
             break;
         }
 
-        /* Stop if tank full or protection fault */
         if (isTankFull() || protectionFault)
         {
             ModelHandle_StopCountdown();
             break;
         }
 
-        /* =========================================
-           DRY MODE DISABLED
-           → Run continuously
-        ========================================= */
+        /* DRY DISABLED → run continuous */
         if (!dryEnabled)
         {
             start_motor();
@@ -1842,58 +1884,56 @@ void ModelHandle_Process(void)
             break;
         }
 
-        /* =========================================
-           DRY MODE ENABLED
-        ========================================= */
-
-        /* -------- WATER AVAILABLE -------- */
-        if (senseDryRun)
+        switch (cdState)
         {
-            start_motor();
-            cdState = CD_RUN_CONTINUOUS;
-            cdWaterLossPending = false;
-        }
-        else
+        case CD_RUN_TEST:
         {
-            /* -------- NO WATER -------- */
-            switch (cdState)
+            if (cdTestStartTime == 0)
             {
-                case CD_RUN_TEST:
+                cdTestStartTime = now;
+                start_motor();
+            }
+            if ((now - cdTestStartTime) >= oneMinMs)
+            {
+                cdTestStartTime = 0;
+                if (senseDryRun)
                 {
-                    if (!Motor_GetStatus())
-                    {
-                        start_motor();
-                        cdTestStartTime = now;
-                    }
-
-                    if ((now - cdTestStartTime) >= oneMinMs)
-                    {
-                        stop_motor();
-                        cdState = CD_WAIT_GAP;
-                        cdGapDeadline = now + oneMinMs;
-                    }
+                    cdState = CD_RUN_CONTINUOUS;
                 }
-                break;
-
-                case CD_WAIT_GAP:
+                else
                 {
                     stop_motor();
-
-                    if (now >= cdGapDeadline)
-                    {
-                        cdState = CD_RUN_TEST;
-                    }
+                    cdState = CD_WAIT_GAP;
+                    cdGapDeadline = now + oneMinMs;
                 }
-                break;
-
-                case CD_RUN_CONTINUOUS:
-                default:
-                    cdState = CD_RUN_TEST;
-                break;
             }
         }
+        break;
+            case CD_WAIT_GAP:
+            {
+                stop_motor();
 
-        /* Always update countdown timer */
+                if (now >= cdGapDeadline)
+                {
+                    cdState = CD_RUN_TEST;
+                }
+            }
+            break;
+            case CD_RUN_CONTINUOUS:
+            {
+                start_motor();
+                if (!senseDryRun)
+                {
+                    stop_motor();
+                    cdState = CD_WAIT_GAP;
+                    cdGapDeadline = now + oneMinMs;
+                }
+            }
+            break;
+            default:
+                cdState = CD_RUN_TEST;
+            break;
+        }
         countdown_tick();
     }
     break;

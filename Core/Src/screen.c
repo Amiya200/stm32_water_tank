@@ -132,6 +132,10 @@ static bool     edit_settings_factory_yes = false;
 static uint8_t  edit_date_dd    = 1;
 static uint8_t  edit_date_mm    = 1;
 static uint16_t edit_date_yyyy  = 2025;
+static bool countdown_wait_release = false;
+static bool countdown_long_active  = false;
+static uint32_t countdown_long_start = 0;
+static uint32_t countdown_last_step  = 0;
 static uint8_t  edit_date_field = 0;
 static uint8_t  edit_time_hh    = 0;
 static uint8_t  edit_time_min   = 0;
@@ -1318,13 +1322,9 @@ void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
     uint32_t now = HAL_GetTick();
-
     if (b == BTN_NONE)
         return;
-
     refreshInactivityTimer();
-
-    /* ================= RESET BUTTON ================= */
     if (b == BTN_RESET)
     {
         if (ui == UI_DASH)
@@ -1349,7 +1349,6 @@ void Screen_HandleSwitches(void)
                 case UI_DEVSET_EDIT_DAY:
                     ui = UI_DEVSET_MENU;
                     break;
-
                 case UI_DEVSET_MENU:
                 case UI_ADD_DEVICE_MENU:
                 case UI_ADD_DEVICE_PAIR:
@@ -1358,7 +1357,6 @@ void Screen_HandleSwitches(void)
                 case UI_ADD_DEVICE_REMOVE_DONE:
                     ui = UI_MENU;
                     break;
-
                 case UI_COUNTDOWN_EDIT_MIN:
                     ui = UI_COUNTDOWN;
                     break;
@@ -1373,12 +1371,9 @@ void Screen_HandleSwitches(void)
                     break;
             }
         }
-
         screenNeedsRefresh = true;
         return;
     }
-
-    /* ================= RESET CONFIRM ================= */
     if (ui == UI_RESET_CONFIRM)
     {
         if (b == BTN_UP || b == BTN_DOWN)
@@ -1387,18 +1382,14 @@ void Screen_HandleSwitches(void)
         {
             if (reset_confirm_yes)
                 ModelHandle_FactoryReset();
-
             ui = UI_DASH;
         }
-
         screenNeedsRefresh = true;
         return;
     }
-
-    /* ================= COUNTDOWN SCREEN ================= */
     if (ui == UI_COUNTDOWN)
     {
-        if (b == BTN_DOWN)   // Short press toggles OFF
+        if (b == BTN_DOWN)
         {
             ModelHandle_StopCountdown();
             ui = UI_DASH;
@@ -1407,12 +1398,9 @@ void Screen_HandleSwitches(void)
         {
             ui = UI_COUNTDOWN_EDIT_MIN;
         }
-
         screenNeedsRefresh = true;
         return;
     }
-
-    /* ================= DASH SCREEN ================= */
     if (ui == UI_DASH)
     {
         switch (b)
@@ -1420,7 +1408,6 @@ void Screen_HandleSwitches(void)
             case BTN_RESET_LONG:
                 ModelHandle_ToggleManual();
                 break;
-
             case BTN_SELECT:
                 if (!autoActive)
                     ModelHandle_StartAuto(edit_auto_gap_s,
@@ -1429,27 +1416,23 @@ void Screen_HandleSwitches(void)
                 else
                     ModelHandle_StopAuto();
                 break;
-
             case BTN_SELECT_LONG:
                 ui = UI_MENU;
                 menu_idx = 0;
                 menu_view_top = 0;
                 break;
-
             case BTN_UP:
                 if (!timerActive)
                     ModelHandle_StartTimerNearestSlot();
                 else
                     ModelHandle_StopTimer();
                 break;
-
             case BTN_UP_LONG:
                 if (!semiAutoActive)
                     ModelHandle_StartSemiAuto();
                 else
                     ModelHandle_StopSemiAuto();
                 break;
-
             case BTN_DOWN:
                 if (!countdownActive)
                 {
@@ -1462,24 +1445,22 @@ void Screen_HandleSwitches(void)
                     ui = UI_DASH;
                 }
                 break;
-
             case BTN_DOWN_LONG:
                 if (!countdownActive)
                 {
                     ui = UI_COUNTDOWN_EDIT_MIN;
+                    edit_countdown_min = 1;
+                    countdown_wait_release = true;
+                    countdown_long_active  = false;
                     screenNeedsRefresh = true;
                 }
-                break;
-
+            break;
             default:
                 break;
         }
-
         screenNeedsRefresh = true;
         return;
     }
-
-    /* ================= MAIN MENU ================= */
     if (ui == UI_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
@@ -1492,8 +1473,6 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
-
-    /* ================= DEVICE SET MENU ================= */
     if (ui == UI_DEVSET_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
@@ -1506,42 +1485,56 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
-
-    /* ================= COUNTDOWN EDIT SCREEN ================= */
     if (ui == UI_COUNTDOWN_EDIT_MIN)
     {
-        switch (b)
+        if (countdown_wait_release)
         {
-            /* Short press → +1 */
-            case BTN_DOWN:
-                if (edit_countdown_min < 15)
-                    edit_countdown_min++;
-                break;
-
-            /* Long press → continuous +1 (handled by decoder repeat) */
-            case BTN_DOWN_LONG:
-                if (edit_countdown_min < 15)
-                    edit_countdown_min++;
-                break;
-
-            /* Confirm and go back to countdown screen */
-            case BTN_SELECT:
-                ui = UI_COUNTDOWN;
-                break;
-
-            /* Back button → directly go to HOME */
-            case BTN_RESET:
-                ui = UI_DASH;
-                break;
-
-            default:
-                break;
+            if (!Switch_IsPressed(3))
+            {
+                countdown_wait_release = false;
+            }
+            screenNeedsRefresh = true;
+            return;
         }
+        if (b == BTN_DOWN)
+        {
+            if (edit_countdown_min < 15)
+                edit_countdown_min++;
+        }
+        if (Switch_IsPressed(3))
+        {
+            if (!countdown_long_active)
+            {
+                countdown_long_start = now;
+                countdown_long_active = true;
+            }
 
+            if ((now - countdown_long_start) >= 3000)
+            {
+                if ((now - countdown_last_step) >= 1000)
+                {
+                    countdown_last_step = now;
+
+                    if (edit_countdown_min < 15)
+                        edit_countdown_min++;
+                }
+            }
+        }
+        else
+        {
+            countdown_long_active = false;
+        }
+        if (b == BTN_SELECT)
+        {
+            ui = UI_COUNTDOWN;
+        }
+        if (b == BTN_RESET)
+        {
+            ui = UI_DASH;
+        }
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui != UI_DASH)
     {
         if (b == BTN_UP)
