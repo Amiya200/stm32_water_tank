@@ -13,14 +13,17 @@ typedef struct __attribute__((packed)) {
     uint8_t dayMask;
     uint16_t gapMinutes;
 } TimerSlot;
-typedef struct {
-    uint16_t gap_time_s;
+typedef struct
+{
+    uint32_t gap_time_s;
     uint8_t  retry_count;
     uint16_t uv_limit;
     uint16_t ov_limit;
-    int16_t  overload;
-    int16_t  underload;
+    float    overload;
+    float    underload;
     uint16_t maxrun_min;
+    uint16_t dry_run_time_s;
+    uint8_t  dry_run_enable;
 } SystemSettings;
 extern SystemSettings sys;
 extern TimerSlot timerSlots[5];
