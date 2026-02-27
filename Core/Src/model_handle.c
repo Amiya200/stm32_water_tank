@@ -553,19 +553,28 @@ void ModelHandle_ToggleManual(void)
 {
     if (!manualActive)
     {
-        autoActive = false;
-        autoState  = AUTO_IDLE;
-        auto_retry_count = 0;
-        clear_all_modes();
+        /* ===== Manual Taking Control ===== */
+
+        /* Stop all other modes */
+        restartActive   = false;
+        autoActive      = false;
+        timerActive     = false;
+        semiAutoActive  = false;
+        countdownActive = false;
+        twistActive     = false;
+
+        /* Stop motor first for clean takeover */
+        stop_motor();
+
         manualActive = true;
-        motorOwner   = MOTOR_OWNER_MANUAL;
     }
     else
     {
+        /* Turning Manual OFF */
         manualActive = false;
-        motorOwner   = MOTOR_OWNER_NONE;
         stop_motor();
     }
+
     ModelHandle_SaveModeState();
 }
 void ModelHandle_ManualToggleMotor(void)
@@ -629,8 +638,8 @@ void ModelHandle_StartTimerNearestSlot(void)
 
 static inline void Buzzer_SetPin(bool on)
 {
-    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+//    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+//                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 static void Buzzer_StartEvent(BuzzerEvent ev)
 {
@@ -1351,32 +1360,36 @@ void ModelHandle_StartCountdown(uint32_t seconds)
 {
     if (seconds == 0)
         return;
+
     clear_all_modes();
+
     senseMaxRunReached = false;
+
     countdownActive   = true;
     countdownMode     = true;
-    countdownDuration = seconds;
-    cd_deadline       = now_ms() + seconds * 1000UL;
-    cdState           = CD_RUN_TEST;
-    cdTestStartTime   = 0;
-    cdGapDeadline     = 0;
-    cdWaterLossPending = false;
+
+    uint32_t now = HAL_GetTick();
+
+    cd_deadline       = now + (seconds * 1000UL);
+    countdownDuration = seconds;   // initial display value
+
     motorOwner = MOTOR_OWNER_COUNTDOWN;
+
     start_motor();
+
     ModelHandle_SaveModeState();
 }
-
 
 void ModelHandle_StopCountdown(void)
 {
     countdownActive = false;
     countdownMode   = false;
+
+    cd_deadline     = 0;
     countdownDuration = 0;
-    cdState = CD_RUN_TEST;
-    cdTestStartTime = 0;
-    cdGapDeadline = 0;
-    SaveCountdown();
+
     stop_motor();
+
     ModelHandle_SaveModeState();
 }
 
@@ -1507,6 +1520,7 @@ static void leds_from_model(void)
 void ModelHandle_Process(void)
 {
     uint32_t now = HAL_GetTick();
+
     if (modeSwitchPending)
     {
         if (now >= modeSwitchTime)
@@ -1516,20 +1530,28 @@ void ModelHandle_Process(void)
         }
         return;
     }
+
     ModelHandle_CheckGroundWater();
     ModelHandle_CheckDryRun();
+
     bool dryEnabled = (sys.gap_time_s > 0);
     dr = dryEnabled;
+
     ModelHandle_CheckLoadFault();
     check_max_run();
+
     if (dryEnabled)
         ModelHandle_SoftDryRunHandler();
+
     bool protectionFault =
         senseOverLoad ||
         senseUnderLoad ||
         senseOverUnderVolt ||
         senseMaxRunReached;
+
     ModelHandle_ProcessTimerSlots();
+
+    /* Determine motor owner priority */
     if (restartActive)
         motorOwner = MOTOR_OWNER_RESTART;
     else if (timerActive)
@@ -1546,7 +1568,17 @@ void ModelHandle_Process(void)
         motorOwner = MOTOR_OWNER_AUTO;
     else
         motorOwner = MOTOR_OWNER_NONE;
-    if (Motor_GetStatus() && isTankFull())
+
+    bool tankFull = isTankFull();
+
+    if (tankFull)
+    {
+        if (motorOwner != MOTOR_OWNER_MANUAL)
+        {
+            stop_motor();
+        }
+    }
+    if (Motor_GetStatus() && tankFull)
     {
         if (!tankFullPendingStop)
         {
@@ -1555,7 +1587,9 @@ void ModelHandle_Process(void)
         }
         if ((now - tankFullDetectedAt) >= TANK_FULL_DELAY_MS)
         {
-            stop_motor();
+            if (motorOwner != MOTOR_OWNER_MANUAL)
+                stop_motor();
+
             tankFullPendingStop = false;
         }
     }
@@ -1565,7 +1599,6 @@ void ModelHandle_Process(void)
     }
     static uint8_t prevLevel = 100;
     uint8_t currentLevel = get_tank_level_percent();
-
     if (currentLevel == 0 && prevLevel > 0)
     {
         if (buzzerSettings.tankEmptySound)
@@ -1575,8 +1608,7 @@ void ModelHandle_Process(void)
     switch (motorOwner)
     {
     case MOTOR_OWNER_RESTART:
-    {
-        if (isTankFull())
+        if (tankFull)
         {
             stop_motor();
             restartActive = false;
@@ -1592,48 +1624,70 @@ void ModelHandle_Process(void)
             break;
         }
         start_motor();
-    }
-    break;
+        break;
     case MOTOR_OWNER_MANUAL:
         if (!protectionFault)
             start_motor();
         else
             stop_motor();
-    break;
+        break;
     case MOTOR_OWNER_SEMIAUTO:
-    break;
-    case MOTOR_OWNER_TIMER:
-    {
-        bool slotActive = timer_any_active_slot();
-        if (!slotActive)
-        {
+        if (tankFull || protectionFault)
             stop_motor();
-            break;
-        }
-        if (protectionFault || isTankFull())
+        break;
+    case MOTOR_OWNER_TIMER:
+        if (tankFull || protectionFault)
         {
             stop_motor();
             break;
         }
         start_motor();
-    }
-    break;
+        break;
     case MOTOR_OWNER_COUNTDOWN:
+    {
+        if (!countdownActive)
+            break;
+
+        if (now >= cd_deadline)
+        {
+            ModelHandle_StopCountdown();
+            break;
+        }
+        countdownDuration = (cd_deadline - now) / 1000UL;
+        if (tankFull || protectionFault)
+        {
+            ModelHandle_StopCountdown();
+            break;
+        }
+        start_motor();
+    }
     break;
     case MOTOR_OWNER_TWIST:
+        if (tankFull || protectionFault)
+        {
+            stop_motor();
+            break;
+        }
         twist_tick();
-    break;
+        break;
     case MOTOR_OWNER_AUTO:
+        if (tankFull)
+        {
+            ModelHandle_StopAuto();
+            break;
+        }
         auto_tick();
-    break;
+        break;
     default:
         stop_motor();
-    break;
+        break;
     }
-    if (motorOwner == MOTOR_OWNER_NONE ||
-        motorOwner == MOTOR_OWNER_AUTO)
+    if ((motorOwner == MOTOR_OWNER_NONE ||
+         motorOwner == MOTOR_OWNER_AUTO) &&
+        !tankFull)
     {
         auto_mode_background_control();
+
         if (autoActive && is_schedule_allowing_run())
             autoState = AUTO_ON_WAIT;
     }
