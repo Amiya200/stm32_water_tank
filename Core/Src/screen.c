@@ -70,13 +70,10 @@ typedef enum {
 } UiButton;
 static UiState ui      = UI_WELCOME;
 static UiState last_ui = UI_NONE;
-static UiState prev_ui = UI_NONE;
 static bool screenNeedsRefresh = false;
 static bool cursorVisible = true;
-static uint32_t lastCursorToggle   = 0;
 static uint32_t lastLcdUpdateTime  = 0;
 static uint32_t lastUserAction     = 0;
-
 extern void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry);
 extern void ModelHandle_StartTimerNearestSlot(void);
 extern void ModelHandle_StopTimer(void);
@@ -132,10 +129,6 @@ static bool     edit_settings_factory_yes = false;
 static uint8_t  edit_date_dd    = 1;
 static uint8_t  edit_date_mm    = 1;
 static uint16_t edit_date_yyyy  = 2025;
-static bool countdown_wait_release = false;
-static bool countdown_long_active  = false;
-static uint32_t countdown_long_start = 0;
-static uint32_t countdown_last_step  = 0;
 static uint8_t  edit_date_field = 0;
 static uint8_t  edit_time_hh    = 0;
 static uint8_t  edit_time_min   = 0;
@@ -428,27 +421,27 @@ static void show_timer_slot_select(void)
 }
 static void show_edit_on_time(void)
 {
-    char title[17];
-    snprintf(title, sizeof(title), "T%u On Time", (unsigned)(currentSlot + 1));
-    lcd_line0(title);
-    char buf[17];
-    if (time_edit_field == 0)
-        snprintf(buf, sizeof(buf), "[%02d]:%02d   Next>", edit_on_h, edit_on_m);
-    else
-        snprintf(buf, sizeof(buf), "%02d:[%02d]   Next>", edit_on_h, edit_on_m);
-    lcd_line1(buf);
+//    char title[17];
+//    snprintf(title, sizeof(title), "T%u On Time", (unsigned)(currentSlot + 1));
+//    lcd_line0(title);
+//    char buf[17];
+//    if (time_edit_field == 0)
+//        snprintf(buf, sizeof(buf), "[%02d]:%02d   Next>", edit_on_h, edit_on_m);
+//    else
+//        snprintf(buf, sizeof(buf), "%02d:[%02d]   Next>", edit_on_h, edit_on_m);
+//    lcd_line1(buf);
 }
 static void show_edit_off_time(void)
 {
-    char title[17];
-    snprintf(title, sizeof(title), "T%u Off Time", (unsigned)(currentSlot + 1));
-    lcd_line0(title);
-    char buf[17];
-    if (time_edit_field == 0)
-        snprintf(buf, sizeof(buf), "[%02d]:%02d   Next>", edit_off_h, edit_off_m);
-    else
-        snprintf(buf, sizeof(buf), "%02d:[%02d]   Next>", edit_off_h, edit_off_m);
-    lcd_line1(buf);
+//    char title[17];
+//    snprintf(title, sizeof(title), "T%u Off Time", (unsigned)(currentSlot + 1));
+//    lcd_line0(title);
+//    char buf[17];
+//    if (time_edit_field == 0)
+//        snprintf(buf, sizeof(buf), "[%02d]:%02d   Next>", edit_off_h, edit_off_m);
+//    else
+//        snprintf(buf, sizeof(buf), "%02d:[%02d]   Next>", edit_off_h, edit_off_m);
+//    lcd_line1(buf);
 }
 static const char* dayNames[] = {
     "Enable All", "Disable All",
@@ -535,7 +528,6 @@ void ModelHandle_1SecondTask(void)
 
         if (countdownDuration == 0)
         {
-            Motor_Stop();
             countdownActive = false;
         }
     }
@@ -586,22 +578,17 @@ static void show_countdown(void)
 
     if (!countdownActive)
     {
-        /* If not active → automatically go back to DASH */
         ui = UI_DASH;
         screenNeedsRefresh = true;
         return;
     }
-
     uint32_t sec = countdownDuration;
     uint32_t min = sec / 60;
     uint32_t s   = sec % 60;
-
     snprintf(l0, sizeof(l0), "CD %02lu:%02lu RUN",
              (unsigned long)min,
              (unsigned long)s);
-
     snprintf(l1, sizeof(l1), "DOWN=STOP");
-
     lcd_line0(l0);
     lcd_line1(l1);
 }
@@ -1248,14 +1235,9 @@ static UiButton decode_button_press(void)
 void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
-    uint32_t now = HAL_GetTick();
-
     if (b == BTN_NONE)
         return;
-
     refreshInactivityTimer();
-
-    /* ===== GLOBAL COUNTDOWN STOP ===== */
     if (ui == UI_COUNTDOWN && b == BTN_DOWN)
     {
         ModelHandle_StopCountdown();
@@ -1263,7 +1245,6 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
-
     if (b == BTN_RESET)
     {
         if (ui == UI_DASH)
@@ -1288,7 +1269,6 @@ void Screen_HandleSwitches(void)
                 case UI_DEVSET_EDIT_DAY:
                     ui = UI_DEVSET_MENU;
                     break;
-
                 case UI_DEVSET_MENU:
                 case UI_ADD_DEVICE_MENU:
                 case UI_ADD_DEVICE_PAIR:
@@ -1297,26 +1277,21 @@ void Screen_HandleSwitches(void)
                 case UI_ADD_DEVICE_REMOVE_DONE:
                     ui = UI_MENU;
                     break;
-
                 case UI_COUNTDOWN_EDIT_MIN:
                     ui = UI_COUNTDOWN;
                     break;
-
                 case UI_COUNTDOWN:
                     ModelHandle_StopCountdown();
                     ui = UI_DASH;
                     break;
-
                 default:
                     ui = UI_DASH;
                     break;
             }
         }
-
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui == UI_RESET_CONFIRM)
     {
         if (b == BTN_UP || b == BTN_DOWN)
@@ -1325,14 +1300,11 @@ void Screen_HandleSwitches(void)
         {
             if (reset_confirm_yes)
                 ModelHandle_FactoryReset();
-
             ui = UI_DASH;
         }
-
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui == UI_DASH)
     {
         switch (b)
@@ -1349,39 +1321,32 @@ void Screen_HandleSwitches(void)
                 else
                     ModelHandle_StopAuto();
                 break;
-
             case BTN_SELECT_LONG:
                 ui = UI_MENU;
                 menu_idx = 0;
                 menu_view_top = 0;
                 screenNeedsRefresh = true;
                 return;
-
             case BTN_UP:
                 if (semiAutoActive) break;
-
                 if (!timerActive)
                     ModelHandle_Button3_SinglePress();
                 else
                     ModelHandle_StopTimer();
-
                 screenNeedsRefresh = true;
                 break;
-
             case BTN_UP_LONG:
                 if (!semiAutoActive)
                     ModelHandle_StartSemiAuto();
                 else
                     ModelHandle_StopSemiAuto();
-
                 screenNeedsRefresh = true;
                 break;
-
             case BTN_DOWN:
                 if (!countdownActive)
                 {
                     ModelHandle_StartCountdown(edit_countdown_min * 60);
-                    countdownActive = true;   // ensure state sync
+                    countdownActive = true;
                     ui = UI_COUNTDOWN;
                 }
                 else
@@ -1392,7 +1357,6 @@ void Screen_HandleSwitches(void)
                 }
                 screenNeedsRefresh = true;
                 return;
-
             case BTN_DOWN_LONG:
                 if (!countdownActive)
                 {
@@ -1401,7 +1365,6 @@ void Screen_HandleSwitches(void)
                     screenNeedsRefresh = true;
                 }
                 break;
-
             default:
                 break;
         }
@@ -1416,11 +1379,9 @@ void Screen_HandleSwitches(void)
             menu_idx++;
         else if (b == BTN_UP && menu_idx > 0)
             menu_idx--;
-
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui == UI_DEVSET_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
@@ -1429,11 +1390,9 @@ void Screen_HandleSwitches(void)
             devset_idx++;
         else if (b == BTN_UP && devset_idx > 0)
             devset_idx--;
-
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui != UI_DASH)
     {
         if (b == BTN_UP)
@@ -1446,7 +1405,6 @@ void Screen_HandleSwitches(void)
             decrease_edit_value(5);
         else if (b == BTN_SELECT)
             menu_select();
-
         screenNeedsRefresh = true;
         return;
     }
@@ -1455,15 +1413,12 @@ void Screen_Update(void)
 {
     uint32_t now = HAL_GetTick();
     static uint32_t tankFullCountdownStart = 0;
-
-    /* ===== COUNTDOWN TANK FULL LOGIC ===== */
     if (countdownActive && ui == UI_COUNTDOWN)
     {
         if (ModelHandle_IsTankFull())
         {
             if (tankFullCountdownStart == 0)
                 tankFullCountdownStart = now;
-
             if ((now - tankFullCountdownStart) >= 10000UL)
             {
                 ModelHandle_StopCountdown();
@@ -1482,8 +1437,6 @@ void Screen_Update(void)
     {
         tankFullCountdownStart = 0;
     }
-
-    /* Countdown finished normally */
     if (countdownActive && countdownDuration == 0)
     {
         ModelHandle_StopCountdown();
@@ -1491,15 +1444,11 @@ void Screen_Update(void)
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
-
-    /* Welcome timeout */
     if (ui == UI_WELCOME && (now - lastLcdUpdateTime >= WELCOME_MS))
     {
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
-
-    /* Auto-back from menus */
     if (ui != UI_WELCOME &&
         ui != UI_DASH &&
         ui != UI_COUNTDOWN &&
@@ -1508,16 +1457,12 @@ void Screen_Update(void)
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
-
-    /* 1-second refresh for DASH & COUNTDOWN */
     if ((ui == UI_DASH || ui == UI_COUNTDOWN) &&
         (now - lastLcdUpdateTime) >= 1000)
     {
         lastLcdUpdateTime = now;
         screenNeedsRefresh = true;
     }
-
-    /* Render */
     if (screenNeedsRefresh || ui != last_ui)
     {
         if (ui != last_ui)
@@ -1525,9 +1470,7 @@ void Screen_Update(void)
             lcd_clear();
             last_ui = ui;
         }
-
         screenNeedsRefresh = false;
-
         switch (ui)
         {
             case UI_WELCOME:    show_welcome(); break;

@@ -74,7 +74,8 @@ void ModelHandle_SetMotor(bool on);
 void ModelHandle_ClearManualOverride(void);
 void Timer_EEPROM_EnsureValid(void);
 void ModelHandle_StartSemiAuto(void);
-static uint16_t SYS_CRC16(const uint8_t *d, uint16_t l);
+uint8_t ModelHandle_GetPowerRestoreMode(void);
+void ModelHandle_SetPowerRestoreMode(uint8_t mode);
 void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry);
 void ModelHandle_StopAuto(void);
 void ModelHandle_StopAllModesAndMotor(void);
@@ -85,9 +86,17 @@ bool ModelHandle_IsDryRunActive(void);
 bool ModelHandle_IsVoltageFault(void);
 bool ModelHandle_IsMaxRunReached(void);
 void ModelHandle_SetDryRun(bool on);
+float    ModelHandle_GetOverloadLimit(void);
 void ModelHandle_SetOverLoad(bool on);
 void ModelHandle_SetOverUnderVolt(bool on);
 void ModelHandle_ClearMaxRunFlag(void);
+uint16_t ModelHandle_GetMaxRunTime(void);
+uint16_t ModelHandle_GetOverVolt(void);
+uint16_t ModelHandle_GetUnderVolt(void);
+uint8_t  ModelHandle_GetRetryCount(void);
+uint16_t ModelHandle_GetGapTime(void);
+void ModelHandle_Button3_SinglePress(void);
+float    ModelHandle_GetUnderloadLimit(void);
 void ModelHandle_SetUserSettings(uint32_t gap_seconds,
                                  uint8_t  retry,
                                  uint16_t uv_limit,
