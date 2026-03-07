@@ -883,11 +883,14 @@ void ModelHandle_CheckDryRun(void)
         senseDryRun = false;
         return;
     }
+
     float v = adcData.voltages[5];
-    if (v < 0.01f)
-        senseDryRun = true;
+
+    /* Stable threshold similar to tank probes */
+    if (v < 0.30f)
+        senseDryRun = true;   // water present
     else
-        senseDryRun = false;
+        senseDryRun = false;  // dry run
 }
 #define GROUND_SENSE_DELAY_MS 10000UL
 
@@ -898,7 +901,7 @@ void ModelHandle_CheckGroundWater(void)
 
     float v = adcData.voltages[4];
 
-    bool detected = (v < 0.01f);
+    bool detected = (v < 0.30f);   // improved threshold
 
     uint32_t now = HAL_GetTick();
 
@@ -921,6 +924,7 @@ void ModelHandle_CheckGroundWater(void)
 
     groundWater = stableState;
 }
+
 static inline bool isAnyModeActive(void)
 {
     return (manualActive || semiAutoActive || countdownActive ||
@@ -1162,8 +1166,10 @@ void ModelHandle_ProcessTimerSlots(void)
     if (!slotActive)
     {
         stop_motor();
+        timerActive = false;
         timerState = TIMER_RUN_TEST;
         timerStateDeadline = 0;
+        motorOwner = MOTOR_OWNER_NONE;
         return;
     }
 
@@ -1202,7 +1208,7 @@ void ModelHandle_ProcessTimerSlots(void)
 
             if (now >= timerStateDeadline)
             {
-                if (senseDryRun)
+                if (senseDryRun == false)
                 {
                     stop_motor();
                     timerState = TIMER_WAIT_RETRY;
@@ -1232,7 +1238,7 @@ void ModelHandle_ProcessTimerSlots(void)
 
             start_motor();
 
-            if (senseDryRun)
+            if (senseDryRun == false)
             {
                 stop_motor();
                 timerState = TIMER_WAIT_RETRY;
@@ -1242,6 +1248,8 @@ void ModelHandle_ProcessTimerSlots(void)
         break;
     }
 }
+
+
 void ModelHandle_StartTimer(void)
 {
     ModelHandle_SaveTimerToEEPROM();
@@ -1358,7 +1366,6 @@ static void auto_mode_background_control(void)
     ModelHandle_CheckGroundWater();
     uint8_t level = get_tank_level_percent();
     if (!autoActive &&
-        groundWater &&
         level <= AUTO_START_LEVEL_PERCENT &&
         powerRestoreMode != 1)
     {
@@ -1388,17 +1395,23 @@ static void auto_tick(void)
 {
     if (!autoActive)
         return;
+
     uint32_t now = HAL_GetTick();
+
     uint32_t dryTestMs  = sys.dry_run_time_s * 1000UL;
     uint32_t retryGapMs = sys.gap_time_s * 1000UL;
-    ModelHandle_CheckGroundWater();
+
     ModelHandle_CheckDryRun();
+
     uint8_t level = get_tank_level_percent();
+
     bool protectionFault =
         senseOverLoad ||
         senseUnderLoad ||
         senseOverUnderVolt ||
         senseMaxRunReached;
+
+    /* Stop on protection */
     if (protectionFault)
     {
         stop_motor();
@@ -1406,6 +1419,8 @@ static void auto_tick(void)
         stateDeadline = 0;
         return;
     }
+
+    /* Stop if tank full */
     if (level >= AUTO_STOP_LEVEL_PERCENT)
     {
         stop_motor();
@@ -1413,85 +1428,83 @@ static void auto_tick(void)
         stateDeadline = 0;
         return;
     }
-    if (!groundWater && autoState == AUTO_ON_WAIT)
-    {
-        autoState = AUTO_IDLE;
-        stateDeadline = 0;
-        return;
-    }
+
     switch (autoState)
     {
-    case AUTO_ON_WAIT:
 
-        if (level <= AUTO_START_LEVEL_PERCENT)
-        {
-            motorOwner = MOTOR_OWNER_AUTO;
+        /* ------------------------------ */
+        case AUTO_ON_WAIT:
 
-            start_motor();
+            if (level <= AUTO_START_LEVEL_PERCENT)
+            {
+                motorOwner = MOTOR_OWNER_AUTO;
 
-            if (stateDeadline == 0)
-                stateDeadline = now + dryTestMs;
+                start_motor();
+
+                if (stateDeadline == 0)
+                    stateDeadline = now + dryTestMs;
+
+                if (now >= stateDeadline)
+                {
+                    if (senseDryRun == true)
+                    {
+                        /* water available */
+
+                        autoState = AUTO_OFF_WAIT;
+                        stateDeadline = 0;
+                    }
+                    else
+                    {
+                        /* dry run detected */
+
+                        stop_motor();
+
+                        autoState = AUTO_DRY_CHECK;
+                        stateDeadline = now + retryGapMs;
+                    }
+                }
+            }
+
+        break;
+
+
+        /* ------------------------------ */
+        case AUTO_DRY_CHECK:
 
             if (now >= stateDeadline)
             {
-                if (senseDryRun == true)
-                {
-                    /* water available */
-
-                    autoState = AUTO_OFF_WAIT;
-                    stateDeadline = 0;
-                }
-                else
-                {
-                    /* water NOT available */
-
-                    stop_motor();
-
-                    autoState = AUTO_DRY_CHECK;
-                    stateDeadline = now + retryGapMs;
-                }
+                autoState = AUTO_ON_WAIT;
+                stateDeadline = 0;
             }
-        }
 
-    break;
+        break;
 
 
-    /* --------------------------------------- */
-    case AUTO_DRY_CHECK:
+        /* ------------------------------ */
+        case AUTO_OFF_WAIT:
 
-        if (now >= stateDeadline)
-        {
-            autoState = AUTO_ON_WAIT;
+            start_motor();
+
+            /* If water disappears */
+            if (senseDryRun == false)
+            {
+                stop_motor();
+
+                autoState = AUTO_DRY_CHECK;
+                stateDeadline = now + retryGapMs;
+            }
+
+        break;
+
+
+        default:
+
+            autoState = AUTO_IDLE;
             stateDeadline = 0;
-        }
 
-    break;
-
-
-    /* --------------------------------------- */
-    case AUTO_OFF_WAIT:
-
-        start_motor();
-
-        if (senseDryRun == false)
-        {
-            stop_motor();
-
-            autoState = AUTO_DRY_CHECK;
-            stateDeadline = now + retryGapMs;
-        }
-
-    break;
-
-    default:
-
-        autoState = AUTO_IDLE;
-        stateDeadline = 0;
-
-    break;
+        break;
     }
 }
-
 void ModelHandle_StartCountdown(uint32_t seconds)
 {
     if (seconds < 60)
