@@ -355,7 +355,6 @@ void UART_HandleCommand(const char *pkt)
             timerSlots[idx].onMinute = atoi(m1s);
             timerSlots[idx].offHour = atoi(h2s);
             timerSlots[idx].offMinute = atoi(m2s);
-            timerSlots[idx].gapMinutes = atoi(gapStr);
 
             ModelHandle_StartTimer();
             ack("@TIMER_OK#");

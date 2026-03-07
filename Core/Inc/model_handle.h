@@ -5,13 +5,12 @@
 #include "adc.h"
 #include "eeprom_i2c.h"
 typedef struct __attribute__((packed)) {
-    uint8_t enabled;
     uint8_t onHour;
     uint8_t onMinute;
     uint8_t offHour;
     uint8_t offMinute;
     uint8_t dayMask;
-    uint16_t gapMinutes;
+    uint8_t enabled;
 } TimerSlot;
 typedef struct
 {
