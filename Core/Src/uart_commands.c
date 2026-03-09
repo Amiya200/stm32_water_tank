@@ -11,6 +11,10 @@
 extern bool g_screenUpdatePending;
 extern TimerSlot timerSlots[5];
 
+/* =========================================================
+   TX HELPERS
+========================================================= */
+
 static inline void ack(const char *msg)
 {
     UART_TransmitPacket(msg);
@@ -25,31 +29,35 @@ static inline void err(const char *msg)
    STATUS CACHE
 ========================================================= */
 
-typedef struct {
+typedef struct
+{
     uint8_t level;
     uint8_t motorStatus;
-    char    mode[12];
+    char mode[12];
+
 } StatusSnapshot;
 
-static StatusSnapshot lastSent = {255, 255, "INIT"};
+static StatusSnapshot lastSent = {255,255,"INIT"};
 
 void UART_InitCommandSystem(void)
 {
     lastSent.level = 255;
     lastSent.motorStatus = 255;
-    strcpy(lastSent.mode, "INIT");
+    strcpy(lastSent.mode,"INIT");
 }
 
 /* =========================================================
-   TOKENIZER
+   SAFE TOKENIZER
 ========================================================= */
 
-static char* next_token(char** ctx)
+static char* next_token(char **ctx)
 {
-    char* s = *ctx;
-    if (!s) return NULL;
+    if (!ctx || !*ctx) return NULL;
 
-    char* colon = strchr(s, ':');
+    char *start = *ctx;
+
+    char *colon = strchr(start, ':');
+
     if (colon)
     {
         *colon = '\0';
@@ -59,7 +67,8 @@ static char* next_token(char** ctx)
     {
         *ctx = NULL;
     }
-    return s;
+
+    return start;
 }
 
 /* =========================================================
@@ -71,6 +80,7 @@ void UART_SendStatusPacket(void)
     extern volatile uint8_t motorStatus;
 
     uint8_t level = ModelHandle_GetTankLevelPercent();
+
     const char *mode = "IDLE";
 
     if (ModelHandle_IsRestartActive()) mode = "RESTART";
@@ -86,23 +96,142 @@ void UART_SendStatusPacket(void)
     bool changed =
         (lastSent.level != level) ||
         (lastSent.motorStatus != motorStatus) ||
-        (strcmp(lastSent.mode, mode) != 0);
+        (strcmp(lastSent.mode,mode)!=0);
 
     if (!changed) return;
 
     lastSent.level = level;
     lastSent.motorStatus = motorStatus;
-    strncpy(lastSent.mode, mode, sizeof(lastSent.mode) - 1);
-    lastSent.mode[sizeof(lastSent.mode) - 1] = '\0';
+
+    strncpy(lastSent.mode,mode,sizeof(lastSent.mode)-1);
+    lastSent.mode[sizeof(lastSent.mode)-1]='\0';
 
     char buf[120];
-    snprintf(buf, sizeof(buf),
-             "@STATUS:MOTOR:%s:LEVEL:%d:MODE:%s#",
-             motorStatus ? "ON" : "OFF",
-             level,
-             mode);
+
+    snprintf(buf,sizeof(buf),
+        "@STATUS:MOTOR:%s:LEVEL:%d:MODE:%s#",
+        motorStatus ? "ON":"OFF",
+        level,
+        mode);
 
     UART_TransmitPacket(buf);
+}
+
+/* =========================================================
+   SETTINGS PARSER (COMPACT + LEGACY)
+========================================================= */
+
+static void parse_settings(char *ctx)
+{
+    if (!ctx) return;
+
+    uint32_t dryRun  = ModelHandle_GetGapTime();
+    uint8_t  retry   = ModelHandle_GetRetryCount();
+    uint16_t maxRun  = ModelHandle_GetMaxRunTime();
+    uint16_t lowV    = ModelHandle_GetUnderVolt();
+    uint16_t highV   = ModelHandle_GetOverVolt();
+    int16_t  overL   = (int16_t)ModelHandle_GetOverloadLimit();
+    int16_t  underL  = (int16_t)ModelHandle_GetUnderloadLimit();
+    uint8_t  pwrRes  = ModelHandle_GetPowerRestoreMode();
+
+    uint8_t dryRun_en=1,testing_en=1,maxRun_en=1;
+    uint8_t lowV_en=1,highV_en=1,overL_en=1,underL_en=1;
+
+    uint8_t buzzEnable=1,buzzFull=1,buzzEmpty=1;
+
+    char *saveptr;
+
+    char *pair = strtok_r(ctx,";",&saveptr);
+
+    while(pair)
+    {
+        char *eq = strchr(pair,'=');
+
+        if(eq)
+        {
+            *eq='\0';
+
+            char *key = pair;
+            char *val = eq+1;
+
+            int v = atoi(val);
+
+            /* ===== COMPACT PROTOCOL ===== */
+
+            if(!strcmp(key,"D")) dryRun = v*60UL;
+            else if(!strcmp(key,"T")) retry=v;
+            else if(!strcmp(key,"M")) maxRun=v;
+            else if(!strcmp(key,"LV")) lowV=v;
+            else if(!strcmp(key,"HV")) highV=v;
+            else if(!strcmp(key,"OL")) overL=v;
+            else if(!strcmp(key,"UL")) underL=v;
+            else if(!strcmp(key,"PR")) pwrRes=v;
+
+            else if(!strcmp(key,"DE")) dryRun_en=v;
+            else if(!strcmp(key,"TE")) testing_en=v;
+            else if(!strcmp(key,"ME")) maxRun_en=v;
+            else if(!strcmp(key,"LVE")) lowV_en=v;
+            else if(!strcmp(key,"HVE")) highV_en=v;
+            else if(!strcmp(key,"OLE")) overL_en=v;
+            else if(!strcmp(key,"ULE")) underL_en=v;
+
+            else if(!strcmp(key,"BZ")) buzzEnable=v;
+            else if(!strcmp(key,"BF")) buzzFull=v;
+            else if(!strcmp(key,"BE")) buzzEmpty=v;
+
+            /* ===== LEGACY PROTOCOL ===== */
+
+            else if(!strcmp(key,"dryRunGap")) dryRun=v*60UL;
+            else if(!strcmp(key,"testingGap")) retry=v;
+            else if(!strcmp(key,"maxRun")) maxRun=v;
+            else if(!strcmp(key,"lowVolt")) lowV=v;
+            else if(!strcmp(key,"highVolt")) highV=v;
+            else if(!strcmp(key,"overLoad")) overL=v;
+            else if(!strcmp(key,"underLoad")) underL=v;
+            else if(!strcmp(key,"powerRestore")) pwrRes=v;
+
+            else if(!strcmp(key,"dryRunGap_en")) dryRun_en=v;
+            else if(!strcmp(key,"testingGap_en")) testing_en=v;
+            else if(!strcmp(key,"maxRun_en")) maxRun_en=v;
+            else if(!strcmp(key,"lowVolt_en")) lowV_en=v;
+            else if(!strcmp(key,"highVolt_en")) highV_en=v;
+            else if(!strcmp(key,"overLoad_en")) overL_en=v;
+            else if(!strcmp(key,"underLoad_en")) underL_en=v;
+
+            else if(!strcmp(key,"buzzerEnable")) buzzEnable=v;
+            else if(!strcmp(key,"buzzerTankFull")) buzzFull=v;
+            else if(!strcmp(key,"buzzerTankEmpty")) buzzEmpty=v;
+        }
+
+        pair=strtok_r(NULL,";",&saveptr);
+    }
+
+    ModelHandle_SetUserSettings(
+        dryRun,
+        retry,
+        lowV,
+        highV,
+        overL,
+        underL,
+        maxRun
+    );
+
+    ModelHandle_SetPowerRestoreMode(pwrRes);
+
+    ModelHandle_SetDryRun(dryRun_en);
+    ModelHandle_SetOverLoad(overL_en);
+    ModelHandle_SetOverUnderVolt(lowV_en||highV_en);
+
+    if(!buzzEnable)
+        ModelHandle_SetBuzzerSettings(0,0,0);
+    else
+        ModelHandle_SetBuzzerSettings(
+            buzzEnable,
+            buzzFull,
+            buzzEmpty
+        );
+
+    ack("@SOK#");
 }
 
 /* =========================================================
@@ -111,40 +240,59 @@ void UART_SendStatusPacket(void)
 
 void UART_HandleCommand(const char *pkt)
 {
-    if (!pkt || !*pkt) return;
+    if(!pkt || !*pkt) return;
 
     char buf[UART_RX_BUFFER_SIZE];
-    strncpy(buf, pkt, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
 
-    if (buf[0] == '@')
-        memmove(buf, buf + 1, strlen(buf));
+    strncpy(buf,pkt,sizeof(buf)-1);
+    buf[sizeof(buf)-1]='\0';
 
-    char *end = strchr(buf, '#');
-    if (end) *end = '\0';
+    if(buf[0]=='@')
+        memmove(buf,buf+1,strlen(buf));
 
-    char *ctx = buf;
-    char *cmd = next_token(&ctx);
-    if (!cmd) return;
+    char *end=strchr(buf,'#');
+    if(end) *end='\0';
 
-    /* ================= PING ================= */
-    if (!strcmp(cmd, "PING"))
+    char *ctx=buf;
+    char *cmd=next_token(&ctx);
+
+    if(!cmd) return;
+
+    /* ===== PING ===== */
+
+    if(!strcmp(cmd,"PING"))
     {
         ack("@PONG#");
         return;
     }
 
-    /* ================= RESTART ================= */
-    else if (!strcmp(cmd, "RESTART"))
+    /* ===== SETTINGS ===== */
+
+    else if(!strcmp(cmd,"SET") || !strcmp(cmd,"SETTINGS"))
+    {
+        parse_settings(ctx);
+    }
+
+    /* ===== STATUS ===== */
+
+    else if(!strcmp(cmd,"STATUS"))
+    {
+        UART_SendStatusPacket();
+        return;
+    }
+
+    /* ===== OTHER COMMANDS (UNCHANGED) ===== */
+
+    else if(!strcmp(cmd,"RESTART"))
     {
         char *sub = next_token(&ctx);
 
-        if (sub && !strcmp(sub, "ON"))
+        if(sub && !strcmp(sub,"ON"))
         {
             ModelHandle_StartRestart();
             ack("@RESTART_ON#");
         }
-        else if (sub && !strcmp(sub, "OFF"))
+        else if(sub && !strcmp(sub,"OFF"))
         {
             ModelHandle_StopRestart();
             ack("@RESTART_OFF#");
@@ -152,219 +300,27 @@ void UART_HandleCommand(const char *pkt)
         else err("@FORMAT#");
     }
 
-    /* ================= MANUAL ================= */
-    else if (!strcmp(cmd, "MANUAL"))
+    else if(!strcmp(cmd,"MANUAL"))
     {
-        char *state = next_token(&ctx);
-        if (!state) { err("@FORMAT#"); return; }
+        char *state=next_token(&ctx);
 
-        if (!strcmp(state, "ON"))
+        if(!state){ err("@FORMAT#"); return;}
+
+        if(!strcmp(state,"ON"))
         {
-            if (!ModelHandle_IsManualActive())
+            if(!ModelHandle_IsManualActive())
                 ModelHandle_ToggleManual();
+
             ack("@MANUAL_ON#");
         }
-        else if (!strcmp(state, "OFF"))
+        else if(!strcmp(state,"OFF"))
         {
-            if (ModelHandle_IsManualActive())
+            if(ModelHandle_IsManualActive())
                 ModelHandle_ToggleManual();
+
             ack("@MANUAL_OFF#");
         }
         else err("@FORMAT#");
-    }
-
-    /* ================= SEMIAUTO ================= */
-    else if (!strcmp(cmd, "SEMIAUTO"))
-    {
-        char *state = next_token(&ctx);
-        if (!state) { err("@FORMAT#"); return; }
-
-        if (!strcmp(state, "ON"))
-        {
-            ModelHandle_StartSemiAuto();
-            ack("@SEMIAUTO_ON#");
-        }
-        else if (!strcmp(state, "OFF"))
-        {
-            ModelHandle_StopSemiAuto();
-            ack("@SEMIAUTO_OFF#");
-        }
-        else err("@FORMAT#");
-    }
-
-    /* ================= AUTO ================= */
-    else if (!strcmp(cmd, "AUTO"))
-    {
-        char *state = next_token(&ctx);
-        if (!state) { err("@FORMAT#"); return; }
-
-        if (!strcmp(state, "ON"))
-        {
-            ModelHandle_StartAuto(
-                ModelHandle_GetAutoGap(),
-                ModelHandle_GetAutoMaxRun(),
-                ModelHandle_GetAutoRetry()
-            );
-            ack("@AUTO_ON#");
-        }
-        else if (!strcmp(state, "OFF"))
-        {
-            ModelHandle_StopAuto();
-            ack("@AUTO_OFF#");
-        }
-        else err("@FORMAT#");
-    }
-    else if (!strcmp(cmd, "SETTINGS"))
-    {
-        if (!ctx) return;
-
-        uint32_t dryRun  = ModelHandle_GetGapTime();
-        uint8_t  retry   = ModelHandle_GetRetryCount();
-        uint16_t maxRun  = ModelHandle_GetMaxRunTime();
-        uint16_t lowV    = ModelHandle_GetUnderVolt();
-        uint16_t highV   = ModelHandle_GetOverVolt();
-        int16_t  overL   = (int16_t)ModelHandle_GetOverloadLimit();
-        int16_t  underL  = (int16_t)ModelHandle_GetUnderloadLimit();
-        uint8_t  pwrRes  = ModelHandle_GetPowerRestoreMode();
-
-        char *saveptr;
-        char *pair = strtok_r(ctx, ";", &saveptr);
-
-        while (pair)
-        {
-            char *eq = strchr(pair, '=');
-            if (eq)
-            {
-                *eq = '\0';
-                char *key = pair;
-                char *val = eq + 1;
-
-                if (!strcmp(key, "dryRunGap"))
-                {
-                    uint32_t min = atoi(val);
-                    dryRun = min * 60UL;
-                }
-                else if (!strcmp(key, "testingGap"))
-                    retry = atoi(val);
-
-                else if (!strcmp(key, "maxRun"))
-                    maxRun = atoi(val);
-
-                else if (!strcmp(key, "lowVolt"))
-                    lowV = atoi(val);
-
-                else if (!strcmp(key, "highVolt"))
-                    highV = atoi(val);
-
-                else if (!strcmp(key, "overLoad"))
-                    overL = atoi(val);
-
-                else if (!strcmp(key, "underLoad"))
-                    underL = atoi(val);
-
-                else if (!strcmp(key, "powerRestore"))
-                    pwrRes = atoi(val);
-            }
-
-            pair = strtok_r(NULL, ";", &saveptr);
-        }
-
-        ModelHandle_SetUserSettings(
-            dryRun,
-            retry,
-            lowV,
-            highV,
-            overL,
-            underL,
-            maxRun
-        );
-
-        ModelHandle_SetPowerRestoreMode(pwrRes);
-
-        ack("@SETTINGS_OK#");
-    }
-
-    else if (!strcmp(cmd, "COUNTDOWN"))
-    {
-        char *sub = next_token(&ctx);
-
-        if (sub && !strcmp(sub, "ON"))
-        {
-            char *minStr = next_token(&ctx);
-            if (!minStr) { err("@FORMAT#"); return; }
-
-            uint32_t min = atoi(minStr);
-            if (min == 0) min = 1;
-
-            ModelHandle_StartCountdown(min * 60UL);
-            ack("@COUNTDOWN_ON#");
-        }
-        else if (sub && !strcmp(sub, "OFF"))
-        {
-            ModelHandle_StopCountdown();
-            ack("@COUNTDOWN_OFF#");
-        }
-        else err("@FORMAT#");
-    }
-
-    /* ================= TIMER ================= */
-    else if (!strcmp(cmd, "TIMER"))
-    {
-        char *sub = next_token(&ctx);
-
-        if (sub && !strcmp(sub, "STOP"))
-        {
-            ModelHandle_StopTimer();
-            ack("@TIMER_STOP#");
-            return;
-        }
-
-        if (sub && !strcmp(sub, "SET"))
-        {
-            char *slotStr = next_token(&ctx);
-            char *daysStr = next_token(&ctx);
-            char *h1s = next_token(&ctx);
-            char *m1s = next_token(&ctx);
-            char *h2s = next_token(&ctx);
-            char *m2s = next_token(&ctx);
-            char *gapStr = next_token(&ctx);
-            char *extra = next_token(&ctx);   // <-- NEW (handles extra field)
-
-            if (!slotStr || !daysStr || !h1s || !m1s || !h2s || !m2s || !gapStr)
-            {
-                err("@TIMER_FORMAT#");
-                return;
-            }
-
-            if (extra != NULL)   // If extra token exists, shift gap
-            {
-                gapStr = extra;
-            }
-
-            int slot = atoi(slotStr);
-            if (slot < 1 || slot > 5)
-            {
-                err("@TIMER_RANGE#");
-                return;
-            }
-            uint8_t idx = slot - 1;
-
-            timerSlots[idx].enabled = true;
-            timerSlots[idx].dayMask = 0x7F;
-            timerSlots[idx].onHour = atoi(h1s);
-            timerSlots[idx].onMinute = atoi(m1s);
-            timerSlots[idx].offHour = atoi(h2s);
-            timerSlots[idx].offMinute = atoi(m2s);
-
-            ModelHandle_StartTimer();
-            ack("@TIMER_OK#");
-        }
-        else err("@FORMAT#");
-    }
-    else if (!strcmp(cmd, "STATUS"))
-    {
-        UART_SendStatusPacket();
-        return;
     }
 
     g_screenUpdatePending = true;

@@ -1382,6 +1382,8 @@ static void auto_mode_background_control(void)
         ModelHandle_StopAuto();
     }
 }
+
+
 void ModelHandle_SetBuzzerSettings(uint8_t pump,
                                    uint8_t full,
                                    uint8_t empty)
@@ -1910,22 +1912,65 @@ void ModelHandle_SetUserSettings(uint32_t gap_seconds,
                                  int16_t  underload,
                                  uint16_t maxrun_min)
 {
+    /* -------- Sanity limits -------- */
+
     if (gap_seconds > 86400UL)
         gap_seconds = 86400UL;
+
+    if (retry > 20)
+        retry = 20;
+
+    if (maxrun_min > 1440)
+        maxrun_min = 1440;
+
+    /* -------- Update sys structure -------- */
+
     sys.gap_time_s  = gap_seconds;
     sys.retry_count = retry;
     sys.uv_limit    = uv_limit;
     sys.ov_limit    = ov_limit;
+
     sys.overload    = (float)overload;
     sys.underload   = (float)underload;
+
     sys.maxrun_min  = maxrun_min;
+
+    /* -------- Immediately save -------- */
+
     ModelHandle_SaveSettingsToEEPROM();
+
+    /* -------- Reset fault flags -------- */
+
+    senseOverLoad      = false;
+    senseUnderLoad     = false;
+    senseOverUnderVolt = false;
+    senseMaxRunReached = false;
+
+    /* -------- Update running modes -------- */
+
     if (autoActive)
     {
         uint32_t now = HAL_GetTick();
-        uint32_t gapSec = (sys.gap_time_s == 0) ? 120 : sys.gap_time_s;
-        autoDeadline = now + (gapSec * 1000UL);
+        uint32_t gap = sys.gap_time_s;
+
+        if (gap == 0)
+            gap = 120;
+
+        autoDeadline = now + (gap * 1000UL);
     }
+
+    /* -------- Debug (very important) -------- */
+
+    char dbg[80];
+    snprintf(dbg,sizeof(dbg),
+        "@SYS_UPDATE:GAP:%lu RET:%d UV:%d OV:%d MAX:%d#",
+        sys.gap_time_s,
+        sys.retry_count,
+        sys.uv_limit,
+        sys.ov_limit,
+        sys.maxrun_min);
+
+    UART_TransmitPacket(dbg);
 }
 
 void ModelHandle_SetAutoSettings(uint16_t gap_s,
@@ -1968,11 +2013,14 @@ void ModelHandle_SetTimerSlot(uint8_t slot,
 }
 void ModelHandle_SetDryRun(bool on)
 {
-    sys.gap_time_s = on ? (sys.gap_time_s ? sys.gap_time_s : 10) : 0;
+    sys.dry_run_enable = on ? 1 : 0;
 }
 void ModelHandle_SetOverLoad(bool on)
 {
-    sys.overload = on ? (sys.overload > 0.1f ? sys.overload : 9.0f) : 0.0f;
+    if (!on)
+        sys.overload = 0.0f;
+    else if (sys.overload < 0.1f)
+        sys.overload = 9.0f;
 }
 void ModelHandle_SetOverUnderVolt(bool on)
 {
@@ -1983,8 +2031,11 @@ void ModelHandle_SetOverUnderVolt(bool on)
     }
     else
     {
-        if (!sys.uv_limit) sys.uv_limit = 190;
-        if (!sys.ov_limit) sys.ov_limit = 270;
+        if (!sys.uv_limit)
+            sys.uv_limit = 190;
+
+        if (!sys.ov_limit)
+            sys.ov_limit = 270;
     }
 }
 void ModelHandle_ClearMaxRunFlag(void)
