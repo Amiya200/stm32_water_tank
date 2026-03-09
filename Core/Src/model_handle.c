@@ -242,7 +242,8 @@ static bool     semiWaterLossPending = false;
 typedef struct __attribute__((packed))
 {
     uint16_t sig;
-    uint32_t gap;
+    uint32_t gap;           // dry run gap seconds
+    uint16_t dry_time;      // NEW → testing gap seconds
     uint8_t  retry;
     uint16_t uv;
     uint16_t ov;
@@ -250,11 +251,12 @@ typedef struct __attribute__((packed))
     uint16_t over10;
     uint16_t under10;
     uint16_t crc;
+
 } SystemEEPROMBlock;
 #define PROBE_THRESHOLD 0.30f
 #define SENSOR_STABLE_TIME_MS 1500UL
 #define EE_ADDR_SYS_BLOCK  0x0000
-#define SYS_SIG 0x5A5A
+#define SYS_SIG 0x5A5B
 typedef enum {
     RESTART_RUN_TEST = 0,
     RESTART_WAIT_GAP,
@@ -304,11 +306,12 @@ void ModelHandle_SaveSettingsToEEPROM(void)
     SystemEEPROMBlock b;
     memset(&b, 0, sizeof(b));
     b.sig     = SYS_SIG;
-    b.gap     = sys.gap_time_s;
-    b.retry   = sys.retry_count;
-    b.uv      = sys.uv_limit;
-    b.ov      = sys.ov_limit;
-    b.maxrun  = sys.maxrun_min;
+    b.gap      = sys.dry_run_time_s;
+    b.dry_time = sys.gap_time_s;
+    b.retry    = sys.retry_count;
+    b.uv       = sys.uv_limit;
+    b.ov       = sys.ov_limit;
+    b.maxrun   = sys.maxrun_min;
     b.over10  = (uint16_t)(sys.overload * 10.0f);
     b.under10 = (uint16_t)(sys.underload * 10.0f);
     b.crc = SYS_CRC16((uint8_t*)&b, sizeof(b) - 2);
@@ -329,11 +332,12 @@ void ModelHandle_LoadSettingsFromEEPROM(void)
         ModelHandle_SaveSettingsToEEPROM();
         return;
     }
-    sys.gap_time_s  = b.gap;
-    sys.retry_count = b.retry;
-    sys.uv_limit    = b.uv;
-    sys.ov_limit    = b.ov;
-    sys.maxrun_min  = b.maxrun;
+    sys.gap_time_s      = b.dry_time;
+    sys.dry_run_time_s  = b.gap;
+    sys.retry_count     = b.retry;
+    sys.uv_limit        = b.uv;
+    sys.ov_limit        = b.ov;
+    sys.maxrun_min      = b.maxrun;
     sys.overload    = b.over10  / 10.0f;
     sys.underload   = b.under10 / 10.0f;
 }
@@ -649,8 +653,8 @@ void ModelHandle_StartTimerNearestSlot(void)
 
 static inline void Buzzer_SetPin(bool on)
 {
-//    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-//                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 static void Buzzer_StartEvent(BuzzerEvent ev)
 {
@@ -1198,9 +1202,8 @@ void ModelHandle_ProcessTimerSlots(void)
         stop_motor();
         return;
     }
-
-    uint32_t dryTestMs  = sys.dry_run_time_s * 1000UL;
-    uint32_t retryGapMs = sys.gap_time_s * 1000UL;
+    uint32_t dryTestMs  = sys.gap_time_s * 1000UL;
+    uint32_t retryGapMs = sys.dry_run_time_s * 1000UL;
 
     ModelHandle_CheckDryRun();
 
@@ -1409,8 +1412,8 @@ static void auto_tick(void)
 
     uint32_t now = HAL_GetTick();
 
-    uint32_t dryTestMs  = sys.dry_run_time_s * 1000UL;
-    uint32_t retryGapMs = sys.gap_time_s * 1000UL;
+    uint32_t dryTestMs  = sys.gap_time_s * 1000UL;
+    uint32_t retryGapMs = sys.dry_run_time_s * 1000UL;
 
     ModelHandle_CheckDryRun();
 
