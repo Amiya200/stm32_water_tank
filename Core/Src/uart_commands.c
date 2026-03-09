@@ -117,22 +117,20 @@ void UART_SendStatusPacket(void)
     UART_TransmitPacket(buf);
 }
 
-/* =========================================================
-   SETTINGS PARSER (COMPACT + LEGACY)
-========================================================= */
-
 static void parse_settings(char *ctx)
 {
     if (!ctx) return;
 
-    uint32_t dryRun  = ModelHandle_GetGapTime();
-    uint8_t  retry   = ModelHandle_GetRetryCount();
-    uint16_t maxRun  = ModelHandle_GetMaxRunTime();
-    uint16_t lowV    = ModelHandle_GetUnderVolt();
-    uint16_t highV   = ModelHandle_GetOverVolt();
-    int16_t  overL   = (int16_t)ModelHandle_GetOverloadLimit();
-    int16_t  underL  = (int16_t)ModelHandle_GetUnderloadLimit();
-    uint8_t  pwrRes  = ModelHandle_GetPowerRestoreMode();
+    uint32_t gap_time_s     = ModelHandle_GetGapTime();
+    uint8_t  retry_count    = ModelHandle_GetRetryCount();
+    uint16_t maxrun_min     = ModelHandle_GetMaxRunTime();
+    uint16_t lowV           = ModelHandle_GetUnderVolt();
+    uint16_t highV          = ModelHandle_GetOverVolt();
+    int16_t  overL          = (int16_t)ModelHandle_GetOverloadLimit();
+    int16_t  underL         = (int16_t)ModelHandle_GetUnderloadLimit();
+    uint8_t  pwrRes         = ModelHandle_GetPowerRestoreMode();
+
+    uint32_t dry_run_time_s = 60;   // testing gap default
 
     uint8_t dryRun_en=1,testing_en=1,maxRun_en=1;
     uint8_t lowV_en=1,highV_en=1,overL_en=1,underL_en=1;
@@ -140,7 +138,6 @@ static void parse_settings(char *ctx)
     uint8_t buzzEnable=1,buzzFull=1,buzzEmpty=1;
 
     char *saveptr;
-
     char *pair = strtok_r(ctx,";",&saveptr);
 
     while(pair)
@@ -156,71 +153,119 @@ static void parse_settings(char *ctx)
 
             int v = atoi(val);
 
-            /* ===== COMPACT PROTOCOL ===== */
+            /* ========= COMPACT PROTOCOL ========= */
 
-            if(!strcmp(key,"D")) dryRun = v*60UL;
-            else if(!strcmp(key,"T")) retry=v;
-            else if(!strcmp(key,"M")) maxRun=v;
-            else if(!strcmp(key,"LV")) lowV=v;
-            else if(!strcmp(key,"HV")) highV=v;
-            else if(!strcmp(key,"OL")) overL=v;
-            else if(!strcmp(key,"UL")) underL=v;
-            else if(!strcmp(key,"PR")) pwrRes=v;
+            if(!strcmp(key,"D"))
+                gap_time_s = v * 60UL;
 
-            else if(!strcmp(key,"DE")) dryRun_en=v;
-            else if(!strcmp(key,"TE")) testing_en=v;
-            else if(!strcmp(key,"ME")) maxRun_en=v;
-            else if(!strcmp(key,"LVE")) lowV_en=v;
-            else if(!strcmp(key,"HVE")) highV_en=v;
-            else if(!strcmp(key,"OLE")) overL_en=v;
-            else if(!strcmp(key,"ULE")) underL_en=v;
+            else if(!strcmp(key,"RC"))
+                retry_count = v;
 
-            else if(!strcmp(key,"BZ")) buzzEnable=v;
-            else if(!strcmp(key,"BF")) buzzFull=v;
-            else if(!strcmp(key,"BE")) buzzEmpty=v;
+            else if(!strcmp(key,"T"))
+                dry_run_time_s = v * 60UL;
 
-            /* ===== LEGACY PROTOCOL ===== */
+            else if(!strcmp(key,"M"))
+                maxrun_min = v;
 
-            else if(!strcmp(key,"dryRunGap")) dryRun=v*60UL;
-            else if(!strcmp(key,"testingGap")) retry=v;
-            else if(!strcmp(key,"maxRun")) maxRun=v;
-            else if(!strcmp(key,"lowVolt")) lowV=v;
-            else if(!strcmp(key,"highVolt")) highV=v;
-            else if(!strcmp(key,"overLoad")) overL=v;
-            else if(!strcmp(key,"underLoad")) underL=v;
-            else if(!strcmp(key,"powerRestore")) pwrRes=v;
+            else if(!strcmp(key,"LV"))
+                lowV = v;
 
-            else if(!strcmp(key,"dryRunGap_en")) dryRun_en=v;
-            else if(!strcmp(key,"testingGap_en")) testing_en=v;
-            else if(!strcmp(key,"maxRun_en")) maxRun_en=v;
-            else if(!strcmp(key,"lowVolt_en")) lowV_en=v;
-            else if(!strcmp(key,"highVolt_en")) highV_en=v;
-            else if(!strcmp(key,"overLoad_en")) overL_en=v;
-            else if(!strcmp(key,"underLoad_en")) underL_en=v;
+            else if(!strcmp(key,"HV"))
+                highV = v;
 
-            else if(!strcmp(key,"buzzerEnable")) buzzEnable=v;
-            else if(!strcmp(key,"buzzerTankFull")) buzzFull=v;
-            else if(!strcmp(key,"buzzerTankEmpty")) buzzEmpty=v;
+            else if(!strcmp(key,"OL"))
+                overL = v;
+
+            else if(!strcmp(key,"UL"))
+                underL = v;
+
+            else if(!strcmp(key,"PR"))
+                pwrRes = v;
+
+            else if(!strcmp(key,"DE"))
+                dryRun_en = v;
+
+            else if(!strcmp(key,"TE"))
+                testing_en = v;
+
+            else if(!strcmp(key,"ME"))
+                maxRun_en = v;
+
+            else if(!strcmp(key,"LVE"))
+                lowV_en = v;
+
+            else if(!strcmp(key,"HVE"))
+                highV_en = v;
+
+            else if(!strcmp(key,"OLE"))
+                overL_en = v;
+
+            else if(!strcmp(key,"ULE"))
+                underL_en = v;
+
+            else if(!strcmp(key,"BZ"))
+                buzzEnable = v;
+
+            else if(!strcmp(key,"BF"))
+                buzzFull = v;
+
+            else if(!strcmp(key,"BE"))
+                buzzEmpty = v;
+
+            /* ========= LEGACY PROTOCOL ========= */
+
+            else if(!strcmp(key,"dryRunGap"))
+                gap_time_s = v * 60UL;
+
+            else if(!strcmp(key,"retryCount"))
+                retry_count = v;
+
+            else if(!strcmp(key,"testingGap"))
+                dry_run_time_s = v * 60UL;
+
+            else if(!strcmp(key,"maxRun"))
+                maxrun_min = v;
+
+            else if(!strcmp(key,"lowVolt"))
+                lowV = v;
+
+            else if(!strcmp(key,"highVolt"))
+                highV = v;
+
+            else if(!strcmp(key,"overLoad"))
+                overL = v;
+
+            else if(!strcmp(key,"underLoad"))
+                underL = v;
+
+            else if(!strcmp(key,"powerRestore"))
+                pwrRes = v;
         }
 
-        pair=strtok_r(NULL,";",&saveptr);
+        pair = strtok_r(NULL,";",&saveptr);
     }
 
+    /* APPLY SETTINGS */
+
     ModelHandle_SetUserSettings(
-        dryRun,
-        retry,
+        gap_time_s,
+        retry_count,
         lowV,
         highV,
         overL,
         underL,
-        maxRun
+        maxrun_min
     );
+
+    ModelHandle_SetDryRunTime(dry_run_time_s);
 
     ModelHandle_SetPowerRestoreMode(pwrRes);
 
     ModelHandle_SetDryRun(dryRun_en);
+
     ModelHandle_SetOverLoad(overL_en);
-    ModelHandle_SetOverUnderVolt(lowV_en||highV_en);
+
+    ModelHandle_SetOverUnderVolt(lowV_en || highV_en);
 
     if(!buzzEnable)
         ModelHandle_SetBuzzerSettings(0,0,0);
@@ -233,11 +278,6 @@ static void parse_settings(char *ctx)
 
     ack("@SOK#");
 }
-
-/* =========================================================
-   COMMAND HANDLER
-========================================================= */
-
 void UART_HandleCommand(const char *pkt)
 {
     if(!pkt || !*pkt) return;

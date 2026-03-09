@@ -3,5 +3,5 @@
 ../Core/Src/uart_commands.c:42:6:UART_InitCommandSystem	1
 ../Core/Src/uart_commands.c:53:14:next_token	4
 ../Core/Src/uart_commands.c:78:6:UART_SendStatusPacket	14
-../Core/Src/uart_commands.c:124:13:parse_settings	43
-../Core/Src/uart_commands.c:241:6:UART_HandleCommand	21
+../Core/Src/uart_commands.c:120:13:parse_settings	35
+../Core/Src/uart_commands.c:281:6:UART_HandleCommand	21

@@ -554,6 +554,15 @@ void ModelHandle_SetPowerRestoreMode(uint8_t mode)
     powerRestoreMode = mode;
     ModelHandle_SaveModeState();
 }
+void ModelHandle_SetDryRunTime(uint32_t seconds)
+{
+    if (seconds < 10)
+        seconds = 10;
+    if (seconds > 3600)
+        seconds = 3600;
+    sys.dry_run_time_s = seconds;
+    ModelHandle_SaveSettingsToEEPROM();
+}
 void ModelHandle_ToggleManual(void)
 {
     if (!manualActive)
