@@ -653,8 +653,8 @@ void ModelHandle_StartTimerNearestSlot(void)
 
 static inline void Buzzer_SetPin(bool on)
 {
-    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+//    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+//                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 static void Buzzer_StartEvent(BuzzerEvent ev)
 {
@@ -667,36 +667,27 @@ static void Buzzer_Update(void)
     uint32_t now = HAL_GetTick();
     static bool buzzerState = false;
     bool newState = false;
-
     bool motorOn = Motor_GetStatus();
-
-    /* Pump running sound */
     if (buzzerSettings.pumpOnSound && motorOn)
     {
         newState = true;
     }
-
-    /* Tank Full Sound (continuous 30 sec) */
     else if (buzzerSettings.tankFullSound &&
              activeBuzzEvent == BUZZ_TANK_FULL &&
              now < buzzerAlertUntil)
     {
         newState = true;
     }
-
-    /* Tank Empty Sound (short pulses) */
     else if (buzzerSettings.tankEmptySound &&
              activeBuzzEvent == BUZZ_TANK_EMPTY &&
              now < buzzerAlertUntil)
     {
         newState = ((now % 400UL) < 80UL);
     }
-
     else
     {
         activeBuzzEvent = BUZZ_NONE;
     }
-
     if (newState != buzzerState)
     {
         buzzerState = newState;
