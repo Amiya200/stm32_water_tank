@@ -1168,7 +1168,10 @@ static UiButton decode_button_press(void)
     static uint32_t press_time[4] = {0};
     static bool long_sent[4] = {0};
     static uint32_t last_repeat_time[4] = {0};
+
     uint32_t now = HAL_GetTick();
+    UiButton result = BTN_NONE;
+
     for (int i = 0; i < 4; i++)
     {
         bool raw = Switch_IsPressed(i);
@@ -1178,6 +1181,7 @@ static UiButton decode_button_press(void)
             last_change_time[i] = now;
             last_raw[i] = raw;
         }
+
         if ((now - last_change_time[i]) > DEBOUNCE_MS)
         {
             if (stable_state[i] != raw)
@@ -1195,15 +1199,16 @@ static UiButton decode_button_press(void)
                     {
                         switch (i)
                         {
-                            case 0: return BTN_RESET;
-                            case 1: return BTN_SELECT;
-                            case 2: return BTN_UP;
-                            case 3: return BTN_DOWN;
+                            case 0: result = BTN_RESET; break;
+                            case 1: result = BTN_SELECT; break;
+                            case 2: result = BTN_UP; break;
+                            case 3: result = BTN_DOWN; break;
                         }
                     }
                 }
             }
         }
+
         if (stable_state[i] && !long_sent[i])
         {
             if ((now - press_time[i]) >= LONG_PRESS_MS)
@@ -1213,31 +1218,27 @@ static UiButton decode_button_press(void)
 
                 switch (i)
                 {
-                    case 0: return BTN_RESET_LONG;
-                    case 1: return BTN_SELECT_LONG;
-                    case 2: return BTN_UP_LONG;
-                    case 3: return BTN_DOWN_LONG;
+                    case 0: result = BTN_RESET_LONG; break;
+                    case 1: result = BTN_SELECT_LONG; break;
+                    case 2: result = BTN_UP_LONG; break;
+                    case 3: result = BTN_DOWN_LONG; break;
                 }
-            }
-        }
-        if (stable_state[i] && long_sent[i])
-        {
-            if ((now - last_repeat_time[i]) >= REPEAT_INTERVAL_MS)
-            {
-                last_repeat_time[i] = now;
-                continue;
             }
         }
     }
 
-    return BTN_NONE;
+    return result;
 }
+
 void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
+
     if (b == BTN_NONE)
         return;
+
     refreshInactivityTimer();
+
     if (ui == UI_COUNTDOWN && b == BTN_DOWN)
     {
         ModelHandle_StopCountdown();
@@ -1245,11 +1246,15 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
+
     if (b == BTN_RESET)
     {
         if (ui == UI_DASH)
         {
-            ModelHandle_StartRestart();
+            if (!ModelHandle_IsRestartActive())
+                ModelHandle_StartRestart();
+            else
+                ModelHandle_StopRestart();
         }
         else
         {
@@ -1269,6 +1274,7 @@ void Screen_HandleSwitches(void)
                 case UI_DEVSET_EDIT_DAY:
                     ui = UI_DEVSET_MENU;
                     break;
+
                 case UI_DEVSET_MENU:
                 case UI_ADD_DEVICE_MENU:
                 case UI_ADD_DEVICE_PAIR:
@@ -1277,34 +1283,43 @@ void Screen_HandleSwitches(void)
                 case UI_ADD_DEVICE_REMOVE_DONE:
                     ui = UI_MENU;
                     break;
+
                 case UI_COUNTDOWN_EDIT_MIN:
                     ui = UI_COUNTDOWN;
                     break;
+
                 case UI_COUNTDOWN:
                     ModelHandle_StopCountdown();
                     ui = UI_DASH;
                     break;
+
                 default:
                     ui = UI_DASH;
                     break;
             }
         }
+
         screenNeedsRefresh = true;
         return;
     }
+
     if (ui == UI_RESET_CONFIRM)
     {
         if (b == BTN_UP || b == BTN_DOWN)
             reset_confirm_yes = !reset_confirm_yes;
+
         else if (b == BTN_SELECT)
         {
             if (reset_confirm_yes)
                 ModelHandle_FactoryReset();
+
             ui = UI_DASH;
         }
+
         screenNeedsRefresh = true;
         return;
     }
+
     if (ui == UI_DASH)
     {
         switch (b)
@@ -1321,20 +1336,22 @@ void Screen_HandleSwitches(void)
                 else
                     ModelHandle_StopAuto();
                 break;
+
             case BTN_SELECT_LONG:
                 ui = UI_MENU;
                 menu_idx = 0;
                 menu_view_top = 0;
                 screenNeedsRefresh = true;
                 return;
+
             case BTN_UP:
-                if (semiAutoActive) break;
                 if (!timerActive)
                     ModelHandle_Button3_SinglePress();
                 else
                     ModelHandle_StopTimer();
                 screenNeedsRefresh = true;
                 break;
+
             case BTN_UP_LONG:
                 if (!semiAutoActive)
                     ModelHandle_StartSemiAuto();
@@ -1342,6 +1359,7 @@ void Screen_HandleSwitches(void)
                     ModelHandle_StopSemiAuto();
                 screenNeedsRefresh = true;
                 break;
+
             case BTN_DOWN:
                 if (!countdownActive)
                 {
@@ -1357,6 +1375,7 @@ void Screen_HandleSwitches(void)
                 }
                 screenNeedsRefresh = true;
                 return;
+
             case BTN_DOWN_LONG:
                 if (!countdownActive)
                 {
@@ -1365,9 +1384,11 @@ void Screen_HandleSwitches(void)
                     screenNeedsRefresh = true;
                 }
                 break;
+
             default:
                 break;
         }
+
         return;
     }
 
@@ -1375,80 +1396,80 @@ void Screen_HandleSwitches(void)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
             menu_select();
+
         else if (b == BTN_DOWN && menu_idx < MAIN_MENU_COUNT - 1)
             menu_idx++;
+
         else if (b == BTN_UP && menu_idx > 0)
             menu_idx--;
+
         screenNeedsRefresh = true;
         return;
     }
+
     if (ui == UI_DEVSET_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
             menu_select();
+
         else if (b == BTN_DOWN && devset_idx < DEVSET_MENU_COUNT - 1)
             devset_idx++;
+
         else if (b == BTN_UP && devset_idx > 0)
             devset_idx--;
+
         screenNeedsRefresh = true;
         return;
     }
+
     if (ui != UI_DASH)
     {
         if (b == BTN_UP)
             increase_edit_value(1);
+
         else if (b == BTN_DOWN)
             decrease_edit_value(1);
+
         else if (b == BTN_UP_LONG)
             increase_edit_value(5);
+
         else if (b == BTN_DOWN_LONG)
             decrease_edit_value(5);
+
         else if (b == BTN_SELECT)
             menu_select();
+
         screenNeedsRefresh = true;
         return;
     }
 }
+
 void Screen_Update(void)
 {
     uint32_t now = HAL_GetTick();
-    static uint32_t tankFullCountdownStart = 0;
-    if (countdownActive && ui == UI_COUNTDOWN)
+    static uint32_t lastBlink = 0;
+
+    if(ui >= UI_MAX_)
     {
-        if (ModelHandle_IsTankFull())
-        {
-            if (tankFullCountdownStart == 0)
-                tankFullCountdownStart = now;
-            if ((now - tankFullCountdownStart) >= 10000UL)
-            {
-                ModelHandle_StopCountdown();
-                countdownActive = false;
-                ui = UI_DASH;
-                tankFullCountdownStart = 0;
-                screenNeedsRefresh = true;
-            }
-        }
-        else
-        {
-            tankFullCountdownStart = 0;
-        }
-    }
-    else
-    {
-        tankFullCountdownStart = 0;
-    }
-    if (countdownActive && countdownDuration == 0)
-    {
-        ModelHandle_StopCountdown();
-        countdownActive = false;
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
+
+    if (now - lastBlink > CURSOR_BLINK_MS)
+    {
+        lastBlink = now;
+        cursorVisible = !cursorVisible;
+
+        if(ui == UI_MENU)
+            screenNeedsRefresh = true;
+    }
+
     if (ui == UI_WELCOME && (now - lastLcdUpdateTime >= WELCOME_MS))
     {
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
+
     if (ui != UI_WELCOME &&
         ui != UI_DASH &&
         ui != UI_COUNTDOWN &&
@@ -1457,12 +1478,14 @@ void Screen_Update(void)
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
+
     if ((ui == UI_DASH || ui == UI_COUNTDOWN) &&
         (now - lastLcdUpdateTime) >= 1000)
     {
         lastLcdUpdateTime = now;
         screenNeedsRefresh = true;
     }
+
     if (screenNeedsRefresh || ui != last_ui)
     {
         if (ui != last_ui)
@@ -1470,7 +1493,9 @@ void Screen_Update(void)
             lcd_clear();
             last_ui = ui;
         }
+
         screenNeedsRefresh = false;
+
         switch (ui)
         {
             case UI_WELCOME:    show_welcome(); break;
@@ -1480,50 +1505,9 @@ void Screen_Update(void)
             case UI_COUNTDOWN_EDIT_MIN: show_countdown_edit_min(); break;
             case UI_DEVSET_MENU: show_devset_menu(); break;
             case UI_RESET_CONFIRM: show_reset_confirm(); break;
-
-            case UI_ADD_DEVICE_MENU:        show_add_device_menu(); break;
-            case UI_ADD_DEVICE_PAIR:        show_add_device_pair(); break;
-            case UI_ADD_DEVICE_REMOVE:      show_add_device_remove(); break;
-            case UI_ADD_DEVICE_PAIR_DONE:   show_add_device_pair_done(); break;
-            case UI_ADD_DEVICE_REMOVE_DONE: show_add_device_remove_done(); break;
-
-            case UI_DEVSET_EDIT_DATE:   show_devset_edit_date(); break;
-            case UI_DEVSET_EDIT_TIME:   show_devset_edit_time(); break;
-            case UI_DEVSET_EDIT_DAY:    show_devset_edit_day(); break;
-
-            case UI_SETTINGS_GAP:    show_settings_gap(); break;
-            case UI_SETTINGS_RETRY:  show_settings_retry(); break;
-            case UI_SETTINGS_UV:     show_settings_uv(); break;
-            case UI_SETTINGS_OV:     show_settings_ov(); break;
-            case UI_SETTINGS_OL:     show_settings_ol(); break;
-            case UI_SETTINGS_UL:     show_settings_ul(); break;
-            case UI_SETTINGS_MAXRUN: show_settings_maxrun(); break;
-            case UI_SETTINGS_PWRREST: show_settings_pwrrest(); break;
-            case UI_SETTINGS_FACTORY: show_settings_factory(); break;
-
-            case UI_TIMER_SLOT_SELECT:  show_timer_slot_select(); break;
-            case UI_TIMER_EDIT_ON_TIME: show_edit_on_time(); break;
-            case UI_TIMER_EDIT_OFF_TIME:show_edit_off_time(); break;
-            case UI_TIMER_EDIT_DAYS:    show_timer_days(); break;
-            case UI_TIMER_EDIT_GAP:     show_timer_gap(); break;
-            case UI_TIMER_EDIT_ENABLE:  show_timer_enable(); break;
-            case UI_TIMER_EDIT_SUMMARY: show_timer_summary(); break;
-
-            case UI_AUTO_MENU:        show_auto_menu(); break;
-            case UI_AUTO_EDIT_GAP:    show_auto_gap(); break;
-            case UI_AUTO_EDIT_MAXRUN: show_auto_maxrun(); break;
-            case UI_AUTO_EDIT_RETRY:  show_auto_retry(); break;
-
-            case UI_SEMI_AUTO: show_semi_auto(); break;
-
-            case UI_TWIST:            show_twist(); break;
-            case UI_TWIST_EDIT_ON:    show_twist_on_sec(); break;
-            case UI_TWIST_EDIT_OFF:   show_twist_off_sec(); break;
-            case UI_TWIST_EDIT_ON_H:  show_twist_on_h(); break;
-            case UI_TWIST_EDIT_ON_M:  show_twist_on_m(); break;
-            case UI_TWIST_EDIT_OFF_H: show_twist_off_h(); break;
-            case UI_TWIST_EDIT_OFF_M: show_twist_off_m(); break;
-
+            case UI_DEVSET_EDIT_DATE: show_devset_edit_date(); break;
+            case UI_DEVSET_EDIT_TIME: show_devset_edit_time(); break;
+            case UI_DEVSET_EDIT_DAY: show_devset_edit_day(); break;
             default: break;
         }
     }

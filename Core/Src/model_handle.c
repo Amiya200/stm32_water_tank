@@ -48,12 +48,14 @@ static uint16_t Timer_CRC16(const uint8_t *data, uint16_t len)
     return crc;
 }
 #define MOTOR_START_DELAY_MS   5000UL
-#define TANK_FULL_DELAY_MS     20000UL
+#define TANK_FULL_DELAY_MS     10000UL
 static uint32_t bootStartBlockUntil = 0;
 static uint32_t tankFullDetectedAt  = 0;
 static bool     tankFullPendingStop = false;
 TimerSlot timerSlots[5];
 static uint32_t autoRunStartMs = 0;
+static void Buzzer_TankEmptyPattern(void);
+static void Buzzer_TankFullPattern(void);
 volatile bool manualActive    = false;
 volatile bool semiAutoActive  = false;
 volatile bool countdownActive = false;
@@ -207,6 +209,8 @@ static uint32_t bootBlockUntil = 0;
 static uint32_t twist_deadline = 0;
 static bool autoBackgroundEnabled = true;
 static bool autoUserLocked = false;
+static bool lastMotorState = false;
+static uint32_t motorBuzzUntil = 0;
 typedef struct __attribute__((packed))
 {
     uint16_t sig;
@@ -617,16 +621,29 @@ void ModelHandle_Button3_SinglePress(void)
 {
     if (!timerActive)
     {
-        if (!manualActive)
-            clear_all_modes();
+        /* stop other modes */
+        clear_all_modes();
+
+        /* enable timer mode */
         timerActive = true;
         motorOwner  = MOTOR_OWNER_TIMER;
+
+        /* reset timer state machine */
+        timerState = TIMER_RUN_TEST;
+        timerStateDeadline = 0;
+
+        /* evaluate current slot immediately */
+        ModelHandle_ProcessTimerSlots();
     }
     else
     {
+        /* disable timer mode */
         timerActive = false;
+        motorOwner  = MOTOR_OWNER_NONE;
+
         stop_motor();
     }
+
     ModelHandle_SaveModeState();
 }
 void ModelHandle_StopAllModesAndMotor(void)
@@ -651,49 +668,98 @@ void ModelHandle_StartTimerNearestSlot(void)
     ModelHandle_ProcessTimerSlots();
 }
 
+/* ---------------- BUZZER ENGINE ---------------- */
+
+static uint32_t buzzerPatternStart = 0;
+static uint32_t buzzerLastToggle   = 0;
+
+static bool buzzerState = false;
+
 static inline void Buzzer_SetPin(bool on)
 {
-//    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-//                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 static void Buzzer_StartEvent(BuzzerEvent ev)
 {
     activeBuzzEvent = ev;
-    buzzerAlertUntil = HAL_GetTick() + 30000UL;
+    buzzerPatternStart = HAL_GetTick();
+    buzzerState = false;
+}
+static void Buzzer_TankEmptyPattern(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if ((now - buzzerPatternStart) >= 15000UL)
+    {
+        Buzzer_SetPin(false);
+        activeBuzzEvent = BUZZ_NONE;
+        return;
+    }
+
+    /* Continuous beep for 15 seconds */
+
+    Buzzer_SetPin(true);
 }
 
+static void Buzzer_TankFullPattern(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if ((now - buzzerPatternStart) >= 15000UL)
+    {
+        Buzzer_SetPin(false);
+        activeBuzzEvent = BUZZ_NONE;
+        return;
+    }
+
+    /* Continuous beep for 15 seconds */
+
+    Buzzer_SetPin(true);
+}
 static void Buzzer_Update(void)
 {
     uint32_t now = HAL_GetTick();
-    static bool buzzerState = false;
-    bool newState = false;
+
+    static uint32_t motorToggleTime = 0;
+    static bool motorBuzzState = false;
+
+    /* -------- Tank Events (highest priority) -------- */
+
+    if (activeBuzzEvent == BUZZ_TANK_EMPTY)
+    {
+        Buzzer_TankEmptyPattern();
+        return;
+    }
+
+    if (activeBuzzEvent == BUZZ_TANK_FULL)
+    {
+        Buzzer_TankFullPattern();
+        return;
+    }
+
+    /* -------- Motor Running Pattern -------- */
+
     bool motorOn = Motor_GetStatus();
-    if (buzzerSettings.pumpOnSound && motorOn)
+
+    if (motorOn)
     {
-        newState = true;
+        if ((now - motorToggleTime) >= 1000UL)
+        {
+            motorToggleTime = now;
+            motorBuzzState = !motorBuzzState;
+        }
+
+        Buzzer_SetPin(motorBuzzState);
+        return;
     }
-    else if (buzzerSettings.tankFullSound &&
-             activeBuzzEvent == BUZZ_TANK_FULL &&
-             now < buzzerAlertUntil)
-    {
-        newState = true;
-    }
-    else if (buzzerSettings.tankEmptySound &&
-             activeBuzzEvent == BUZZ_TANK_EMPTY &&
-             now < buzzerAlertUntil)
-    {
-        newState = ((now % 400UL) < 80UL);
-    }
-    else
-    {
-        activeBuzzEvent = BUZZ_NONE;
-    }
-    if (newState != buzzerState)
-    {
-        buzzerState = newState;
-        Buzzer_SetPin(buzzerState);
-    }
+
+    /* -------- Idle -------- */
+
+    Buzzer_SetPin(false);
 }
+
+
 static inline uint32_t now_ms(void)
 {
     return HAL_GetTick();
@@ -1166,17 +1232,11 @@ void ModelHandle_ProcessTimerSlots(void)
     uint32_t now = HAL_GetTick();
 
     bool slotActive = timer_any_active_slot();
-
     if (!slotActive)
     {
         stop_motor();
-        timerActive = false;
-        timerState = TIMER_RUN_TEST;
-        timerStateDeadline = 0;
-        motorOwner = MOTOR_OWNER_NONE;
         return;
     }
-
     if (isTankFull())
     {
         stop_motor();
@@ -1737,13 +1797,14 @@ void ModelHandle_Process(void)
     else
         motorOwner = MOTOR_OWNER_NONE;
 
-    /* ---------- Tank Full Handling ---------- */
+    /* ---------- Tank Full Handling (Fixed) ---------- */
+
+    static bool prevTankFull = false;
 
     if (tankFull && motorOwner != MOTOR_OWNER_MANUAL)
     {
-        if (!tankFullPendingStop)
+        if (!prevTankFull)
         {
-            tankFullPendingStop = true;
             tankFullDetectedAt = now;
         }
 
@@ -1752,14 +1813,16 @@ void ModelHandle_Process(void)
             stop_motor();
 
             if (buzzerSettings.tankFullSound)
+            {
                 Buzzer_StartEvent(BUZZ_TANK_FULL);
-
-            tankFullPendingStop = false;
+            }
         }
+
+        prevTankFull = true;
     }
     else
     {
-        tankFullPendingStop = false;
+        prevTankFull = false;
     }
 
     /* ---------- Tank Empty Buzzer ---------- */
@@ -1770,7 +1833,9 @@ void ModelHandle_Process(void)
     if (currentLevel == 0 && prevLevel > 0)
     {
         if (buzzerSettings.tankEmptySound)
+        {
             Buzzer_StartEvent(BUZZ_TANK_EMPTY);
+        }
     }
 
     prevLevel = currentLevel;
@@ -1779,102 +1844,99 @@ void ModelHandle_Process(void)
 
     switch (motorOwner)
     {
-        case MOTOR_OWNER_RESTART:
+    case MOTOR_OWNER_RESTART:
 
-            if (tankFull)
-            {
-                stop_motor();
-                restartActive = false;
-
-                if (buzzerSettings.tankFullSound)
-                    Buzzer_StartEvent(BUZZ_TANK_FULL);
-
-                restore_previous_mode();
-                ModelHandle_SaveModeState();
-                break;
-            }
-
-            if (protectionFault)
-            {
-                stop_motor();
-                break;
-            }
-
-            start_motor();
-        break;
-
-
-        case MOTOR_OWNER_MANUAL:
-
-            if (!protectionFault)
-                start_motor();
-            else
-                stop_motor();
-
-        break;
-
-
-        case MOTOR_OWNER_SEMIAUTO:
-
-            if (tankFull || protectionFault)
-                stop_motor();
-
-        break;
-
-
-        case MOTOR_OWNER_TIMER:
-
-            ModelHandle_ProcessTimerSlots();
-
-        break;
-
-
-        case MOTOR_OWNER_COUNTDOWN:
-
-            if (!countdownActive)
-                break;
-
-            if (now >= cd_deadline)
-            {
-                ModelHandle_StopCountdown();
-                break;
-            }
-
-            countdownDuration = (cd_deadline - now) / 1000UL;
-
-            if (tankFull || protectionFault)
-            {
-                ModelHandle_StopCountdown();
-                break;
-            }
-
-            start_motor();
-
-        break;
-
-
-        case MOTOR_OWNER_TWIST:
-
-            if (tankFull || protectionFault)
-            {
-                stop_motor();
-                break;
-            }
-
-            twist_tick();
-
-        break;
-
-
-        case MOTOR_OWNER_AUTO:
-
-            auto_tick();
-
-        break;
-
-
-        default:
+        if (tankFull)
+        {
             stop_motor();
+
+            restartActive = false;
+
+            if (buzzerSettings.tankFullSound)
+                Buzzer_StartEvent(BUZZ_TANK_FULL);
+
+            restore_previous_mode();
+            ModelHandle_SaveModeState();
+            break;
+        }
+
+        if (protectionFault)
+        {
+            stop_motor();
+            break;
+        }
+
+        start_motor();
+        break;
+
+
+    case MOTOR_OWNER_MANUAL:
+
+        if (!protectionFault)
+            start_motor();
+        else
+            stop_motor();
+
+        break;
+
+
+    case MOTOR_OWNER_SEMIAUTO:
+
+        if (tankFull || protectionFault)
+            stop_motor();
+
+        break;
+
+
+    case MOTOR_OWNER_TIMER:
+
+        ModelHandle_ProcessTimerSlots();
+        break;
+
+
+    case MOTOR_OWNER_COUNTDOWN:
+
+        if (!countdownActive)
+            break;
+
+        if (now >= cd_deadline)
+        {
+            ModelHandle_StopCountdown();
+            break;
+        }
+
+        countdownDuration = (cd_deadline - now) / 1000UL;
+
+        if (tankFull || protectionFault)
+        {
+            ModelHandle_StopCountdown();
+            break;
+        }
+
+        start_motor();
+        break;
+
+
+    case MOTOR_OWNER_TWIST:
+
+        if (tankFull || protectionFault)
+        {
+            stop_motor();
+            break;
+        }
+
+        twist_tick();
+        break;
+
+
+    case MOTOR_OWNER_AUTO:
+
+        auto_tick();
+        break;
+
+
+    default:
+        stop_motor();
         break;
     }
 
@@ -1890,7 +1952,6 @@ void ModelHandle_Process(void)
     leds_from_model();
     Buzzer_Update();
 }
-
 DryFSMState ModelHandle_GetDryState(void)
 {
     return dryState;

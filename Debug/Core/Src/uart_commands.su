@@ -1,7 +1,7 @@
-../Core/Src/uart_commands.c:17:20:ack	16	static
-../Core/Src/uart_commands.c:22:20:err	16	static
-../Core/Src/uart_commands.c:41:6:UART_InitCommandSystem	4	static
-../Core/Src/uart_commands.c:50:14:next_token	24	static
-../Core/Src/uart_commands.c:72:6:UART_SendStatusPacket	104	static
-../Core/Src/uart_commands.c:113:13:parse_settings	80	static
-../Core/Src/uart_commands.c:180:6:UART_HandleCommand	248	static
+../Core/Src/uart_commands.c:35:20:ack	16	static
+../Core/Src/uart_commands.c:36:20:err	16	static
+../Core/Src/uart_commands.c:49:6:UART_InitCommandSystem	4	static
+../Core/Src/uart_commands.c:56:6:UART_SendStatusPacket	104	static
+../Core/Src/uart_commands.c:94:14:next_token	24	static
+../Core/Src/uart_commands.c:109:13:parse_settings	88	static
+../Core/Src/uart_commands.c:169:6:UART_HandleCommand	336	static
