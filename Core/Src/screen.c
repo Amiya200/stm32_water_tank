@@ -414,34 +414,16 @@ static void show_timer_slot_select(void)
         }
     }
     else {
-    	snprintf(l1, sizeof(l1), "                ");
+        snprintf(l1, sizeof(l1), "                ");
     }
     lcd_line0(l0);
     lcd_line1(l1);
 }
 static void show_edit_on_time(void)
 {
-//    char title[17];
-//    snprintf(title, sizeof(title), "T%u On Time", (unsigned)(currentSlot + 1));
-//    lcd_line0(title);
-//    char buf[17];
-//    if (time_edit_field == 0)
-//        snprintf(buf, sizeof(buf), "[%02d]:%02d   Next>", edit_on_h, edit_on_m);
-//    else
-//        snprintf(buf, sizeof(buf), "%02d:[%02d]   Next>", edit_on_h, edit_on_m);
-//    lcd_line1(buf);
 }
 static void show_edit_off_time(void)
 {
-//    char title[17];
-//    snprintf(title, sizeof(title), "T%u Off Time", (unsigned)(currentSlot + 1));
-//    lcd_line0(title);
-//    char buf[17];
-//    if (time_edit_field == 0)
-//        snprintf(buf, sizeof(buf), "[%02d]:%02d   Next>", edit_off_h, edit_off_m);
-//    else
-//        snprintf(buf, sizeof(buf), "%02d:[%02d]   Next>", edit_off_h, edit_off_m);
-//    lcd_line1(buf);
 }
 static const char* dayNames[] = {
     "Enable All", "Disable All",

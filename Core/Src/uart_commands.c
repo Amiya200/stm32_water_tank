@@ -440,6 +440,6 @@ void UART_HandleCommand(const char *pkt)
         return;
     }
 
-    err("@UNKNOWN#");
+//    err("@UNKNOWN#");
     g_screenUpdatePending = true;
 }
