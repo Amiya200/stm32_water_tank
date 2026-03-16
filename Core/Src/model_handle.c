@@ -75,7 +75,6 @@ static uint32_t powerOnMs     = 0;
 static DryFSMState dryState      = DRY_IDLE;
 volatile uint8_t motorStatus = 0;
 volatile bool senseDryRun         = false;
-volatile bool dryRunEnabled = false;
 volatile bool groundWater         = false;
 volatile bool senseOverLoad       = false;
 volatile bool senseUnderLoad      = false;
@@ -279,11 +278,17 @@ static RestartState restartState = RESTART_RUN_TEST;
 static uint32_t restartDeadline = 0;
 static uint32_t stateDeadline = 0;
 
+/* ================================================================
+   DRY RUN PROTECTION GATE
+   Returns true only when BOTH the enable flag is set AND
+   gap_time_s > 0.  Setting gap_time_s = 0 from the screen or
+   UART is equivalent to disabling dry-run protection entirely.
+================================================================ */
 static inline bool dry_protection_enabled(void)
 {
-    dryRunEnabled = (sys.dry_run_enable != 0) && (sys.gap_time_s > 0);
-    return dryRunEnabled;
+    return (sys.dry_run_enable != 0) && (sys.gap_time_s > 0);
 }
+
 uint16_t ModelHandle_GetGapTime(void)        { return sys.gap_time_s; }
 uint8_t  ModelHandle_GetRetryCount(void)     { return sys.retry_count; }
 uint16_t ModelHandle_GetUnderVolt(void)      { return sys.uv_limit; }
@@ -913,7 +918,7 @@ void ModelHandle_CheckDryRun(void)
 }
 
 #define GROUND_SENSE_DELAY_MS 10000UL
-uint32_t now1;
+
 void ModelHandle_CheckGroundWater(void)
 {
     static uint32_t detectStart = 0;
@@ -923,7 +928,6 @@ void ModelHandle_CheckGroundWater(void)
     bool detected = (v < 0.30f);
     uint32_t now = HAL_GetTick();
 
-    now1 = now;
     if (detected)
     {
         if (!stableState)
@@ -948,91 +952,159 @@ static inline bool isAnyModeActive(void)
             twistActive || timerActive || autoActive);
 }
 
+/* ================================================================
+   UNIFIED DRY RUN HANDLER
+   Called once per Process() loop.  Handles all motor owners
+   EXCEPT:
+     - MOTOR_OWNER_TIMER  → handled inside ProcessTimerSlots()
+     - MOTOR_OWNER_AUTO   → handled inside auto_tick()
+     - MOTOR_OWNER_MANUAL → doc: no dry run in manual mode
+
+   Behaviour when dry_protection_enabled():
+     • Motor ON + senseDryRun(water present) → DRY_IDLE, no action
+     • Motor ON + no water → DRY_WAITING countdown (gap_time_s ms)
+     • Countdown expires  → stop motor, DRY_FAULT, stop mode
+     • Motor OFF + fault + water returns → DRY_IDLE (recovery)
+
+   When !dry_protection_enabled():
+     • Reset dryState to IDLE, return immediately.
+================================================================ */
 void ModelHandle_SoftDryRunHandler(void)
 {
+    /* Gate 1: protection must be enabled AND gap_time_s > 0 */
     if (!dry_protection_enabled())
     {
         dryState = DRY_IDLE;
         return;
     }
+
+    /* Gate 2: Timer and Auto manage their own dry-run FSMs */
     if (motorOwner == MOTOR_OWNER_TIMER ||
         motorOwner == MOTOR_OWNER_AUTO)
         return;
+
+    /* Gate 3: Manual and NONE – no protection per spec */
     if (motorOwner == MOTOR_OWNER_MANUAL ||
         motorOwner == MOTOR_OWNER_NONE)
     {
         dryState = DRY_IDLE;
         return;
     }
+
     uint32_t now   = HAL_GetTick();
     uint32_t gapMs = (uint32_t)sys.gap_time_s * 1000UL;
-    ModelHandle_CheckDryRun();
+
+    ModelHandle_CheckDryRun();          /* refresh senseDryRun */
+
     bool motorOn = Motor_GetStatus();
 
+    /* ---- Motor is running ------------------------------------------ */
     if (motorOn)
     {
-        if (senseDryRun)    /* water present – no fault */
+        switch (dryState)
         {
-            dryState = DRY_IDLE;
-            return;
-        }
+            /* Normal operation: watch for first no-water reading */
+            case DRY_IDLE:
+                if (!senseDryRun)           /* no water → start countdown */
+                {
+                    dryState    = DRY_WAITING;
+                    dryDeadline = now + gapMs; /* SET ONCE – never touched again
+                                                  while in DRY_WAITING */
+                }
+                /* water present: nothing to do, stay IDLE */
+                break;
 
-        /* No water: start or continue test-time countdown */
-        if (dryState != DRY_WAITING)
-        {
-            dryState    = DRY_WAITING;
-            dryDeadline = now + gapMs;
-        }
-
-        if ((int32_t)(now - dryDeadline) >= 0)
-        {
-            /* Test period expired with no water → DRY FAULT */
-            stop_motor();
-            dryState = DRY_FAULT;
-
-            if (buzzerSettings.tankEmptySound)
-                Buzzer_StartEvent(BUZZ_TANK_EMPTY);
-
-            /* Mode-specific stop action per document */
-            switch (motorOwner)
-            {
-                case MOTOR_OWNER_SEMIAUTO:
-                    /* Doc §15: "Semi-Auto mode is turned OFF" */
-                    semiAutoActive = false;
-                    motorOwner     = MOTOR_OWNER_NONE;
-                    ModelHandle_SaveModeState();
+            /* Test period running: deadline is FIXED, do NOT reset it */
+            case DRY_WAITING:
+                if ((int32_t)(now - dryDeadline) < 0)
+                {
+                    /* Still inside the test window – motor keeps running.
+                       Do NOT read senseDryRun here so sensor noise cannot
+                       reset the deadline or abort the countdown early. */
                     break;
+                }
 
-                case MOTOR_OWNER_COUNTDOWN:
-                    /* Doc §16: "Countdown mode turns OFF" */
-                    ModelHandle_StopCountdown();
-                    break;
+                /* Deadline expired – sample sensor once */
+                if (!senseDryRun)
+                {
+                    /* Still no water after full test period → DRY FAULT */
+                    stop_motor();
+                    dryState = DRY_FAULT;
 
-                case MOTOR_OWNER_TWIST:
-                    /* Doc: twist stops similarly */
-                    ModelHandle_StopTwist();
-                    break;
+                    if (buzzerSettings.tankEmptySound)
+                        Buzzer_StartEvent(BUZZ_TANK_EMPTY);
 
-                case MOTOR_OWNER_RESTART:
-                    /* Doc §17: "Refill mode turns OFF" */
-                    restartActive = false;
-                    motorOwner    = MOTOR_OWNER_NONE;
-                    restore_previous_mode();
-                    ModelHandle_SaveModeState();
-                    break;
+                    /* Mode-specific shutdown */
+                    switch (motorOwner)
+                    {
+                        case MOTOR_OWNER_SEMIAUTO:
+                            semiAutoActive = false;
+                            motorOwner     = MOTOR_OWNER_NONE;
+                            ModelHandle_SaveModeState();
+                            break;
 
-                default:
-                    break;
-            }
+                        case MOTOR_OWNER_COUNTDOWN:
+                            ModelHandle_StopCountdown();
+                            break;
+
+                        case MOTOR_OWNER_TWIST:
+                            ModelHandle_StopTwist();
+                            break;
+
+                        case MOTOR_OWNER_RESTART:
+                            restartActive = false;
+                            motorOwner    = MOTOR_OWNER_NONE;
+                            restore_previous_mode();
+                            ModelHandle_SaveModeState();
+                            break;
+
+                        default:
+                            break;
+                    }
+                }
+                else
+                {
+                    /* Water returned by the time the deadline expired →
+                       water IS available, resume normal operation */
+                    dryState = DRY_IDLE;
+                }
+                break;
+
+            case DRY_FAULT:
+                /* Motor should already be off; guard against re-entry */
+                stop_motor();
+                break;
+
+            default:
+                dryState = DRY_IDLE;
+                break;
         }
     }
+    /* ---- Motor is OFF ---------------------------------------------- */
     else
     {
-        /* Motor is off – clear fault once water returns */
-        if (dryState == DRY_FAULT && senseDryRun)
-            dryState = DRY_IDLE;
+        switch (dryState)
+        {
+            case DRY_FAULT:
+                /* Clear fault once water returns to the sensor */
+                if (senseDryRun)
+                    dryState = DRY_IDLE;
+                break;
+
+            case DRY_WAITING:
+                /* Motor was stopped by an external cause (protection,
+                   tank full, user) while countdown was running.
+                   Cancel the countdown cleanly. */
+                dryState = DRY_IDLE;
+                break;
+
+            default:
+                dryState = DRY_IDLE;
+                break;
+        }
     }
 }
+
 
 static inline uint32_t get_load_lock_duration_ms(void)
 {
