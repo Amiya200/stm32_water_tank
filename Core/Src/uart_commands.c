@@ -1,14 +1,3 @@
-/*
- * uart_commands.c  —  STM32 ↔ ESP UART Command Handler (FIXED)
- *
- * FIXES:
- *  1. Status packet: no more "IDLE" — always reports actual mode
- *  2. Buzzer settings handled via SET packet
- *  3. Restart ON/OFF correctly mapped
- *  4. Semi-auto, countdown, timer all properly handled
- *  5. Status auto-pushed on every motor/mode change
- */
-
 #include "uart_commands.h"
 #include "uart.h"
 #include "model_handle.h"
@@ -28,16 +17,9 @@ extern volatile bool timerActive;
 extern volatile bool countdownActive;
 extern volatile bool twistActive;
 extern volatile bool autoActive;
-
-/* ================================================================
-   INTERNAL HELPERS
-================================================================ */
 static inline void ack(const char *msg) { UART_TransmitPacket(msg); }
 static inline void err(const char *msg) { UART_TransmitPacket(msg); }
 
-/* ================================================================
-   STATUS SNAPSHOT  (for change-detection)
-================================================================ */
 typedef struct {
     uint8_t level;
     uint8_t motor;
@@ -56,22 +38,18 @@ void UART_InitCommandSystem(void)
 void UART_SendStatusPacket(void)
 {
     uint8_t level = ModelHandle_GetTankLevelPercent();
-
-    /* Determine current mode string — never "IDLE" */
     const char *mode = "STANDBY";
-
-    if      (ModelHandle_IsRestartActive())  mode = "RESTART";
-    else if (manualActive)                   mode = "MANUAL";
-    else if (semiAutoActive)                 mode = "SEMIAUTO";
-    else if (timerActive)                    mode = "TIMER";
-    else if (countdownActive)                mode = "COUNTDOWN";
-    else if (twistActive)                    mode = "TWIST";
-    else if (ModelHandle_IsAutoActive())     mode = "AUTO";
+    if      (ModelHandle_IsRestartActive()) mode = "RESTART";
+    else if (manualActive)                  mode = "MANUAL";
+    else if (semiAutoActive)                mode = "SEMIAUTO";
+    else if (timerActive)                   mode = "TIMER";
+    else if (countdownActive)               mode = "COUNTDOWN";
+    else if (twistActive)                   mode = "TWIST";
+    else if (ModelHandle_IsAutoActive())    mode = "AUTO";
 
     bool changed = (lastSent.level != level) ||
                    (lastSent.motor != motorStatus) ||
                    (strcmp(lastSent.mode, mode) != 0);
-
     if (!changed) return;
 
     lastSent.level = level;
@@ -84,13 +62,9 @@ void UART_SendStatusPacket(void)
              motorStatus ? "ON" : "OFF",
              level,
              mode);
-
     UART_TransmitPacket(buf);
 }
 
-/* ================================================================
-   TOKEN PARSER
-================================================================ */
 static char* next_token(char **ctx)
 {
     if (!ctx || !*ctx) return NULL;
@@ -103,8 +77,24 @@ static char* next_token(char **ctx)
 
 /* ================================================================
    SETTINGS PARSER
-   Format: @SET:D=5;T=30;M=120;RC=3;LV=180;HV=260;OL=0;UL=0;PR=0;
-           BZ=1;BF=1;BE=1#
+   Parses key=value pairs separated by ';'.
+
+   Supported keys:
+     D    – dry run test gap (minutes → stored as seconds)
+     T    – retry gap (minutes → stored as seconds)
+     RC   – retry count
+     M    – max run (minutes)
+     LV   – low voltage limit (V)
+     HV   – high voltage limit (V)
+     OL   – overload current (A)
+     UL   – underload current (A)
+     PR   – power restore mode (0/1/2)
+     DE   – dry run enable (0 = off, 1 = on)
+     BZ   – buzzer pump sound (0/1)
+     BF   – buzzer tank full sound (0/1)
+     BE   – buzzer tank empty sound (0/1)
+
+   Example: @SET:D=2;T=1;RC=3;DE=1;LV=180;HV=270#
 ================================================================ */
 static void parse_settings(char *ctx)
 {
@@ -119,10 +109,11 @@ static void parse_settings(char *ctx)
     int16_t  underL      = (int16_t)ModelHandle_GetUnderloadLimit();
     uint8_t  powerRest   = ModelHandle_GetPowerRestoreMode();
     uint32_t dry_time    = 60;
-    uint8_t  dry_en      = 1;
+    uint8_t  dry_en      = ModelHandle_GetDryRunEnable() ? 1 : 0;  /* FIX: read current state */
     uint8_t  buzz_pump   = 1;
     uint8_t  buzz_full   = 1;
     uint8_t  buzz_empty  = 1;
+    bool     dry_en_set  = false;  /* track if DE was explicitly provided */
 
     char *saveptr;
     char *pair = strtok_r(ctx, ";", &saveptr);
@@ -137,30 +128,41 @@ static void parse_settings(char *ctx)
             char *val = eq + 1;
             int   v   = atoi(val);
 
-            if      (!strcmp(key, "D"))   gap_time_s = (uint32_t)v * 60UL;
-            else if (!strcmp(key, "RC"))  retry       = (uint8_t)v;
-            else if (!strcmp(key, "T"))   dry_time    = (uint32_t)v * 60UL;
-            else if (!strcmp(key, "M"))   maxrun      = (uint16_t)v;
-            else if (!strcmp(key, "LV"))  lowV        = (uint16_t)v;
-            else if (!strcmp(key, "HV"))  highV       = (uint16_t)v;
-            else if (!strcmp(key, "OL"))  overL       = (int16_t)v;
-            else if (!strcmp(key, "UL"))  underL      = (int16_t)v;
-            else if (!strcmp(key, "PR"))  powerRest   = (uint8_t)v;
-            else if (!strcmp(key, "DE"))  dry_en      = (uint8_t)v;
-            else if (!strcmp(key, "BZ"))  buzz_pump   = (uint8_t)v;
-            else if (!strcmp(key, "BF"))  buzz_full   = (uint8_t)v;
-            else if (!strcmp(key, "BE"))  buzz_empty  = (uint8_t)v;
+            if      (!strcmp(key, "D"))  { gap_time_s = (uint32_t)v * 60UL; }
+            else if (!strcmp(key, "RC")) { retry       = (uint8_t)v; }
+            else if (!strcmp(key, "T"))  { dry_time    = (uint32_t)v * 60UL; }
+            else if (!strcmp(key, "M"))  { maxrun      = (uint16_t)v; }
+            else if (!strcmp(key, "LV")) { lowV        = (uint16_t)v; }
+            else if (!strcmp(key, "HV")) { highV       = (uint16_t)v; }
+            else if (!strcmp(key, "OL")) { overL       = (int16_t)v; }
+            else if (!strcmp(key, "UL")) { underL      = (int16_t)v; }
+            else if (!strcmp(key, "PR")) { powerRest   = (uint8_t)v; }
+            else if (!strcmp(key, "DE")) { dry_en      = (uint8_t)(v ? 1 : 0); dry_en_set = true; }
+            else if (!strcmp(key, "BZ")) { buzz_pump   = (uint8_t)(v ? 1 : 0); }
+            else if (!strcmp(key, "BF")) { buzz_full   = (uint8_t)(v ? 1 : 0); }
+            else if (!strcmp(key, "BE")) { buzz_empty  = (uint8_t)(v ? 1 : 0); }
         }
         pair = strtok_r(NULL, ";", &saveptr);
     }
 
+    /* FIX: if DE was not explicitly sent but gap_time_s = 0,
+       automatically disable dry run to match dry_protection_enabled() */
+    if (!dry_en_set && gap_time_s == 0)
+        dry_en = 0;
+
     ModelHandle_SetUserSettings(gap_time_s, retry, lowV, highV, overL, underL, maxrun);
     ModelHandle_SetDryRunTime(dry_time);
     ModelHandle_SetPowerRestoreMode(powerRest);
+
+    /* FIX: explicitly call SetDryRun so EEPROM is updated */
     ModelHandle_SetDryRun(dry_en != 0);
+
     ModelHandle_SetBuzzerSettings(buzz_pump, buzz_full, buzz_empty);
 
-    ack("@SOK#");
+    /* Respond with current dry run state so the app can sync */
+    char resp[48];
+    snprintf(resp, sizeof(resp), "@SOK:DR:%d#", ModelHandle_GetDryRunEnable() ? 1 : 0);
+    ack(resp);
 }
 
 /* ================================================================
@@ -198,6 +200,48 @@ void UART_HandleCommand(const char *pkt)
         return;
     }
 
+    /* ================================================================
+       FIX: Dedicated DRYRUN command for clean enable/disable control.
+
+       Format:
+         @DRYRUN:ON#   – enable dry run protection
+         @DRYRUN:OFF#  – disable dry run protection
+         @DRYRUN:GET#  – query current state
+    ================================================================ */
+    if (!strcmp(cmd, "DRYRUN"))
+    {
+        char *state = next_token(&ctx);
+        if (!state) { err("@FORMAT#"); return; }
+
+        if (!strcmp(state, "ON"))
+        {
+            ModelHandle_SetDryRun(true);
+            char resp[32];
+            snprintf(resp, sizeof(resp), "@DRYRUN_ON:GAP:%u#", ModelHandle_GetGapTime());
+            ack(resp);
+        }
+        else if (!strcmp(state, "OFF"))
+        {
+            ModelHandle_SetDryRun(false);
+            ack("@DRYRUN_OFF#");
+        }
+        else if (!strcmp(state, "GET"))
+        {
+            char resp[48];
+            snprintf(resp, sizeof(resp),
+                     "@DRYRUN:%s:GAP:%u:RETRY:%u#",
+                     ModelHandle_GetDryRunEnable() ? "ON" : "OFF",
+                     ModelHandle_GetGapTime(),
+                     ModelHandle_GetMaxRunTime());
+            ack(resp);
+        }
+        else
+        {
+            err("@FORMAT#");
+        }
+        return;
+    }
+
     /* ---- MANUAL ---- */
     if (!strcmp(cmd, "MANUAL"))
     {
@@ -207,7 +251,6 @@ void UART_HandleCommand(const char *pkt)
         if (!strcmp(state, "ON"))
         {
             if (!ModelHandle_IsManualActive()) ModelHandle_ToggleManual();
-            /* Motor toggle: user-initiated ON */
             if (!Motor_GetStatus()) ModelHandle_ManualToggleMotor();
             ack("@MANUAL_ON#");
         }
@@ -267,7 +310,6 @@ void UART_HandleCommand(const char *pkt)
             char *offH_s = next_token(&ctx);
             char *offM_s = next_token(&ctx);
             char *en_s   = next_token(&ctx);
-            char *gap_s  = next_token(&ctx);   /* optional slot gap minutes */
 
             if (!slot_s || !days || !onH_s || !onM_s || !offH_s || !offM_s || !en_s)
             {
@@ -285,29 +327,25 @@ void UART_HandleCommand(const char *pkt)
             timerSlots[s].offMinute = (uint8_t)atoi(offM_s);
             timerSlots[s].enabled   = (uint8_t)atoi(en_s);
 
-            /* Parse day mask */
             uint8_t dayMask = 0;
             char daybuf[32];
             strncpy(daybuf, days, sizeof(daybuf) - 1);
-            char *d_lower = daybuf;
-            for (int i = 0; d_lower[i]; i++) {
-                if (d_lower[i] >= 'A' && d_lower[i] <= 'Z')
-                    d_lower[i] += 32;
-            }
-            if (strstr(d_lower, "mon")) dayMask |= (1 << 0);
-            if (strstr(d_lower, "tue")) dayMask |= (1 << 1);
-            if (strstr(d_lower, "wed")) dayMask |= (1 << 2);
-            if (strstr(d_lower, "thu")) dayMask |= (1 << 3);
-            if (strstr(d_lower, "fri")) dayMask |= (1 << 4);
-            if (strstr(d_lower, "sat")) dayMask |= (1 << 5);
-            if (strstr(d_lower, "sun")) dayMask |= (1 << 6);
+            daybuf[sizeof(daybuf)-1] = '\0';
+            for (int i = 0; daybuf[i]; i++)
+                if (daybuf[i] >= 'A' && daybuf[i] <= 'Z') daybuf[i] += 32;
+            if (strstr(daybuf, "mon")) dayMask |= (1 << 0);
+            if (strstr(daybuf, "tue")) dayMask |= (1 << 1);
+            if (strstr(daybuf, "wed")) dayMask |= (1 << 2);
+            if (strstr(daybuf, "thu")) dayMask |= (1 << 3);
+            if (strstr(daybuf, "fri")) dayMask |= (1 << 4);
+            if (strstr(daybuf, "sat")) dayMask |= (1 << 5);
+            if (strstr(daybuf, "sun")) dayMask |= (1 << 6);
             timerSlots[s].dayMask = dayMask;
 
             ModelHandle_SaveTimerToEEPROM();
             ack("@TIMER_SET_OK#");
             return;
         }
-
         if (!strcmp(sub, "ON"))
         {
             timerActive = true;
@@ -315,14 +353,12 @@ void UART_HandleCommand(const char *pkt)
             ack("@TIMER_ON#");
             return;
         }
-
         if (!strcmp(sub, "OFF"))
         {
             ModelHandle_StopTimer();
             ack("@TIMER_OFF#");
             return;
         }
-
         err("@FORMAT#");
         return;
     }
@@ -343,16 +379,6 @@ void UART_HandleCommand(const char *pkt)
             ModelHandle_StopSemiAuto();
             ack("@SEMIAUTO_OFF#");
         }
-        else if (!strcmp(state, "MOTOR_ON"))
-        {
-            /* Semi-auto: user manually starts the motor */
-            if (semiAutoActive) {
-                extern void start_motor_ext(void);
-                /* We call through model so owner is correct */
-                ModelHandle_StartRestart(); /* acts as user-trigger in semi context */
-            }
-            ack("@SEMI_MOTOR_ON#");
-        }
         return;
     }
 
@@ -365,7 +391,6 @@ void UART_HandleCommand(const char *pkt)
         if (!strcmp(sub, "ON") || atoi(sub) > 0)
         {
             uint32_t seconds = (uint32_t)atoi(sub);
-            /* If sub is "ON" and we have a duration param */
             if (!strcmp(sub, "ON"))
             {
                 char *dur_s = next_token(&ctx);
@@ -402,15 +427,13 @@ void UART_HandleCommand(const char *pkt)
             char *offH  = next_token(&ctx);
             char *offM  = next_token(&ctx);
             if (on_s && off_s)
-            {
                 ModelHandle_StartTwist(
                     (uint16_t)atoi(on_s), (uint16_t)atoi(off_s),
-                    onH ? (uint8_t)atoi(onH) : 0,
-                    onM ? (uint8_t)atoi(onM) : 0,
+                    onH  ? (uint8_t)atoi(onH)  : 0,
+                    onM  ? (uint8_t)atoi(onM)  : 0,
                     offH ? (uint8_t)atoi(offH) : 0,
                     offM ? (uint8_t)atoi(offM) : 0
                 );
-            }
             ack("@TWIST_SET_OK#");
         }
         else if (!strcmp(state, "OFF"))
@@ -421,7 +444,7 @@ void UART_HandleCommand(const char *pkt)
         return;
     }
 
-    /* ---- RESTART ---- */
+    /* ---- RESTART / REFILL ---- */
     if (!strcmp(cmd, "RESTART"))
     {
         char *state = next_token(&ctx);
@@ -440,6 +463,5 @@ void UART_HandleCommand(const char *pkt)
         return;
     }
 
-//    err("@UNKNOWN#");
     g_screenUpdatePending = true;
 }

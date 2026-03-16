@@ -126,6 +126,8 @@ static int edit_settings_ul = 0;
 static uint16_t edit_settings_maxrun = 120;
 static uint8_t  edit_settings_pwrrest = 0;
 static bool     edit_settings_factory_yes = false;
+/* FIX: dedicated dry run enable edit variable */
+static uint8_t  edit_settings_dry_en = 1;
 static uint8_t  edit_date_dd    = 1;
 static uint8_t  edit_date_mm    = 1;
 static uint16_t edit_date_yyyy  = 2025;
@@ -143,6 +145,7 @@ static uint8_t lastAddDevType   = 0;
 extern uint8_t ModelHandle_GetTankLevelPercent(void);
 extern bool ModelHandle_IsTankFull(void);
 extern DryFSMState ModelHandle_GetDryState(void);
+extern bool ModelHandle_GetDryRunEnable(void);   /* FIX: expose getter */
 static const char* const addDevTypeNames[] = {
     "Wi-Fi",
     "Receiver",
@@ -156,27 +159,37 @@ static const char* const main_menu[] = {
 #define MAIN_MENU_COUNT 3
 static uint8_t menu_idx      = 0;
 static uint8_t menu_view_top = 0;
+
+/* ================================================================
+   FIX: devset_menu_items updated – index 0 is now "Dry Run En"
+   (enable/disable toggle).  Index 1 is "Test Time" (gap seconds).
+   Index 2 is "Retry Gap" (dry_run_time_s).  This aligns the menu
+   with the three-parameter dry run system in the document.
+================================================================ */
 static const char* const devset_menu_items[] = {
-    "Dry Run",
-    "Testing Gap",
-    "Low Volt",
-    "High Volt",
-    "Over Load",
-    "Under Load",
-    "Max Run",
-    "Set Date",
-    "Set Time",
-    "Set Day",
-    "Power Restore",
-    "Factory Reset",
-    "Back"
+    "Dry Run En",     /* 0  – enable/disable dry run protection   */
+    "Test Time",      /* 1  – dry run test period (gap_time_s)    */
+    "Retry Gap",      /* 2  – retry gap (dry_run_time_s)          */
+    "Low Volt",       /* 3  */
+    "High Volt",      /* 4  */
+    "Over Load",      /* 5  */
+    "Under Load",     /* 6  */
+    "Max Run",        /* 7  */
+    "Set Date",       /* 8  */
+    "Set Time",       /* 9  */
+    "Set Day",        /* 10 */
+    "Power Restore",  /* 11 */
+    "Factory Reset",  /* 12 */
+    "Back"            /* 13 */
 };
 #define DEVSET_MENU_COUNT  (sizeof(devset_menu_items)/sizeof(devset_menu_items[0]))
+
 #define DEBOUNCE_MS        50
 #define REPEAT_START_MS    500
 #define REPEAT_INTERVAL_MS 150
 static uint8_t devset_idx      = 0;
 static uint8_t devset_view_top = 0;
+
 void Screen_Init(void)
 {
     lcd_init();
@@ -186,13 +199,15 @@ void Screen_Init(void)
     screenNeedsRefresh = true;
     lastUserAction = HAL_GetTick();
 }
-static inline void refreshInactivityTimer(void){
+static inline void refreshInactivityTimer(void)
+{
     lastUserAction = HAL_GetTick();
 }
-static inline void lcd_line(uint8_t row, const char* s){
+static inline void lcd_line(uint8_t row, const char* s)
+{
     char buf[17];
     snprintf(buf, sizeof(buf), "%-16.16s", s);
-    lcd_put_cur(row,0);
+    lcd_put_cur(row, 0);
     lcd_send_string(buf);
 }
 static uint8_t dash_page = 0;
@@ -229,10 +244,12 @@ static void show_dash(void)
         dash_cycle_start = now;
         dash_page = 0;
     }
+
     uint8_t tankPercent = ModelHandle_GetTankLevelPercent();
     bool tankFull = ModelHandle_IsTankFull();
     bool motorOn  = Motor_GetStatus();
     DryFSMState dryState = ModelHandle_GetDryState();
+
     const char* mode;
     if (ModelHandle_IsRestartActive())
         mode = "Refill";
@@ -256,20 +273,19 @@ static void show_dash(void)
         mode = "FULL   ";
     else
         mode = "READY  ";
+
     if (dash_page == 0)
     {
         snprintf(l0, sizeof(l0), "%-7sM:%s %3d%%",
-                 mode,
-                 motorOn ? "ON" : "OFF",
-                 tankPercent);
+                 mode, motorOn ? "ON" : "OFF", tankPercent);
         if (dryState == DRY_FAULT)
         {
-            snprintf(l1, sizeof(l1), "DRY RUN");
+            snprintf(l1, sizeof(l1), "DRY RUN FAULT");
         }
         else if (dryState == DRY_WAITING)
         {
             if ((now / 500) % 2)
-                snprintf(l1, sizeof(l1), "DRY RUN");
+                snprintf(l1, sizeof(l1), "DRY RUN TEST..");
             else
                 snprintf(l1, sizeof(l1), "                ");
         }
@@ -279,30 +295,21 @@ static void show_dash(void)
         }
         else
         {
-            const char *gw =
-                (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
-            const char *dry =
-                (adcData.voltages[5] <= 0.01f) ? "NO" : "YES";
-
+            const char *gw  = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
+            const char *dry = (adcData.voltages[5] <= 0.01f) ? "NO"  : "YES";
             snprintf(l1, sizeof(l1), "G.W:%s DRY:%s", gw, dry);
         }
     }
     else if (dash_page == 1)
     {
         snprintf(l0, sizeof(l0), "Date:%02u-%02u-%02u",
-                 time.dom,
-                 time.month,
-                 (uint8_t)(time.year % 100));
+                 time.dom, time.month, (uint8_t)(time.year % 100));
         snprintf(l1, sizeof(l1), "Time:%02u:%02u:%02u",
-                 time.hour,
-                 time.min,
-                 time.sec);
+                 time.hour, time.min, time.sec);
     }
     else
     {
-        snprintf(l0, sizeof(l0), "V:%3.0fV  I:%3.1fA",
-                 g_voltageV,
-                 g_currentA);
+        snprintf(l0, sizeof(l0), "V:%3.0fV  I:%3.1fA", g_voltageV, g_currentA);
         if (ModelHandle_IsOverload())
             snprintf(l1, sizeof(l1), "OVER LOAD!");
         else if (ModelHandle_IsUnderload())
@@ -315,6 +322,7 @@ static void show_dash(void)
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 static void draw_menu_cursor(void)
 {
     if (ui != UI_MENU) return;
@@ -323,7 +331,7 @@ static void draw_menu_cursor(void)
     else if (menu_idx == menu_view_top + 1) row = 1;
     if (row <= 1)
     {
-        lcd_put_cur(row,0);
+        lcd_put_cur(row, 0);
         lcd_send_data(cursorVisible ? '>' : ' ');
     }
 }
@@ -343,6 +351,11 @@ static void show_menu(void)
     lcd_line1(l1);
     draw_menu_cursor();
 }
+
+/* ================================================================
+   FIX: show_devset_menu updated to match new menu indices.
+   Index 0 shows dry run enable/disable status with * when enabled.
+================================================================ */
 static void show_devset_menu(void)
 {
     char l0[17], l1[17];
@@ -350,100 +363,87 @@ static void show_devset_menu(void)
         devset_view_top = devset_idx;
     else if (devset_idx > devset_view_top + 1)
         devset_view_top = devset_idx - 1;
+
     uint8_t idx0 = devset_view_top;
     uint8_t idx1 = devset_view_top + 1;
-    char star0 = ' ';
-    char star1 = ' ';
-    if (idx0 == 0 && edit_settings_gap_s > 0)     star0 = '*';
-    if (idx0 == 1 && edit_settings_retry > 0)     star0 = '*';
-    if (idx0 == 2 && edit_settings_uv > 0)        star0 = '*';
-    if (idx0 == 3 && edit_settings_ov > 0)        star0 = '*';
-    if (idx0 == 4 && edit_settings_ol > 0)        star0 = '*';
-    if (idx0 == 5 && edit_settings_ul > 0)        star0 = '*';
-    if (idx0 == 6 && edit_settings_maxrun > 0)    star0 = '*';
-    if (idx1 == 0 && edit_settings_gap_s > 0)     star1 = '*';
-    if (idx1 == 1 && edit_settings_retry > 0)     star1 = '*';
-    if (idx1 == 2 && edit_settings_uv > 0)        star1 = '*';
-    if (idx1 == 3 && edit_settings_ov > 0)        star1 = '*';
-    if (idx1 == 4 && edit_settings_ol > 0)        star1 = '*';
-    if (idx1 == 5 && edit_settings_ul > 0)        star1 = '*';
-    if (idx1 == 6 && edit_settings_maxrun > 0)    star1 = '*';
+
+    /* Build star indicators for configured items */
+    char star0 = ' ', star1 = ' ';
+
+    for (int pass = 0; pass < 2; pass++)
+    {
+        uint8_t idx  = (pass == 0) ? idx0 : idx1;
+        char   *star = (pass == 0) ? &star0 : &star1;
+        switch (idx)
+        {
+            case 0:  if (edit_settings_dry_en)           *star = '*'; break;
+            case 1:  if (edit_settings_gap_s > 0)        *star = '*'; break;
+            case 2:  if (edit_settings_retry > 0)        *star = '*'; break;
+            case 3:  if (edit_settings_uv > 0)           *star = '*'; break;
+            case 4:  if (edit_settings_ov > 0)           *star = '*'; break;
+            case 5:  if (edit_settings_ol > 0)           *star = '*'; break;
+            case 6:  if (edit_settings_ul > 0)           *star = '*'; break;
+            case 7:  if (edit_settings_maxrun > 0)       *star = '*'; break;
+            default: break;
+        }
+    }
+
     if (idx0 < DEVSET_MENU_COUNT)
         snprintf(l0, sizeof(l0), "%c%c%-14.14s",
-                 (devset_idx == idx0 ? '>' : ' '),
-                 star0,
-                 devset_menu_items[idx0]);
+                 (devset_idx == idx0 ? '>' : ' '), star0, devset_menu_items[idx0]);
     else
         snprintf(l0, sizeof(l0), "                ");
+
     if (idx1 < DEVSET_MENU_COUNT)
         snprintf(l1, sizeof(l1), "%c%c%-14.14s",
-                 (devset_idx == idx1 ? '>' : ' '),
-                 star1,
-                 devset_menu_items[idx1]);
+                 (devset_idx == idx1 ? '>' : ' '), star1, devset_menu_items[idx1]);
     else
         snprintf(l1, sizeof(l1), "                ");
+
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 static void show_timer_slot_select(void)
 {
     lcd_clear();
     int item1 = timer_page * 2;
     int item2 = item1 + 1;
     char l0[17], l1[17];
-    if (item1 == 5) {
-        snprintf(l0, sizeof(l0), "%c Back",
-                 (currentSlot == 5 ? '>' : ' '));
-    }
-    else {
-        snprintf(l0, sizeof(l0), "%c Timer %d",
-                 (currentSlot == item1 ? '>' : ' '),
-                 item1 + 1);
-    }
+    if (item1 == 5)
+        snprintf(l0, sizeof(l0), "%c Back", (currentSlot == 5 ? '>' : ' '));
+    else
+        snprintf(l0, sizeof(l0), "%c Timer %d", (currentSlot == item1 ? '>' : ' '), item1+1);
     if (item2 <= 5)
     {
-        if (item2 == 5) {
-            snprintf(l1, sizeof(l1), "%c Back",
-                     (currentSlot == 5 ? '>' : ' '));
-        }
+        if (item2 == 5)
+            snprintf(l1, sizeof(l1), "%c Back", (currentSlot == 5 ? '>' : ' '));
         else
-        {
-            snprintf(l1, sizeof(l1), "%c Timer %d",
-                     (currentSlot == item2 ? '>' : ' '),
-                     item2 + 1);
-        }
+            snprintf(l1, sizeof(l1), "%c Timer %d", (currentSlot == item2 ? '>' : ' '), item2+1);
     }
-    else {
+    else
         snprintf(l1, sizeof(l1), "                ");
-    }
     lcd_line0(l0);
     lcd_line1(l1);
 }
-static void show_edit_on_time(void)
-{
-}
-static void show_edit_off_time(void)
-{
-}
+static void show_edit_on_time(void)  {}
+static void show_edit_off_time(void) {}
 static const char* dayNames[] = {
     "Enable All", "Disable All",
-    "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
-    "Next>"
+    "Mon","Tue","Wed","Thu","Fri","Sat","Sun","Next>"
 };
 static void show_timer_days(void)
 {
     lcd_line0("Timer Days");
     char buf[17];
     if (edit_day_index >= 2 && edit_day_index <= 8)
-        {
-            uint8_t d = edit_day_index - 2;
-            uint8_t isOn = (edit_day_mask >> d) & 1;
-            snprintf(buf,sizeof(buf),"> %s (%s)", dayNames[edit_day_index], isOn?"ON":"OFF");
-        }
-        else
-        {
-            snprintf(buf,sizeof(buf),"> %s", dayNames[edit_day_index]);
-        }
+    {
+        uint8_t d = edit_day_index - 2;
+        uint8_t isOn = (edit_day_mask >> d) & 1;
+        snprintf(buf, sizeof(buf), "> %s (%s)", dayNames[edit_day_index], isOn?"ON":"OFF");
+    }
+    else
+        snprintf(buf, sizeof(buf), "> %s", dayNames[edit_day_index]);
     lcd_line1(buf);
 }
 static void show_timer_gap(void)
@@ -451,55 +451,50 @@ static void show_timer_gap(void)
     lcd_line0("Timer Gap (min)");
     char buf[17];
     snprintf(buf, sizeof(buf), ">T%u %3u min Next>",
-             (unsigned)(currentSlot + 1),
-             (unsigned)edit_gap_min);
+             (unsigned)(currentSlot+1), (unsigned)edit_gap_min);
     lcd_line1(buf);
 }
 static void show_timer_enable(void)
 {
     char title[17];
-    snprintf(title, sizeof(title), "T%u Enable?",
-             (unsigned)(currentSlot + 1));
+    snprintf(title, sizeof(title), "T%u Enable?", (unsigned)(currentSlot+1));
     lcd_line0(title);
-    lcd_line1(edit_slot_enabled ? "YES       Next>" :
-                                  "NO        Next>");
+    lcd_line1(edit_slot_enabled ? "YES       Next>" : "NO        Next>");
 }
 static void show_timer_summary(void)
 {
     char title[17];
-    snprintf(title, sizeof(title), "T%u Summary",
-             (unsigned)(currentSlot + 1));
+    snprintf(title, sizeof(title), "T%u Summary", (unsigned)(currentSlot+1));
     lcd_line0(title);
-    if (edit_slot_enabled)
-        lcd_line1("Enabled     Next>");
-    else
-        lcd_line1("Disabled    Next>");
+    lcd_line1(edit_slot_enabled ? "Enabled     Next>" : "Disabled    Next>");
 }
 static void show_auto_menu(void)
 {
     lcd_line0("Auto Settings");
     lcd_line1(">Gap/Max/Retry");
 }
-static void show_auto_gap(void){
+static void show_auto_gap(void)
+{
     lcd_line0("DRY GAP (s)");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_auto_gap_s);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_auto_gap_s);
     lcd_line1(buf);
 }
-static void show_auto_maxrun(void){
+static void show_auto_maxrun(void)
+{
     lcd_line0("MAX RUN (min)");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_auto_maxrun_min);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_auto_maxrun_min);
     lcd_line1(buf);
 }
-static void show_auto_retry(void){
+static void show_auto_retry(void)
+{
     lcd_line0("RETRY COUNT");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_auto_retry);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_auto_retry);
     lcd_line1(buf);
 }
 static void show_semi_auto(void)
 {
     lcd_line0("Semi-Auto");
-    lcd_line1(semiAutoActive ? "val:Disable Next>"
-                             : "val:Enable  Next>");
+    lcd_line1(semiAutoActive ? "val:Disable Next>" : "val:Enable  Next>");
 }
 
 void ModelHandle_1SecondTask(void)
@@ -507,57 +502,59 @@ void ModelHandle_1SecondTask(void)
     if (countdownActive && countdownDuration > 0)
     {
         countdownDuration--;
-
         if (countdownDuration == 0)
-        {
             countdownActive = false;
-        }
     }
 }
+
 static void show_twist(void)
 {
     char l0[17];
-    snprintf(l0,sizeof(l0),"Tw %02us/%02us",
+    snprintf(l0, sizeof(l0), "Tw %02us/%02us",
              (unsigned)twistSettings.onDurationSeconds,
              (unsigned)twistSettings.offDurationSeconds);
     lcd_line0(l0);
-    lcd_line1(twistActive ?  "val:STOP   Next>" :
-                            "val:START  Next>");
+    lcd_line1(twistActive ? "val:STOP   Next>" : "val:START  Next>");
 }
-static void show_twist_on_sec(void){
+static void show_twist_on_sec(void)
+{
     lcd_line0("TWIST ON SEC");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_twist_on_s);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_s);
     lcd_line1(buf);
 }
-static void show_twist_off_sec(void){
+static void show_twist_off_sec(void)
+{
     lcd_line0("TWIST OFF SEC");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_twist_off_s);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_s);
     lcd_line1(buf);
 }
-static void show_twist_on_h(void){
+static void show_twist_on_h(void)
+{
     lcd_line0("TWIST ON HH");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_twist_on_hh);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_hh);
     lcd_line1(buf);
 }
-static void show_twist_on_m(void){
+static void show_twist_on_m(void)
+{
     lcd_line0("TWIST ON MM");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_twist_on_mm);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_mm);
     lcd_line1(buf);
 }
-static void show_twist_off_h(void){
+static void show_twist_off_h(void)
+{
     lcd_line0("TWIST OFF HH");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_twist_off_hh);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_hh);
     lcd_line1(buf);
 }
-static void show_twist_off_m(void){
+static void show_twist_off_m(void)
+{
     lcd_line0("TWIST OFF MM");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_twist_off_mm);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_mm);
     lcd_line1(buf);
 }
 static void show_countdown(void)
 {
     char l0[17], l1[17];
-
     if (!countdownActive)
     {
         ui = UI_DASH;
@@ -568,54 +565,71 @@ static void show_countdown(void)
     uint32_t min = sec / 60;
     uint32_t s   = sec % 60;
     snprintf(l0, sizeof(l0), "CD %02lu:%02lu RUN",
-             (unsigned long)min,
-             (unsigned long)s);
+             (unsigned long)min, (unsigned long)s);
     snprintf(l1, sizeof(l1), "DOWN=STOP");
     lcd_line0(l0);
     lcd_line1(l1);
 }
-static void show_countdown_edit_min(void){
+static void show_countdown_edit_min(void)
+{
     lcd_line0("SET MINUTES");
-    char buf[17]; snprintf(buf,sizeof(buf),"val:%03u Next>",edit_countdown_min);
+    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_countdown_min);
     lcd_line1(buf);
 }
-static void show_settings_gap(void){
-    lcd_line0("Set Dry Run");
+
+/* ================================================================
+   FIX: show_settings_gap renamed to show_settings_dry_en.
+   Index 0 in devset now shows dry run enable/disable toggle.
+   Index 1 shows test time (gap_time_s in minutes).
+   Index 2 shows retry gap (dry_run_time_s in minutes).
+================================================================ */
+static void show_settings_dry_en(void)
+{
+    lcd_line0("Dry Run Protect");
+    lcd_line1(edit_settings_dry_en ? "ENABLED    Next>" : "DISABLED   Next>");
+}
+static void show_settings_gap(void)
+{
+    lcd_line0("Test Time (min)");
     char buf[17];
     if (edit_settings_gap_s == 0)
-        snprintf(buf,sizeof(buf),"Disable    Next>");
+        snprintf(buf, sizeof(buf), "Disable    Next>");
     else
-        snprintf(buf,sizeof(buf),"val:%2umin Next>", edit_settings_gap_s);
+        snprintf(buf, sizeof(buf), "val:%2umin Next>", edit_settings_gap_s);
     lcd_line1(buf);
 }
-static void show_settings_retry(void){
-    lcd_line0("Testing Gap");
+static void show_settings_retry(void)
+{
+    lcd_line0("Retry Gap (min)");
     char buf[17];
     if (edit_settings_retry == 0)
-        snprintf(buf,sizeof(buf),"Disable    Next>");
+        snprintf(buf, sizeof(buf), "Disable    Next>");
     else
-        snprintf(buf,sizeof(buf),"val:%3umin Next>", edit_settings_retry);
+        snprintf(buf, sizeof(buf), "val:%3umin Next>", edit_settings_retry);
     lcd_line1(buf);
 }
-static void show_settings_uv(void){
+static void show_settings_uv(void)
+{
     lcd_line0("Low Volt");
     char buf[17];
     if (edit_settings_uv == 0)
-        snprintf(buf,sizeof(buf),"Disable    Next>");
+        snprintf(buf, sizeof(buf), "Disable    Next>");
     else
-        snprintf(buf,sizeof(buf),"val:%3uV Next>", edit_settings_uv);
+        snprintf(buf, sizeof(buf), "val:%3uV Next>", edit_settings_uv);
     lcd_line1(buf);
 }
-static void show_settings_ov(void){
+static void show_settings_ov(void)
+{
     lcd_line0("High Volt");
     char buf[17];
     if (edit_settings_ov == 0)
-        snprintf(buf,sizeof(buf),"Disable    Next>");
+        snprintf(buf, sizeof(buf), "Disable    Next>");
     else
-        snprintf(buf,sizeof(buf),"val:%3uV Next>", edit_settings_ov);
+        snprintf(buf, sizeof(buf), "val:%3uV Next>", edit_settings_ov);
     lcd_line1(buf);
 }
-static void show_settings_ol(void){
+static void show_settings_ol(void)
+{
     lcd_line0("Over Load (A)");
     char buf[17];
     if (edit_settings_ol < 1)
@@ -624,7 +638,8 @@ static void show_settings_ol(void){
         snprintf(buf, sizeof(buf), "val:%3d Next>", edit_settings_ol);
     lcd_line1(buf);
 }
-static void show_settings_ul(void){
+static void show_settings_ul(void)
+{
     lcd_line0("Under Load (A)");
     char buf[17];
     if (edit_settings_ul < 1)
@@ -633,16 +648,18 @@ static void show_settings_ul(void){
         snprintf(buf, sizeof(buf), "val:%3d Next>", edit_settings_ul);
     lcd_line1(buf);
 }
-static void show_settings_maxrun(void){
+static void show_settings_maxrun(void)
+{
     lcd_line0("Max Run");
     char buf[17];
     if (edit_settings_maxrun == 0)
-        snprintf(buf,sizeof(buf),"Disable    Next>");
+        snprintf(buf, sizeof(buf), "Disable    Next>");
     else
-        snprintf(buf,sizeof(buf),"val:%3umin Next>",edit_settings_maxrun);
+        snprintf(buf, sizeof(buf), "val:%3umin Next>", edit_settings_maxrun);
     lcd_line1(buf);
 }
-static void show_settings_pwrrest(void){
+static void show_settings_pwrrest(void)
+{
     lcd_line0("Power Restore");
     const char* text =
         (edit_settings_pwrrest == 0) ? "YES       Next>" :
@@ -650,129 +667,156 @@ static void show_settings_pwrrest(void){
                                        "LAST      Next>";
     lcd_line1(text);
 }
-static void show_settings_factory(void){
+static void show_settings_factory(void)
+{
     lcd_line0("Factory Reset?");
-    lcd_line1(edit_settings_factory_yes ? "YES       Next>" :
-                                         "NO        Next>");
+    lcd_line1(edit_settings_factory_yes ? "YES       Next>" : "NO        Next>");
 }
 static void show_devset_edit_date(void)
 {
     lcd_line0("Set Date");
     uint8_t yy2 = (uint8_t)(edit_date_yyyy % 100);
     char buf[17];
-    if (edit_date_field == 0)
-        snprintf(buf,sizeof(buf),"[%02u]-%02u-%02u", edit_date_dd, edit_date_mm, yy2);
-    else if (edit_date_field == 1)
-        snprintf(buf,sizeof(buf),"%02u-[%02u]-%02u", edit_date_dd, edit_date_mm, yy2);
-    else
-        snprintf(buf,sizeof(buf),"%02u-%02u-[%02u]", edit_date_dd, edit_date_mm, yy2);
+    if      (edit_date_field == 0) snprintf(buf, sizeof(buf), "[%02u]-%02u-%02u", edit_date_dd, edit_date_mm, yy2);
+    else if (edit_date_field == 1) snprintf(buf, sizeof(buf), "%02u-[%02u]-%02u", edit_date_dd, edit_date_mm, yy2);
+    else                           snprintf(buf, sizeof(buf), "%02u-%02u-[%02u]", edit_date_dd, edit_date_mm, yy2);
     lcd_line1(buf);
 }
 static void show_devset_edit_time(void)
 {
     lcd_line0("Set Time");
     char buf[17];
-
     if (edit_time_field == 0)
-        snprintf(buf,sizeof(buf),"[%02u]:%02u", edit_time_hh, edit_time_min);
+        snprintf(buf, sizeof(buf), "[%02u]:%02u", edit_time_hh, edit_time_min);
     else
-        snprintf(buf,sizeof(buf),"%02u:[%02u]", edit_time_hh, edit_time_min);
-
+        snprintf(buf, sizeof(buf), "%02u:[%02u]", edit_time_hh, edit_time_min);
     lcd_line1(buf);
 }
 static void show_devset_edit_day(void)
 {
     lcd_line0("Set Day");
     char buf[17];
-    snprintf(buf,sizeof(buf),"> %s", dowNames[edit_day_idx2 % 7]);
+    snprintf(buf, sizeof(buf), "> %s", dowNames[edit_day_idx2 % 7]);
     lcd_line1(buf);
 }
 static void show_add_device_menu(void)
 {
-    lcd_line0(addDevMenuIndex == 0 ? ">Pair Device" : " Pair Device");
+    lcd_line0(addDevMenuIndex == 0 ? ">Pair Device"   : " Pair Device");
     lcd_line1(addDevMenuIndex == 1 ? ">Remove Device" : " Remove Device");
 }
 static void show_add_device_pair(void)
 {
     lcd_line0("Pair Device");
     char buf[17];
-    snprintf(buf,sizeof(buf),">%s", addDevTypeNames[addDevTypeIndex]);
+    snprintf(buf, sizeof(buf), ">%s", addDevTypeNames[addDevTypeIndex]);
     lcd_line1(buf);
 }
 static void show_add_device_remove(void)
 {
     lcd_line0("Remove Device");
     char buf[17];
-    snprintf(buf,sizeof(buf),">%s", addDevTypeNames[addDevTypeIndex]);
+    snprintf(buf, sizeof(buf), ">%s", addDevTypeNames[addDevTypeIndex]);
     lcd_line1(buf);
 }
 static void show_add_device_pair_done(void)
 {
     lcd_line0("Paired Device");
     char buf[17];
-    snprintf(buf,sizeof(buf),"%s   OK>", addDevTypeNames[lastAddDevType]);
+    snprintf(buf, sizeof(buf), "%s   OK>", addDevTypeNames[lastAddDevType]);
     lcd_line1(buf);
 }
 static void show_add_device_remove_done(void)
 {
     lcd_line0("Removed Device");
     char buf[17];
-    snprintf(buf,sizeof(buf),"%s   OK>", addDevTypeNames[lastAddDevType]);
+    snprintf(buf, sizeof(buf), "%s   OK>", addDevTypeNames[lastAddDevType]);
     lcd_line1(buf);
 }
 static void show_reset_confirm(void)
 {
     lcd_line0("Reset To Default?");
-    lcd_line1(reset_confirm_yes ? "YES       Apply>" :
-                                  "NO        Back>");
+    lcd_line1(reset_confirm_yes ? "YES       Apply>" : "NO        Back>");
 }
 
+/* ================================================================
+   FIX: apply_settings_core now correctly applies:
+     1. gap_time_s  from edit_settings_gap_s  (minutes → seconds)
+     2. dry_run_time_s from edit_settings_retry (minutes → seconds)
+     3. dry_run_enable from edit_settings_dry_en
+
+   When dry_en is toggled OFF, gap forced to 0 as well.
+   When gap is set to 0, dry_en is also cleared.
+================================================================ */
 static void apply_settings_core(void)
 {
-    uint16_t gap_s = 0;
-    if (edit_settings_gap_s > 0)
+    uint16_t gap_s   = 0;
+    uint16_t retry_s = 0;
+
+    if (edit_settings_dry_en && edit_settings_gap_s > 0)
         gap_s = (uint16_t)(edit_settings_gap_s * 60U);
+
+    if (edit_settings_retry > 0)
+        retry_s = (uint16_t)(edit_settings_retry * 60U);
+
     ModelHandle_SetUserSettings(
         gap_s,
-        edit_settings_retry,
+        0,                    /* retry_count not set here */
         edit_settings_uv,
         edit_settings_ov,
         edit_settings_ol,
         edit_settings_ul,
         edit_settings_maxrun
     );
+
+    if (retry_s > 0)
+        ModelHandle_SetDryRunTime(retry_s);
+
+    /* FIX: explicitly propagate dry run enable flag */
+    ModelHandle_SetDryRun(edit_settings_dry_en && edit_settings_gap_s > 0);
 }
+
 static void start_settings_edit_flow(void)
 {
+    /* Read current settings back into edit variables */
     uint16_t gap_s = ModelHandle_GetGapTime();
-    if (gap_s == 0) {
+    if (gap_s == 0)
         edit_settings_gap_s = 0;
-    } else {
+    else
+    {
         edit_settings_gap_s = gap_s / 60;
-        if (edit_settings_gap_s < 1)  edit_settings_gap_s = 1;
+        if (edit_settings_gap_s < 1)   edit_settings_gap_s = 1;
         if (edit_settings_gap_s > 180) edit_settings_gap_s = 180;
     }
-    edit_settings_retry   = ModelHandle_GetRetryCount();
-    if (edit_settings_retry > 180)
-        edit_settings_retry = 180;
-    edit_settings_uv      = ModelHandle_GetUnderVolt();
-    if (edit_settings_uv != 0) {
+
+    /* FIX: read dry run enable state */
+    edit_settings_dry_en = ModelHandle_GetDryRunEnable() ? 1 : 0;
+
+    edit_settings_retry = ModelHandle_GetRetryCount();
+    if (edit_settings_retry > 180) edit_settings_retry = 180;
+
+    edit_settings_uv = ModelHandle_GetUnderVolt();
+    if (edit_settings_uv != 0)
+    {
         if (edit_settings_uv < 150) edit_settings_uv = 150;
         if (edit_settings_uv > 200) edit_settings_uv = 200;
     }
-    edit_settings_ov      = ModelHandle_GetOverVolt();
-    if (edit_settings_ov != 0) {
+    edit_settings_ov = ModelHandle_GetOverVolt();
+    if (edit_settings_ov != 0)
+    {
         if (edit_settings_ov < 250) edit_settings_ov = 250;
         if (edit_settings_ov > 300) edit_settings_ov = 300;
     }
-    edit_settings_ol      = ModelHandle_GetOverloadLimit();
-    if (edit_settings_ol > 25.0f) edit_settings_ol = 25.0f;
-    edit_settings_ul      = ModelHandle_GetUnderloadLimit();
-    if (edit_settings_ul > 10.0f) edit_settings_ul = 10.0f;
-    edit_settings_maxrun  = ModelHandle_GetMaxRunTime();
+    edit_settings_ol = ModelHandle_GetOverloadLimit();
+    if (edit_settings_ol > 25) edit_settings_ol = 25;
+    edit_settings_ul = ModelHandle_GetUnderloadLimit();
+    if (edit_settings_ul > 10) edit_settings_ul = 10;
+
+    edit_settings_maxrun = ModelHandle_GetMaxRunTime();
     if (edit_settings_maxrun > 300) edit_settings_maxrun = 300;
+
     edit_settings_pwrrest = ModelHandle_GetPowerRestoreMode();
     edit_settings_factory_yes = 0;
+
     RTC_GetTimeDate();
     edit_date_dd    = time.dom;
     edit_date_mm    = time.month;
@@ -781,23 +825,25 @@ static void start_settings_edit_flow(void)
     edit_time_hh    = time.hour;
     edit_time_min   = time.min;
     edit_time_field = 0;
-    if (time.dow >= 1 && time.dow <= 7)
-        edit_day_idx2 = (uint8_t)((time.dow - 1) % 7);
-    else
-        edit_day_idx2 = 0;
+    edit_day_idx2   = (time.dow >= 1 && time.dow <= 7) ?
+                      (uint8_t)((time.dow - 1) % 7) : 0;
+
     devset_idx      = 0;
     devset_view_top = 0;
     ui = UI_DEVSET_MENU;
     screenNeedsRefresh = true;
 }
+
 static void goto_menu_top(void)
 {
     menu_idx = 0;
     menu_view_top = 0;
 }
+
 static void menu_select(void)
 {
     refreshInactivityTimer();
+
     if (ui == UI_WELCOME)
     {
         ui = UI_DASH;
@@ -813,7 +859,7 @@ static void menu_select(void)
     }
     if (ui == UI_MENU)
     {
-        switch(menu_idx)
+        switch (menu_idx)
         {
             case 0:
                 addDevMenuIndex = 0;
@@ -831,53 +877,102 @@ static void menu_select(void)
         screenNeedsRefresh = true;
         return;
     }
+
+    /* ================================================================
+       DEVSET MENU SELECT
+       Index mapping (matches devset_menu_items[] above):
+         0  = Dry Run En  – toggle enable/disable + apply
+         1  = Test Time   – inline toggle gap 0/5
+         2  = Retry Gap   – inline toggle 0/5
+         3  = Low Volt
+         4  = High Volt
+         5  = Over Load
+         6  = Under Load
+         7  = Max Run
+         8  = Set Date
+         9  = Set Time
+         10 = Set Day
+         11 = Power Restore
+         12 = Factory Reset
+         13 = Back
+    ================================================================ */
     if (ui == UI_DEVSET_MENU)
     {
-        switch(devset_idx)
+        switch (devset_idx)
         {
-            case 0: edit_settings_gap_s = (edit_settings_gap_s > 0) ? 0 : 5;  apply_settings_core(); break;
-            case 1: edit_settings_retry = (edit_settings_retry > 0) ? 0 : 5;  apply_settings_core(); break;
-            case 2: edit_settings_uv    = (edit_settings_uv > 0)    ? 0 : 180;apply_settings_core(); break;
-            case 3: edit_settings_ov    = (edit_settings_ov > 0)    ? 0 : 260;apply_settings_core(); break;
-            case 4: edit_settings_ol    = (edit_settings_ol > 0)    ? 0 : 6;  apply_settings_core(); break;
-            case 5: edit_settings_ul    = (edit_settings_ul > 0)    ? 0 : 2;  apply_settings_core(); break;
-            case 6: edit_settings_maxrun= (edit_settings_maxrun > 0)? 0 : 60; apply_settings_core(); break;
-            case 7:  ui = UI_DEVSET_EDIT_DATE; break;
-            case 8:  ui = UI_DEVSET_EDIT_TIME; break;
-            case 9:  ui = UI_DEVSET_EDIT_DAY;  break;
-            case 10:
+            case 0:  /* Dry Run Enable/Disable */
+                edit_settings_dry_en ^= 1;
+                apply_settings_core();
+                break;
+            case 1:  /* Test Time inline toggle */
+                edit_settings_gap_s = (edit_settings_gap_s > 0) ? 0 : 5;
+                apply_settings_core();
+                break;
+            case 2:  /* Retry Gap inline toggle */
+                edit_settings_retry = (edit_settings_retry > 0) ? 0 : 5;
+                apply_settings_core();
+                break;
+            case 3:
+                edit_settings_uv = (edit_settings_uv > 0) ? 0 : 180;
+                apply_settings_core();
+                break;
+            case 4:
+                edit_settings_ov = (edit_settings_ov > 0) ? 0 : 260;
+                apply_settings_core();
+                break;
+            case 5:
+                edit_settings_ol = (edit_settings_ol > 0) ? 0 : 6;
+                apply_settings_core();
+                break;
+            case 6:
+                edit_settings_ul = (edit_settings_ul > 0) ? 0 : 2;
+                apply_settings_core();
+                break;
+            case 7:
+                edit_settings_maxrun = (edit_settings_maxrun > 0) ? 0 : 60;
+                apply_settings_core();
+                break;
+            case 8:  ui = UI_DEVSET_EDIT_DATE; break;
+            case 9:  ui = UI_DEVSET_EDIT_TIME; break;
+            case 10: ui = UI_DEVSET_EDIT_DAY;  break;
+            case 11:
                 edit_settings_pwrrest = (edit_settings_pwrrest + 1) % 3;
                 ModelHandle_SetPowerRestoreMode(edit_settings_pwrrest);
                 break;
-            case 11:
+            case 12:
                 edit_settings_factory_yes ^= 1;
                 if (edit_settings_factory_yes)
                 {
                     ModelHandle_FactoryReset();
+                    /* Sync local edit vars after reset */
+                    edit_settings_dry_en  = 1;
+                    edit_settings_gap_s   = 0;
+                    edit_settings_retry   = 0;
+                    edit_settings_uv      = 190;
+                    edit_settings_ov      = 260;
+                    edit_settings_maxrun  = 300;
                     ui = UI_DASH;
                 }
                 break;
-            case 12:
+            case 13:
                 ui = UI_MENU;
                 break;
         }
         screenNeedsRefresh = true;
         return;
     }
+
     if (ui == UI_DEVSET_EDIT_DATE)
     {
         if (edit_date_field < 2)
-        {
             edit_date_field++;
-        }
         else
         {
             time.dom   = edit_date_dd;
             time.month = edit_date_mm;
             time.year  = edit_date_yyyy;
-
-            RTC_SetTimeDate(time.sec,time.min,time.hour,
-                            time.dow,time.dom,time.month,time.year);
+            RTC_SetTimeDate(time.sec, time.min, time.hour,
+                            time.dow, time.dom, time.month, time.year);
             ui = UI_DEVSET_MENU;
         }
         screenNeedsRefresh = true;
@@ -886,16 +981,14 @@ static void menu_select(void)
     if (ui == UI_DEVSET_EDIT_TIME)
     {
         if (edit_time_field == 0)
-        {
             edit_time_field = 1;
-        }
         else
         {
             time.hour = edit_time_hh;
             time.min  = edit_time_min;
             time.sec  = 0;
-            RTC_SetTimeDate(time.sec,time.min,time.hour,
-                            time.dow,time.dom,time.month,time.year);
+            RTC_SetTimeDate(time.sec, time.min, time.hour,
+                            time.dow, time.dom, time.month, time.year);
             ui = UI_DEVSET_MENU;
         }
         screenNeedsRefresh = true;
@@ -904,55 +997,35 @@ static void menu_select(void)
     if (ui == UI_DEVSET_EDIT_DAY)
     {
         time.dow = edit_day_idx2 + 1;
-        RTC_SetTimeDate(time.sec,time.min,time.hour,
-                        time.dow,time.dom,time.month,time.year);
+        RTC_SetTimeDate(time.sec, time.min, time.hour,
+                        time.dow, time.dom, time.month, time.year);
         ui = UI_DEVSET_MENU;
         screenNeedsRefresh = true;
         return;
     }
 }
+
 void increase_edit_value(uint8_t step)
 {
-    switch(ui)
+    switch (ui)
     {
         case UI_TIMER_EDIT_ON_TIME:
-            if (time_edit_field == 0) {
-                edit_on_h += step;
-                if (edit_on_h > 23) edit_on_h = 23;
-            } else {
-                edit_on_m += step;
-                if (edit_on_m > 59) edit_on_m = 59;
-            }
+            if (time_edit_field == 0) { edit_on_h += step; if (edit_on_h > 23) edit_on_h = 23; }
+            else { edit_on_m += step; if (edit_on_m > 59) edit_on_m = 59; }
             break;
-
         case UI_TIMER_EDIT_OFF_TIME:
-            if (time_edit_field == 0) {
-                edit_off_h += step;
-                if (edit_off_h > 23) edit_off_h = 23;
-            } else {
-                edit_off_m += step;
-                if (edit_off_m > 59) edit_off_m = 59;
-            }
+            if (time_edit_field == 0) { edit_off_h += step; if (edit_off_h > 23) edit_off_h = 23; }
+            else { edit_off_m += step; if (edit_off_m > 59) edit_off_m = 59; }
             break;
         case UI_TIMER_EDIT_GAP:
             edit_gap_min += step;
             if (edit_gap_min > 240) edit_gap_min = 240;
             break;
-        case UI_AUTO_EDIT_GAP:
-            edit_auto_gap_s += step;
-            break;
-        case UI_AUTO_EDIT_MAXRUN:
-            edit_auto_maxrun_min += step;
-            break;
-        case UI_AUTO_EDIT_RETRY:
-            edit_auto_retry += step;
-            break;
-        case UI_TWIST_EDIT_ON:
-            edit_twist_on_s += step;
-            break;
-        case UI_TWIST_EDIT_OFF:
-            edit_twist_off_s += step;
-            break;
+        case UI_AUTO_EDIT_GAP:     edit_auto_gap_s += step; break;
+        case UI_AUTO_EDIT_MAXRUN:  edit_auto_maxrun_min += step; break;
+        case UI_AUTO_EDIT_RETRY:   edit_auto_retry += step; break;
+        case UI_TWIST_EDIT_ON:     edit_twist_on_s += step; break;
+        case UI_TWIST_EDIT_OFF:    edit_twist_off_s += step; break;
         case UI_TWIST_EDIT_ON_H:
             edit_twist_on_hh += step;
             if (edit_twist_on_hh > 23) edit_twist_on_hh = 23;
@@ -970,10 +1043,8 @@ void increase_edit_value(uint8_t step)
             if (edit_twist_off_mm > 59) edit_twist_off_mm = 59;
             break;
         case UI_COUNTDOWN_EDIT_MIN:
-            if (edit_countdown_min < 180)
-                edit_countdown_min += 1;
-            if (edit_countdown_min > 180)
-                edit_countdown_min = 180;
+            if (edit_countdown_min < 180) edit_countdown_min += 1;
+            if (edit_countdown_min > 180) edit_countdown_min = 180;
             break;
         case UI_SETTINGS_GAP:
             edit_settings_gap_s += step;
@@ -985,17 +1056,11 @@ void increase_edit_value(uint8_t step)
             break;
         case UI_SETTINGS_UV:
             if (edit_settings_uv == 0) edit_settings_uv = 150;
-            else {
-                edit_settings_uv += step;
-                if (edit_settings_uv > 200) edit_settings_uv = 200;
-            }
+            else { edit_settings_uv += step; if (edit_settings_uv > 200) edit_settings_uv = 200; }
             break;
         case UI_SETTINGS_OV:
             if (edit_settings_ov == 0) edit_settings_ov = 250;
-            else {
-                edit_settings_ov += step;
-                if (edit_settings_ov > 300) edit_settings_ov = 300;
-            }
+            else { edit_settings_ov += step; if (edit_settings_ov > 300) edit_settings_ov = 300; }
             break;
         case UI_SETTINGS_OL:
             edit_settings_ol += step;
@@ -1007,10 +1072,7 @@ void increase_edit_value(uint8_t step)
             break;
         case UI_SETTINGS_MAXRUN:
             if (edit_settings_maxrun == 0) edit_settings_maxrun = 10;
-            else {
-                edit_settings_maxrun += step;
-                if (edit_settings_maxrun > 300) edit_settings_maxrun = 300;
-            }
+            else { edit_settings_maxrun += step; if (edit_settings_maxrun > 300) edit_settings_maxrun = 300; }
             break;
         case UI_SETTINGS_PWRREST:
             edit_settings_pwrrest = (edit_settings_pwrrest + 1) % 3;
@@ -1019,28 +1081,13 @@ void increase_edit_value(uint8_t step)
             edit_settings_factory_yes ^= 1;
             break;
         case UI_DEVSET_EDIT_DATE:
-            if (edit_date_field == 0) {
-                edit_date_dd += step;
-                if (edit_date_dd > 31) edit_date_dd = 31;
-            }
-            else if (edit_date_field == 1) {
-                edit_date_mm += step;
-                if (edit_date_mm > 12) edit_date_mm = 12;
-            }
-            else {
-                edit_date_yyyy += step;
-                if (edit_date_yyyy > 2099) edit_date_yyyy = 2099;
-            }
+            if      (edit_date_field == 0) { edit_date_dd += step; if (edit_date_dd > 31) edit_date_dd = 31; }
+            else if (edit_date_field == 1) { edit_date_mm += step; if (edit_date_mm > 12) edit_date_mm = 12; }
+            else { edit_date_yyyy += step; if (edit_date_yyyy > 2099) edit_date_yyyy = 2099; }
             break;
         case UI_DEVSET_EDIT_TIME:
-            if (edit_time_field == 0) {
-                edit_time_hh += step;
-                if (edit_time_hh > 23) edit_time_hh = 23;
-            }
-            else {
-                edit_time_min += step;
-                if (edit_time_min > 59) edit_time_min = 59;
-            }
+            if (edit_time_field == 0) { edit_time_hh += step; if (edit_time_hh > 23) edit_time_hh = 23; }
+            else { edit_time_min += step; if (edit_time_min > 59) edit_time_min = 59; }
             break;
         case UI_DEVSET_EDIT_DAY:
             edit_day_idx2 = (uint8_t)((edit_day_idx2 + 1) % 7);
@@ -1052,87 +1099,51 @@ void increase_edit_value(uint8_t step)
 
 void decrease_edit_value(uint8_t step)
 {
-    switch(ui)
+    switch (ui)
     {
         case UI_TIMER_EDIT_ON_TIME:
-            if (time_edit_field == 0) {
-                if (edit_on_h > step) edit_on_h -= step;
-                else edit_on_h = 0;
-            } else {
-                if (edit_on_m > step) edit_on_m -= step;
-                else edit_on_m = 0;
-            }
+            if (time_edit_field == 0) { if (edit_on_h > step) edit_on_h -= step; else edit_on_h = 0; }
+            else { if (edit_on_m > step) edit_on_m -= step; else edit_on_m = 0; }
             break;
         case UI_TIMER_EDIT_OFF_TIME:
-            if (time_edit_field == 0) {
-                if (edit_off_h > step) edit_off_h -= step;
-                else edit_off_h = 0;
-            } else {
-                if (edit_off_m > step) edit_off_m -= step;
-                else edit_off_m = 0;
-            }
+            if (time_edit_field == 0) { if (edit_off_h > step) edit_off_h -= step; else edit_off_h = 0; }
+            else { if (edit_off_m > step) edit_off_m -= step; else edit_off_m = 0; }
             break;
         case UI_TIMER_EDIT_GAP:
-            if (edit_gap_min > step) edit_gap_min -= step;
-            else edit_gap_min = 0;
+            if (edit_gap_min > step) edit_gap_min -= step; else edit_gap_min = 0;
             break;
         case UI_AUTO_EDIT_GAP:
-            if (edit_auto_gap_s > step) edit_auto_gap_s -= step;
-            else edit_auto_gap_s = 0;
+            if (edit_auto_gap_s > step) edit_auto_gap_s -= step; else edit_auto_gap_s = 0;
             break;
         case UI_AUTO_EDIT_MAXRUN:
-            if (edit_auto_maxrun_min > step) edit_auto_maxrun_min -= step;
-            else edit_auto_maxrun_min = 0;
+            if (edit_auto_maxrun_min > step) edit_auto_maxrun_min -= step; else edit_auto_maxrun_min = 0;
             break;
         case UI_AUTO_EDIT_RETRY:
-            if (edit_auto_retry > step) edit_auto_retry -= step;
-            else edit_auto_retry = 0;
+            if (edit_auto_retry > step) edit_auto_retry -= step; else edit_auto_retry = 0;
             break;
         case UI_SETTINGS_GAP:
-            if (edit_settings_gap_s > step) edit_settings_gap_s -= step;
-            else edit_settings_gap_s = 0;
+            if (edit_settings_gap_s > step) edit_settings_gap_s -= step; else edit_settings_gap_s = 0;
             break;
         case UI_SETTINGS_RETRY:
-            if (edit_settings_retry > step) edit_settings_retry -= step;
-            else edit_settings_retry = 0;
+            if (edit_settings_retry > step) edit_settings_retry -= step; else edit_settings_retry = 0;
             break;
         case UI_SETTINGS_OL:
-            if (edit_settings_ol > step) edit_settings_ol -= step;
-            else edit_settings_ol = 0;
+            if (edit_settings_ol > step) edit_settings_ol -= step; else edit_settings_ol = 0;
             break;
         case UI_SETTINGS_UL:
-            if (edit_settings_ul > step) edit_settings_ul -= step;
-            else edit_settings_ul = 0;
+            if (edit_settings_ul > step) edit_settings_ul -= step; else edit_settings_ul = 0;
             break;
         case UI_SETTINGS_MAXRUN:
-            if (edit_settings_maxrun > step) edit_settings_maxrun -= step;
-            else edit_settings_maxrun = 0;
+            if (edit_settings_maxrun > step) edit_settings_maxrun -= step; else edit_settings_maxrun = 0;
             break;
         case UI_DEVSET_EDIT_DATE:
-            if (edit_date_field == 0) {
-                if (edit_date_dd > step) edit_date_dd -= step;
-                else edit_date_dd = 1;
-            }
-            else if (edit_date_field == 1) {
-                if (edit_date_mm > step) edit_date_mm -= step;
-                else edit_date_mm = 1;
-            }
-            else {
-                if (edit_date_yyyy > (2000 + step))
-                    edit_date_yyyy -= step;
-                else
-                    edit_date_yyyy = 2000;
-            }
+            if      (edit_date_field == 0) { if (edit_date_dd > step) edit_date_dd -= step; else edit_date_dd = 1; }
+            else if (edit_date_field == 1) { if (edit_date_mm > step) edit_date_mm -= step; else edit_date_mm = 1; }
+            else { if (edit_date_yyyy > (2000 + step)) edit_date_yyyy -= step; else edit_date_yyyy = 2000; }
             break;
         case UI_DEVSET_EDIT_TIME:
-            if (edit_time_field == 0) {
-                if (edit_time_hh > step) edit_time_hh -= step;
-                else edit_time_hh = 0;
-            }
-            else {
-                if (edit_time_min > step) edit_time_min -= step;
-                else edit_time_min = 0;
-            }
+            if (edit_time_field == 0) { if (edit_time_hh > step) edit_time_hh -= step; else edit_time_hh = 0; }
+            else { if (edit_time_min > step) edit_time_min -= step; else edit_time_min = 0; }
             break;
         case UI_DEVSET_EDIT_DAY:
             edit_day_idx2 = (uint8_t)((edit_day_idx2 + 6) % 7);
@@ -1157,23 +1168,20 @@ static UiButton decode_button_press(void)
     for (int i = 0; i < 4; i++)
     {
         bool raw = Switch_IsPressed(i);
-
         if (raw != last_raw[i])
         {
             last_change_time[i] = now;
             last_raw[i] = raw;
         }
-
         if ((now - last_change_time[i]) > DEBOUNCE_MS)
         {
             if (stable_state[i] != raw)
             {
                 stable_state[i] = raw;
-
                 if (raw)
                 {
                     press_time[i] = now;
-                    long_sent[i] = false;
+                    long_sent[i]  = false;
                 }
                 else
                 {
@@ -1181,43 +1189,38 @@ static UiButton decode_button_press(void)
                     {
                         switch (i)
                         {
-                            case 0: result = BTN_RESET; break;
+                            case 0: result = BTN_RESET;  break;
                             case 1: result = BTN_SELECT; break;
-                            case 2: result = BTN_UP; break;
-                            case 3: result = BTN_DOWN; break;
+                            case 2: result = BTN_UP;     break;
+                            case 3: result = BTN_DOWN;   break;
                         }
                     }
                 }
             }
         }
-
         if (stable_state[i] && !long_sent[i])
         {
             if ((now - press_time[i]) >= LONG_PRESS_MS)
             {
                 long_sent[i] = true;
                 last_repeat_time[i] = now;
-
                 switch (i)
                 {
-                    case 0: result = BTN_RESET_LONG; break;
+                    case 0: result = BTN_RESET_LONG;  break;
                     case 1: result = BTN_SELECT_LONG; break;
-                    case 2: result = BTN_UP_LONG; break;
-                    case 3: result = BTN_DOWN_LONG; break;
+                    case 2: result = BTN_UP_LONG;     break;
+                    case 3: result = BTN_DOWN_LONG;   break;
                 }
             }
         }
     }
-
     return result;
 }
 
 void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
-
-    if (b == BTN_NONE)
-        return;
+    if (b == BTN_NONE) return;
 
     refreshInactivityTimer();
 
@@ -1256,7 +1259,6 @@ void Screen_HandleSwitches(void)
                 case UI_DEVSET_EDIT_DAY:
                     ui = UI_DEVSET_MENU;
                     break;
-
                 case UI_DEVSET_MENU:
                 case UI_ADD_DEVICE_MENU:
                 case UI_ADD_DEVICE_PAIR:
@@ -1265,22 +1267,18 @@ void Screen_HandleSwitches(void)
                 case UI_ADD_DEVICE_REMOVE_DONE:
                     ui = UI_MENU;
                     break;
-
                 case UI_COUNTDOWN_EDIT_MIN:
                     ui = UI_COUNTDOWN;
                     break;
-
                 case UI_COUNTDOWN:
                     ModelHandle_StopCountdown();
                     ui = UI_DASH;
                     break;
-
                 default:
                     ui = UI_DASH;
                     break;
             }
         }
-
         screenNeedsRefresh = true;
         return;
     }
@@ -1289,15 +1287,11 @@ void Screen_HandleSwitches(void)
     {
         if (b == BTN_UP || b == BTN_DOWN)
             reset_confirm_yes = !reset_confirm_yes;
-
         else if (b == BTN_SELECT)
         {
-            if (reset_confirm_yes)
-                ModelHandle_FactoryReset();
-
+            if (reset_confirm_yes) ModelHandle_FactoryReset();
             ui = UI_DASH;
         }
-
         screenNeedsRefresh = true;
         return;
     }
@@ -1309,23 +1303,18 @@ void Screen_HandleSwitches(void)
             case BTN_RESET_LONG:
                 ModelHandle_ToggleManual();
                 break;
-
             case BTN_SELECT:
                 if (!autoActive)
-                    ModelHandle_StartAuto(edit_auto_gap_s,
-                                          edit_auto_maxrun_min,
-                                          edit_auto_retry);
+                    ModelHandle_StartAuto(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
                 else
                     ModelHandle_StopAuto();
                 break;
-
             case BTN_SELECT_LONG:
                 ui = UI_MENU;
                 menu_idx = 0;
                 menu_view_top = 0;
                 screenNeedsRefresh = true;
                 return;
-
             case BTN_UP:
                 if (!timerActive)
                     ModelHandle_Button3_SinglePress();
@@ -1333,7 +1322,6 @@ void Screen_HandleSwitches(void)
                     ModelHandle_StopTimer();
                 screenNeedsRefresh = true;
                 break;
-
             case BTN_UP_LONG:
                 if (!semiAutoActive)
                     ModelHandle_StartSemiAuto();
@@ -1341,7 +1329,6 @@ void Screen_HandleSwitches(void)
                     ModelHandle_StopSemiAuto();
                 screenNeedsRefresh = true;
                 break;
-
             case BTN_DOWN:
                 if (!countdownActive)
                 {
@@ -1357,7 +1344,6 @@ void Screen_HandleSwitches(void)
                 }
                 screenNeedsRefresh = true;
                 return;
-
             case BTN_DOWN_LONG:
                 if (!countdownActive)
                 {
@@ -1366,61 +1352,37 @@ void Screen_HandleSwitches(void)
                     screenNeedsRefresh = true;
                 }
                 break;
-
             default:
                 break;
         }
-
         return;
     }
 
     if (ui == UI_MENU)
     {
-        if (b == BTN_SELECT || b == BTN_SELECT_LONG)
-            menu_select();
-
-        else if (b == BTN_DOWN && menu_idx < MAIN_MENU_COUNT - 1)
-            menu_idx++;
-
-        else if (b == BTN_UP && menu_idx > 0)
-            menu_idx--;
-
+        if (b == BTN_SELECT || b == BTN_SELECT_LONG) menu_select();
+        else if (b == BTN_DOWN && menu_idx < MAIN_MENU_COUNT - 1) menu_idx++;
+        else if (b == BTN_UP   && menu_idx > 0) menu_idx--;
         screenNeedsRefresh = true;
         return;
     }
 
     if (ui == UI_DEVSET_MENU)
     {
-        if (b == BTN_SELECT || b == BTN_SELECT_LONG)
-            menu_select();
-
-        else if (b == BTN_DOWN && devset_idx < DEVSET_MENU_COUNT - 1)
-            devset_idx++;
-
-        else if (b == BTN_UP && devset_idx > 0)
-            devset_idx--;
-
+        if (b == BTN_SELECT || b == BTN_SELECT_LONG) menu_select();
+        else if (b == BTN_DOWN && devset_idx < DEVSET_MENU_COUNT - 1) devset_idx++;
+        else if (b == BTN_UP   && devset_idx > 0) devset_idx--;
         screenNeedsRefresh = true;
         return;
     }
 
     if (ui != UI_DASH)
     {
-        if (b == BTN_UP)
-            increase_edit_value(1);
-
-        else if (b == BTN_DOWN)
-            decrease_edit_value(1);
-
-        else if (b == BTN_UP_LONG)
-            increase_edit_value(5);
-
-        else if (b == BTN_DOWN_LONG)
-            decrease_edit_value(5);
-
-        else if (b == BTN_SELECT)
-            menu_select();
-
+        if      (b == BTN_UP)        increase_edit_value(1);
+        else if (b == BTN_DOWN)      decrease_edit_value(1);
+        else if (b == BTN_UP_LONG)   increase_edit_value(5);
+        else if (b == BTN_DOWN_LONG) decrease_edit_value(5);
+        else if (b == BTN_SELECT)    menu_select();
         screenNeedsRefresh = true;
         return;
     }
@@ -1431,7 +1393,7 @@ void Screen_Update(void)
     uint32_t now = HAL_GetTick();
     static uint32_t lastBlink = 0;
 
-    if(ui >= UI_MAX_)
+    if (ui >= UI_MAX_)
     {
         ui = UI_DASH;
         screenNeedsRefresh = true;
@@ -1441,9 +1403,7 @@ void Screen_Update(void)
     {
         lastBlink = now;
         cursorVisible = !cursorVisible;
-
-        if(ui == UI_MENU)
-            screenNeedsRefresh = true;
+        if (ui == UI_MENU) screenNeedsRefresh = true;
     }
 
     if (ui == UI_WELCOME && (now - lastLcdUpdateTime >= WELCOME_MS))
@@ -1470,26 +1430,32 @@ void Screen_Update(void)
 
     if (screenNeedsRefresh || ui != last_ui)
     {
-        if (ui != last_ui)
-        {
-            lcd_clear();
-            last_ui = ui;
-        }
-
+        if (ui != last_ui) { lcd_clear(); last_ui = ui; }
         screenNeedsRefresh = false;
 
         switch (ui)
         {
-            case UI_WELCOME:    show_welcome(); break;
-            case UI_DASH:       show_dash(); break;
-            case UI_MENU:       show_menu(); break;
-            case UI_COUNTDOWN:  show_countdown(); break;
-            case UI_COUNTDOWN_EDIT_MIN: show_countdown_edit_min(); break;
-            case UI_DEVSET_MENU: show_devset_menu(); break;
-            case UI_RESET_CONFIRM: show_reset_confirm(); break;
-            case UI_DEVSET_EDIT_DATE: show_devset_edit_date(); break;
-            case UI_DEVSET_EDIT_TIME: show_devset_edit_time(); break;
-            case UI_DEVSET_EDIT_DAY: show_devset_edit_day(); break;
+            case UI_WELCOME:           show_welcome();             break;
+            case UI_DASH:              show_dash();                break;
+            case UI_MENU:              show_menu();                break;
+            case UI_COUNTDOWN:         show_countdown();           break;
+            case UI_COUNTDOWN_EDIT_MIN:show_countdown_edit_min();  break;
+            case UI_DEVSET_MENU:       show_devset_menu();         break;
+            case UI_RESET_CONFIRM:     show_reset_confirm();       break;
+            case UI_DEVSET_EDIT_DATE:  show_devset_edit_date();    break;
+            case UI_DEVSET_EDIT_TIME:  show_devset_edit_time();    break;
+            case UI_DEVSET_EDIT_DAY:   show_devset_edit_day();     break;
+            /* Inline-toggle items don't navigate to a sub-screen,
+               but leave these stubs for future navigation if needed */
+            case UI_SETTINGS_GAP:      show_settings_gap();        break;
+            case UI_SETTINGS_RETRY:    show_settings_retry();      break;
+            case UI_SETTINGS_UV:       show_settings_uv();         break;
+            case UI_SETTINGS_OV:       show_settings_ov();         break;
+            case UI_SETTINGS_OL:       show_settings_ol();         break;
+            case UI_SETTINGS_UL:       show_settings_ul();         break;
+            case UI_SETTINGS_MAXRUN:   show_settings_maxrun();     break;
+            case UI_SETTINGS_PWRREST:  show_settings_pwrrest();    break;
+            case UI_SETTINGS_FACTORY:  show_settings_factory();    break;
             default: break;
         }
     }
