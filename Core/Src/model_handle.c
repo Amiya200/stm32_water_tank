@@ -296,6 +296,7 @@ uint16_t ModelHandle_GetOverVolt(void)       { return sys.ov_limit; }
 float    ModelHandle_GetOverloadLimit(void)  { return sys.overload; }
 float    ModelHandle_GetUnderloadLimit(void) { return sys.underload; }
 uint16_t ModelHandle_GetMaxRunTime(void)     { return sys.maxrun_min; }
+uint16_t ModelHandle_GetDryRunRetryGap(void) { return sys.dry_run_time_s; }
 void EEPROM_WriteBlockSafe(uint16_t addr, uint8_t *data, uint16_t len)
 {
     while (len)
@@ -1480,21 +1481,6 @@ void ModelHandle_SetBuzzerSettings(uint8_t pump, uint8_t full, uint8_t empty)
     ModelHandle_SaveBuzzerSettings();
 }
 
-/* ================================================================
-   AUTO MODE TICK
-   Integrates dry run protection gate and ground water check.
-
-   When dry_protection_enabled() == FALSE:
-     Motor runs as soon as level ≤ 50%.  No water sensor checks.
-
-   When dry_protection_enabled() == TRUE:
-     AUTO_ON_WAIT  – level ≤ 50% + ground water confirmed (10 s) →
-                     start motor, wait dryTestMs
-     AUTO_DRY_CHECK – motor OFF, wait retryGapMs
-     AUTO_OFF_WAIT  – motor ON, monitor for water loss
-
-   Doc §13: ground water must be stable for 10 s before motor starts.
-================================================================ */
 static void auto_tick(void)
 {
     if (!autoActive)
@@ -1528,19 +1514,21 @@ static void auto_tick(void)
     }
 
     /* ---- Dry run protection DISABLED: simple level-based control ---- */
+    /*
+     * Doc §10: Motor starts at ≤50%, runs CONTINUOUSLY to 100%.
+     * The tank-full stop (level >= 100%) is already handled above.
+     * Do NOT stop the motor in the 51-99% range while filling –
+     * that caused the motor to cycle on/off and never fill the tank.
+     */
     if (!dry_protection_enabled())
     {
-        if (level <= AUTO_START_LEVEL_PERCENT)
+        if (level <= AUTO_START_LEVEL_PERCENT || Motor_GetStatus())
         {
+            /* Start or keep running until the 100% check above fires */
             motorOwner = MOTOR_OWNER_AUTO;
             start_motor();
         }
-        else
-        {
-            stop_motor();
-        }
-        autoState     = AUTO_ON_WAIT;
-        stateDeadline = 0;
+        /* If level > 50% and motor is already OFF, just wait */
         return;
     }
 
@@ -1551,34 +1539,44 @@ static void auto_tick(void)
     switch (autoState)
     {
         case AUTO_ON_WAIT:
-
-            if (level <= AUTO_START_LEVEL_PERCENT)
+            /*
+             * Gate 1 – start conditions (only checked when not yet started).
+             * Once stateDeadline is set the test is in progress; we must
+             * evaluate the deadline even if level has risen above 50%
+             * (which it will, since the motor is filling the tank).
+             */
+            if (stateDeadline == 0)
             {
-                /* Doc §13 Step 3: ground water must be stable 10 s */
+                if (level > AUTO_START_LEVEL_PERCENT)
+                    break;                  /* wait for level to drop */
+
+                /* Doc §13 Step 3: ground water stable for 10 s */
                 ModelHandle_CheckGroundWater();
                 if (!groundWater)
-                    break;      /* wait until ground water confirmed */
+                    break;                  /* wait for ground water */
 
-                motorOwner = MOTOR_OWNER_AUTO;
+                /* Both conditions met – start motor and arm deadline */
+                motorOwner    = MOTOR_OWNER_AUTO;
                 start_motor();
+                stateDeadline = now + dryTestMs;
+                break;                      /* check deadline next loop */
+            }
 
-                if (stateDeadline == 0)
-                    stateDeadline = now + dryTestMs;
+            /* Gate 2 – test in progress, deadline is FROZEN ────────────── */
+            if ((int32_t)(now - stateDeadline) < 0)
+                break;                      /* still inside test window */
 
-                if (now >= stateDeadline)
-                {
-                    if (senseDryRun)    /* water at pump confirmed */
-                    {
-                        autoState     = AUTO_OFF_WAIT;
-                        stateDeadline = 0;
-                    }
-                    else                /* no water at pump → retry */
-                    {
-                        stop_motor();
-                        autoState     = AUTO_DRY_CHECK;
-                        stateDeadline = now + retryGapMs;
-                    }
-                }
+            /* Deadline expired – sample sensor once */
+            if (senseDryRun)                /* water at pump confirmed */
+            {
+                autoState     = AUTO_OFF_WAIT;
+                stateDeadline = 0;
+            }
+            else                            /* no water at pump → retry */
+            {
+                stop_motor();
+                autoState     = AUTO_DRY_CHECK;
+                stateDeadline = now + retryGapMs;
             }
             break;
 
@@ -1734,12 +1732,7 @@ static void leds_from_model(void)
     LED_ClearAllIntents();
     bool motorOn = Motor_GetStatus();
 
-    if (dryState == DRY_WAITING)
-    {
-        LED_SetIntent(LED_COLOR_RED, LED_MODE_STEADY, 0);
-        LED_ApplyIntents();
-        return;
-    }
+    /* DRY_WAITING is a silent background test – no LED indication */
     if (dryState == DRY_FAULT)
     {
         LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 400);

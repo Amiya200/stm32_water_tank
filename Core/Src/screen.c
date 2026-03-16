@@ -146,6 +146,7 @@ extern uint8_t ModelHandle_GetTankLevelPercent(void);
 extern bool ModelHandle_IsTankFull(void);
 extern DryFSMState ModelHandle_GetDryState(void);
 extern bool ModelHandle_GetDryRunEnable(void);   /* FIX: expose getter */
+extern uint16_t ModelHandle_GetDryRunRetryGap(void);  /* FIX: retry gap getter */
 static const char* const addDevTypeNames[] = {
     "Wi-Fi",
     "Receiver",
@@ -265,6 +266,8 @@ static void show_dash(void)
         mode = motorOn ? "AUTO   " : "AUTO WT";
     else if (countdownActive)
         mode = motorOn ? "COUNT  " : "CD WAIT";
+    else if (twistActive)
+        mode = motorOn ? "TWIST  " : "TWIST W";
     else if (semiAutoActive)
         mode = "SEMI   ";
     else if (manualActive)
@@ -281,13 +284,6 @@ static void show_dash(void)
         if (dryState == DRY_FAULT)
         {
             snprintf(l1, sizeof(l1), "DRY RUN FAULT");
-        }
-        else if (dryState == DRY_WAITING)
-        {
-            if ((now / 500) % 2)
-                snprintf(l1, sizeof(l1), "DRY RUN TEST..");
-            else
-                snprintf(l1, sizeof(l1), "                ");
         }
         else if (tankFull)
         {
@@ -332,7 +328,7 @@ static void draw_menu_cursor(void)
     if (row <= 1)
     {
         lcd_put_cur(row, 0);
-        lcd_send_data(cursorVisible ? '>' : ' ');
+        lcd_send_data('>');
     }
 }
 static void show_menu(void)
@@ -749,18 +745,15 @@ static void show_reset_confirm(void)
 ================================================================ */
 static void apply_settings_core(void)
 {
-    uint16_t gap_s   = 0;
-    uint16_t retry_s = 0;
-
+    /* gap_time_s: dry run test period in seconds (0 = protection off) */
+    uint16_t gap_s = 0;
     if (edit_settings_dry_en && edit_settings_gap_s > 0)
         gap_s = (uint16_t)(edit_settings_gap_s * 60U);
 
-    if (edit_settings_retry > 0)
-        retry_s = (uint16_t)(edit_settings_retry * 60U);
-
+    /* Preserve the load-fault retry count – never zero it from this menu */
     ModelHandle_SetUserSettings(
         gap_s,
-        0,                    /* retry_count not set here */
+        ModelHandle_GetRetryCount(),   /* preserve existing value */
         edit_settings_uv,
         edit_settings_ov,
         edit_settings_ol,
@@ -768,10 +761,14 @@ static void apply_settings_core(void)
         edit_settings_maxrun
     );
 
-    if (retry_s > 0)
-        ModelHandle_SetDryRunTime(retry_s);
+    /* dry_run_time_s: retry gap period in seconds */
+    uint32_t retry_s = (edit_settings_retry > 0)
+                       ? (uint32_t)edit_settings_retry * 60U
+                       : 10U;          /* minimum 10 s */
+    ModelHandle_SetDryRunTime(retry_s);
 
-    /* FIX: explicitly propagate dry run enable flag */
+    /* Propagate enable flag – must be called AFTER SetUserSettings
+       because SetUserSettings clears dry_run_enable when gap = 0 */
     ModelHandle_SetDryRun(edit_settings_dry_en && edit_settings_gap_s > 0);
 }
 
@@ -791,8 +788,18 @@ static void start_settings_edit_flow(void)
     /* FIX: read dry run enable state */
     edit_settings_dry_en = ModelHandle_GetDryRunEnable() ? 1 : 0;
 
-    edit_settings_retry = ModelHandle_GetRetryCount();
-    if (edit_settings_retry > 180) edit_settings_retry = 180;
+    /* FIX: retry gap is dry_run_time_s, NOT the load-fault retry count */
+    {
+        uint16_t dry_s = ModelHandle_GetDryRunRetryGap();
+        if (dry_s == 0)
+            edit_settings_retry = 5;          /* default 5 min */
+        else
+        {
+            edit_settings_retry = dry_s / 60;
+            if (edit_settings_retry < 1)   edit_settings_retry = 1;
+            if (edit_settings_retry > 180) edit_settings_retry = 180;
+        }
+    }
 
     edit_settings_uv = ModelHandle_GetUnderVolt();
     if (edit_settings_uv != 0)
@@ -1220,6 +1227,60 @@ static UiButton decode_button_press(void)
 void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
+    uint32_t now_sw = HAL_GetTick();
+
+    /* ----------------------------------------------------------------
+       AUTO-REPEAT for UP / DOWN when inside any menu or edit screen.
+       This makes it easy to scroll through menus and change values
+       without rapid tapping.  It does NOT fire in UI_DASH so holding
+       UP in the dashboard doesn't accidentally hammer the timer toggle.
+
+       Timing:
+         REPEAT_START_MS  (500 ms) – delay before first auto-repeat
+         REPEAT_INTERVAL_MS (150 ms) – repeat rate once started
+       ---------------------------------------------------------------- */
+    {
+        static uint32_t rep_start[2] = {0, 0};  /* [0]=UP, [1]=DOWN */
+        static uint32_t rep_last[2]  = {0, 0};
+
+        bool in_menu = (ui != UI_DASH &&
+                        ui != UI_WELCOME &&
+                        ui != UI_COUNTDOWN &&
+                        ui != UI_NONE);
+
+        if (in_menu)
+        {
+            for (int ri = 0; ri < 2; ri++)
+            {
+                bool held = Switch_IsPressed(ri == 0 ? 2 : 3); /* 2=UP 3=DOWN */
+                if (held)
+                {
+                    if (rep_start[ri] == 0) rep_start[ri] = now_sw;
+
+                    uint32_t held_ms = now_sw - rep_start[ri];
+                    if (held_ms >= REPEAT_START_MS &&
+                        (now_sw - rep_last[ri]) >= REPEAT_INTERVAL_MS)
+                    {
+                        rep_last[ri] = now_sw;
+                        /* Only inject if no other event is pending this cycle */
+                        if (b == BTN_NONE)
+                            b = (ri == 0) ? BTN_UP : BTN_DOWN;
+                    }
+                }
+                else
+                {
+                    rep_start[ri] = 0;
+                    rep_last[ri]  = 0;
+                }
+            }
+        }
+        else
+        {
+            rep_start[0] = rep_start[1] = 0;
+            rep_last[0]  = rep_last[1]  = 0;
+        }
+    }
+
     if (b == BTN_NONE) return;
 
     refreshInactivityTimer();
@@ -1399,12 +1460,8 @@ void Screen_Update(void)
         screenNeedsRefresh = true;
     }
 
-    if (now - lastBlink > CURSOR_BLINK_MS)
-    {
-        lastBlink = now;
-        cursorVisible = !cursorVisible;
-        if (ui == UI_MENU) screenNeedsRefresh = true;
-    }
+    /* Cursor is always visible – no blink, no unnecessary LCD refresh */
+    (void)lastBlink;
 
     if (ui == UI_WELCOME && (now - lastLcdUpdateTime >= WELCOME_MS))
     {
