@@ -856,11 +856,23 @@ bool Motor_GetStatus(void)
 {
     return Motor_IsRelayOn();
 }
+
+/* ================================================================
+   FIX 1: start_motor() — DRY_FAULT gate.
+   No mode is allowed to energise the relay while a dry run fault
+   is active.  MOTOR_OWNER_MANUAL is exempt per spec (doc §6:
+   manual mode ignores dry run protection entirely).
+================================================================ */
 static inline void start_motor(void)
 {
     if (HAL_GetTick() < bootStartBlockUntil)
         return;
     if (motorOwner == MOTOR_OWNER_NONE)
+        return;
+    /* Block motor start for any owner while DRY_FAULT is active.
+       Manual mode is explicitly exempt – it never participates in
+       dry run protection. */
+    if (dryState == DRY_FAULT && motorOwner != MOTOR_OWNER_MANUAL)
         return;
     motor_apply(true);
 }
@@ -1481,6 +1493,27 @@ void ModelHandle_SetBuzzerSettings(uint8_t pump, uint8_t full, uint8_t empty)
     ModelHandle_SaveBuzzerSettings();
 }
 
+/* ================================================================
+   FIX 2: auto_tick() — corrected AUTO_ON_WAIT state machine.
+
+   Entry conditions (checked only while stateDeadline == 0,
+   i.e. before the motor has been started for this cycle):
+     1. level <= AUTO_START_LEVEL_PERCENT (50%)
+     2. groundWater must be stable/available
+
+   Both conditions must be true before the motor is started.
+
+   Dry run DISABLED path:
+     Same entry conditions as above.  Once both are satisfied, the
+     motor is started and the FSM moves directly to AUTO_OFF_WAIT
+     (continuous run) – there is no test period.  It stays running
+     until the tank-full check at the top of auto_tick() fires.
+
+   Dry run ENABLED path (unchanged logic):
+     After starting the motor a timed dry-run test is performed
+     (stateDeadline window).  Pass → AUTO_OFF_WAIT (continuous),
+     Fail → AUTO_DRY_CHECK (retry gap), then retry.
+================================================================ */
 static void auto_tick(void)
 {
     if (!autoActive)
@@ -1513,26 +1546,61 @@ static void auto_tick(void)
         return;
     }
 
-    /* ---- Dry run protection DISABLED: simple level-based control ---- */
-    /*
-     * Doc §10: Motor starts at ≤50%, runs CONTINUOUSLY to 100%.
-     * The tank-full stop (level >= 100%) is already handled above.
-     * Do NOT stop the motor in the 51-99% range while filling –
-     * that caused the motor to cycle on/off and never fill the tank.
-     */
+    /* ================================================================
+       Dry run protection DISABLED
+       ----------------------------------------------------------------
+       Entry conditions:
+         1. level <= 50%
+         2. groundWater available
+       Both must be true before motor is energised.
+       Once started → AUTO_OFF_WAIT (continuous run until tank full).
+    ================================================================ */
     if (!dry_protection_enabled())
     {
-        if (level <= AUTO_START_LEVEL_PERCENT || Motor_GetStatus())
+        /* Normalise any stale FSM state left from a previous run */
+        if (autoState == AUTO_IDLE || autoState == AUTO_DRY_CHECK)
+            autoState = AUTO_ON_WAIT;
+
+        if (autoState == AUTO_ON_WAIT)
         {
-            /* Start or keep running until the 100% check above fires */
-            motorOwner = MOTOR_OWNER_AUTO;
+            /* Gate 1: level must be at or below start threshold.
+               Only applies before the motor has been started (motor off). */
+            if (!Motor_GetStatus() && level > AUTO_START_LEVEL_PERCENT)
+                return;
+
+            /* Gate 2: ground water must be available */
+            ModelHandle_CheckGroundWater();
+            if (!groundWater)
+                return;
+
+            /* Both conditions met – start motor, switch to continuous run */
+            motorOwner    = MOTOR_OWNER_AUTO;
+            autoState     = AUTO_OFF_WAIT;
+            stateDeadline = 0;
+            dryState      = DRY_IDLE;
             start_motor();
+            return;
         }
-        /* If level > 50% and motor is already OFF, just wait */
+
+        if (autoState == AUTO_OFF_WAIT)
+        {
+            /* Motor is running; keep it running until the tank-full
+               check at the top of this function fires.
+               No water-loss monitoring when protection is disabled. */
+            dryState = DRY_IDLE;
+            start_motor();
+            return;
+        }
+
+        /* Unexpected state – reset cleanly */
+        autoState     = AUTO_ON_WAIT;
+        stateDeadline = 0;
         return;
     }
 
-    /* ---- Dry run protection ENABLED ---- */
+    /* ================================================================
+       Dry run protection ENABLED
+    ================================================================ */
     uint32_t dryTestMs  = (uint32_t)sys.gap_time_s     * 1000UL;
     uint32_t retryGapMs = (uint32_t)sys.dry_run_time_s * 1000UL;
 
@@ -1562,7 +1630,7 @@ static void auto_tick(void)
                 break;                      /* check deadline next loop */
             }
 
-            /* Gate 2 – test in progress, deadline is FROZEN ────────────── */
+            /* Gate 2 – test in progress, deadline is FROZEN */
             if ((int32_t)(now - stateDeadline) < 0)
                 break;                      /* still inside test window */
 
@@ -1929,10 +1997,16 @@ void ModelHandle_Process(void)
     ================================================================ */
     ModelHandle_SoftDryRunHandler();
 
-    /* ---------- Background AUTO ---------- */
+    /* ================================================================
+       FIX 3: Background AUTO gate — do NOT allow the background
+       controller to call ModelHandle_StartAuto() while a DRY_FAULT
+       is active.  StartAuto() resets dryState to DRY_IDLE and would
+       bypass the fault recovery that requires water to return first.
+    ================================================================ */
     if ((motorOwner == MOTOR_OWNER_NONE ||
          motorOwner == MOTOR_OWNER_AUTO) &&
-        !tankFull)
+        !tankFull &&
+        dryState != DRY_FAULT)
     {
         auto_mode_background_control();
     }
