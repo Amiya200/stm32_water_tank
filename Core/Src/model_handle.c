@@ -265,7 +265,7 @@ typedef struct __attribute__((packed))
 } SystemEEPROMBlock;
 
 #define PROBE_THRESHOLD 0.50f
-#define SENSOR_STABLE_TIME_MS 10000UL
+#define SENSOR_STABLE_TIME_MS 5000UL
 #define EE_ADDR_SYS_BLOCK  0x0000
 #define SYS_SIG 0x5A5B
 
@@ -277,13 +277,6 @@ typedef enum {
 static RestartState restartState = RESTART_RUN_TEST;
 static uint32_t restartDeadline = 0;
 static uint32_t stateDeadline = 0;
-
-/* ================================================================
-   DRY RUN PROTECTION GATE
-   Returns true only when BOTH the enable flag is set AND
-   gap_time_s > 0.  Setting gap_time_s = 0 from the screen or
-   UART is equivalent to disabling dry-run protection entirely.
-================================================================ */
 static inline bool dry_protection_enabled(void)
 {
     return (sys.dry_run_enable != 0) && (sys.gap_time_s > 0);
@@ -338,7 +331,7 @@ void ModelHandle_SaveSettingsToEEPROM(void)
     b.maxrun     = sys.maxrun_min;
     b.over10     = (uint16_t)(sys.overload  * 10.0f);
     b.under10    = (uint16_t)(sys.underload * 10.0f);
-    b.dry_enable = sys.dry_run_enable;          /* FIX: persist enable flag */
+    b.dry_enable = sys.dry_run_enable;
     b.crc        = SYS_CRC16((uint8_t*)&b, sizeof(b) - 2);
     EEPROM_WriteBlockSafe(EE_ADDR_SYS_BLOCK, (uint8_t*)&b, sizeof(b));
 }
@@ -361,7 +354,7 @@ void ModelHandle_LoadSettingsFromEEPROM(void)
     sys.maxrun_min      = b.maxrun;
     sys.overload        = b.over10  / 10.0f;
     sys.underload       = b.under10 / 10.0f;
-    sys.dry_run_enable  = b.dry_enable;         /* FIX: restore enable flag */
+    sys.dry_run_enable  = b.dry_enable;
 }
 
 void ModelHandle_SaveModeState(void)
@@ -538,7 +531,7 @@ void ModelHandle_StartRestart(void)
     restartDeadline = 0;
     motorOwner = MOTOR_OWNER_RESTART;
     senseMaxRunReached = false;
-    dryState = DRY_IDLE;       /* reset dry state on new mode start */
+    dryState = DRY_IDLE;
     start_motor();
 }
 
@@ -658,16 +651,14 @@ void ModelHandle_StartTimerNearestSlot(void)
     ModelHandle_ProcessTimerSlots();
 }
 
-/* ---------------- BUZZER ENGINE ---------------- */
-
 static uint32_t buzzerPatternStart = 0;
 static uint32_t buzzerLastToggle   = 0;
 static bool buzzerState = false;
 
 static inline void Buzzer_SetPin(bool on)
 {
-//    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-//                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 static void Buzzer_StartEvent(BuzzerEvent ev)
 {
@@ -1481,10 +1472,19 @@ static void auto_mode_background_control(void)
         ModelHandle_StartAuto(sys.gap_time_s, auto_maxrun_min, auto_retry_limit);
         return;
     }
-    if (autoActive && level >= AUTO_STOP_LEVEL_PERCENT)
-        ModelHandle_StopAuto();
-}
 
+    /* Soft stop: keep autoActive=true so auto restarts automatically
+       when level drops back to or below AUTO_START_LEVEL_PERCENT.
+       Motor and FSM are reset but mode stays armed. */
+    if (autoActive && level >= AUTO_STOP_LEVEL_PERCENT)
+    {
+        stop_motor();
+        autoState     = AUTO_ON_WAIT;
+        stateDeadline = 0;
+        dryState      = DRY_IDLE;
+        ModelHandle_SaveModeState();
+    }
+}
 void ModelHandle_SetBuzzerSettings(uint8_t pump, uint8_t full, uint8_t empty)
 {
     buzzerSettings.pumpOnSound   = pump  ? 1 : 0;
@@ -1493,27 +1493,6 @@ void ModelHandle_SetBuzzerSettings(uint8_t pump, uint8_t full, uint8_t empty)
     ModelHandle_SaveBuzzerSettings();
 }
 
-/* ================================================================
-   FIX 2: auto_tick() — corrected AUTO_ON_WAIT state machine.
-
-   Entry conditions (checked only while stateDeadline == 0,
-   i.e. before the motor has been started for this cycle):
-     1. level <= AUTO_START_LEVEL_PERCENT (50%)
-     2. groundWater must be stable/available
-
-   Both conditions must be true before the motor is started.
-
-   Dry run DISABLED path:
-     Same entry conditions as above.  Once both are satisfied, the
-     motor is started and the FSM moves directly to AUTO_OFF_WAIT
-     (continuous run) – there is no test period.  It stays running
-     until the tank-full check at the top of auto_tick() fires.
-
-   Dry run ENABLED path (unchanged logic):
-     After starting the motor a timed dry-run test is performed
-     (stateDeadline window).  Pass → AUTO_OFF_WAIT (continuous),
-     Fail → AUTO_DRY_CHECK (retry gap), then retry.
-================================================================ */
 static void auto_tick(void)
 {
     if (!autoActive)
@@ -1537,43 +1516,36 @@ static void auto_tick(void)
         return;
     }
 
-    /* Doc §10 / §13: stop when tank full */
+    /* Soft stop on tank full: keep autoActive=true so FSM re-triggers
+       automatically when level drops back below AUTO_START_LEVEL_PERCENT.
+       Use AUTO_ON_WAIT (not AUTO_IDLE) so start conditions are re-evaluated
+       every loop without any external restart call. */
     if (level >= AUTO_STOP_LEVEL_PERCENT)
     {
         stop_motor();
-        autoState     = AUTO_IDLE;
+        autoState     = AUTO_ON_WAIT;
         stateDeadline = 0;
+        dryState      = DRY_IDLE;
         return;
     }
 
     /* ================================================================
        Dry run protection DISABLED
-       ----------------------------------------------------------------
-       Entry conditions:
-         1. level <= 50%
-         2. groundWater available
-       Both must be true before motor is energised.
-       Once started → AUTO_OFF_WAIT (continuous run until tank full).
     ================================================================ */
     if (!dry_protection_enabled())
     {
-        /* Normalise any stale FSM state left from a previous run */
         if (autoState == AUTO_IDLE || autoState == AUTO_DRY_CHECK)
             autoState = AUTO_ON_WAIT;
 
         if (autoState == AUTO_ON_WAIT)
         {
-            /* Gate 1: level must be at or below start threshold.
-               Only applies before the motor has been started (motor off). */
             if (!Motor_GetStatus() && level > AUTO_START_LEVEL_PERCENT)
                 return;
 
-            /* Gate 2: ground water must be available */
             ModelHandle_CheckGroundWater();
             if (!groundWater)
                 return;
 
-            /* Both conditions met – start motor, switch to continuous run */
             motorOwner    = MOTOR_OWNER_AUTO;
             autoState     = AUTO_OFF_WAIT;
             stateDeadline = 0;
@@ -1584,15 +1556,11 @@ static void auto_tick(void)
 
         if (autoState == AUTO_OFF_WAIT)
         {
-            /* Motor is running; keep it running until the tank-full
-               check at the top of this function fires.
-               No water-loss monitoring when protection is disabled. */
             dryState = DRY_IDLE;
             start_motor();
             return;
         }
 
-        /* Unexpected state – reset cleanly */
         autoState     = AUTO_ON_WAIT;
         stateDeadline = 0;
         return;
@@ -1607,40 +1575,30 @@ static void auto_tick(void)
     switch (autoState)
     {
         case AUTO_ON_WAIT:
-            /*
-             * Gate 1 – start conditions (only checked when not yet started).
-             * Once stateDeadline is set the test is in progress; we must
-             * evaluate the deadline even if level has risen above 50%
-             * (which it will, since the motor is filling the tank).
-             */
             if (stateDeadline == 0)
             {
                 if (level > AUTO_START_LEVEL_PERCENT)
-                    break;                  /* wait for level to drop */
+                    break;
 
-                /* Doc §13 Step 3: ground water stable for 10 s */
                 ModelHandle_CheckGroundWater();
                 if (!groundWater)
-                    break;                  /* wait for ground water */
+                    break;
 
-                /* Both conditions met – start motor and arm deadline */
                 motorOwner    = MOTOR_OWNER_AUTO;
                 start_motor();
                 stateDeadline = now + dryTestMs;
-                break;                      /* check deadline next loop */
+                break;
             }
 
-            /* Gate 2 – test in progress, deadline is FROZEN */
             if ((int32_t)(now - stateDeadline) < 0)
-                break;                      /* still inside test window */
+                break;
 
-            /* Deadline expired – sample sensor once */
-            if (senseDryRun)                /* water at pump confirmed */
+            if (senseDryRun)
             {
                 autoState     = AUTO_OFF_WAIT;
                 stateDeadline = 0;
             }
-            else                            /* no water at pump → retry */
+            else
             {
                 stop_motor();
                 autoState     = AUTO_DRY_CHECK;
@@ -1649,7 +1607,6 @@ static void auto_tick(void)
             break;
 
         case AUTO_DRY_CHECK:
-
             if (now >= stateDeadline)
             {
                 autoState     = AUTO_ON_WAIT;
@@ -1658,10 +1615,8 @@ static void auto_tick(void)
             break;
 
         case AUTO_OFF_WAIT:
-
             start_motor();
-
-            if (!senseDryRun)           /* water lost mid-run → retry */
+            if (!senseDryRun)
             {
                 stop_motor();
                 autoState     = AUTO_DRY_CHECK;
@@ -1675,7 +1630,6 @@ static void auto_tick(void)
             break;
     }
 }
-
 void ModelHandle_StartCountdown(uint32_t seconds)
 {
     if (seconds < 60)   seconds = 60;
@@ -1818,9 +1772,6 @@ static void leds_from_model(void)
     LED_ApplyIntents();
 }
 
-/* ================================================================
-   MAIN PROCESS LOOP
-================================================================ */
 void ModelHandle_Process(void)
 {
     uint32_t now = HAL_GetTick();
@@ -1864,7 +1815,11 @@ void ModelHandle_Process(void)
     else
         motorOwner = MOTOR_OWNER_NONE;
 
-    /* ---------- Tank Full one-shot buzzer guard ---------- */
+    /* ---------- Tank Full one-shot buzzer guard ----------
+       For AUTO owner: tank full is handled inside auto_tick() as a
+       soft stop (motor off, FSM → AUTO_ON_WAIT, autoActive stays true).
+       The buzzer still fires once here via the prevTankFull edge detect.
+       Manual mode intentionally ignores tank full per spec.            */
     static bool prevTankFull      = false;
     static bool tankFullBuzzFired = false;
 
@@ -1907,7 +1862,6 @@ void ModelHandle_Process(void)
     switch (motorOwner)
     {
         case MOTOR_OWNER_RESTART:
-
             if (tankFull)
             {
                 stop_motor();
@@ -1935,8 +1889,6 @@ void ModelHandle_Process(void)
             break;
 
         case MOTOR_OWNER_SEMIAUTO:
-            /* Dry run handled by SoftDryRunHandler below.
-               Tank full and protection still stop motor directly. */
             if (tankFull || protectionFault)
             {
                 stop_motor();
@@ -1958,16 +1910,13 @@ void ModelHandle_Process(void)
             break;
 
         case MOTOR_OWNER_COUNTDOWN:
-
             if (!countdownActive) break;
-
             if (now >= cd_deadline)
             {
                 ModelHandle_StopCountdown();
                 break;
             }
             countdownDuration = (cd_deadline - now) / 1000UL;
-
             if (tankFull || protectionFault)
             {
                 ModelHandle_StopCountdown();
@@ -1982,6 +1931,9 @@ void ModelHandle_Process(void)
             break;
 
         case MOTOR_OWNER_AUTO:
+            /* auto_tick() handles tank-full internally as a soft stop.
+               Do NOT add an external tankFull check here — it would
+               conflict with the soft-stop / re-arm logic in auto_tick(). */
             auto_tick();
             break;
 
@@ -1991,17 +1943,16 @@ void ModelHandle_Process(void)
     }
 
     /* ================================================================
-       FIX: Unified dry run handler – called AFTER owner execution.
+       Unified dry run handler – called AFTER owner execution.
        Handles semi-auto, countdown, twist, restart.
        Timer and Auto have their own internal FSMs.
     ================================================================ */
     ModelHandle_SoftDryRunHandler();
 
     /* ================================================================
-       FIX 3: Background AUTO gate — do NOT allow the background
-       controller to call ModelHandle_StartAuto() while a DRY_FAULT
-       is active.  StartAuto() resets dryState to DRY_IDLE and would
-       bypass the fault recovery that requires water to return first.
+       Background AUTO gate — do NOT trigger while DRY_FAULT is active.
+       Also runs when autoActive=true but motor is off (soft-stopped
+       after tank full) so the level check inside can re-arm the FSM.
     ================================================================ */
     if ((motorOwner == MOTOR_OWNER_NONE ||
          motorOwner == MOTOR_OWNER_AUTO) &&
@@ -2014,7 +1965,6 @@ void ModelHandle_Process(void)
     leds_from_model();
     Buzzer_Update();
 }
-
 DryFSMState ModelHandle_GetDryState(void)  { return dryState; }
 
 void ModelHandle_ResetAll(void)
