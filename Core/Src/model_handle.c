@@ -667,6 +667,9 @@ static void Buzzer_StartEvent(BuzzerEvent ev)
     buzzerPatternStart = HAL_GetTick();
     buzzerState        = false;
 }
+#define TANK_FULL_BUZZ_MS   5000UL
+
+
 static void Buzzer_TankEmptyPattern(void)
 {
     uint32_t now = HAL_GetTick();
@@ -693,29 +696,65 @@ static void Buzzer_Update(void)
 {
     uint32_t now = HAL_GetTick();
 
+    /* Persistent state for the motor running on/off beep */
     static uint32_t motorToggleTime = 0;
-    static bool motorBuzzState = false;
+    static bool     motorBuzzState  = false;
 
-    if (activeBuzzEvent == BUZZ_TANK_EMPTY)
-    {
-        Buzzer_TankEmptyPattern();
-        return;
-    }
-    if (activeBuzzEvent == BUZZ_TANK_FULL)
-    {
-        Buzzer_TankFullPattern();
-        return;
-    }
+    /* Manual-mode tank-full burst state */
+    static bool     manualTankFullBuzzActive = false;
+    static uint32_t manualTankFullBuzzStart  = 0;
+    static bool     prevTankFullManual       = false;   /* edge-detect */
 
-    bool motorOn = Motor_GetStatus();
-    if (motorOn)
+    bool motorOn  = Motor_GetStatus();
+    bool tankFull = isTankFull();
+    if (manualActive)
     {
+        if (!motorOn)
+        {
+            Buzzer_SetPin(false);
+            motorBuzzState           = false;
+            motorToggleTime          = 0;
+            manualTankFullBuzzActive = false;
+            prevTankFullManual       = false;
+            return;
+        }
+        if (tankFull && !prevTankFullManual)
+        {
+            manualTankFullBuzzActive = true;
+            manualTankFullBuzzStart  = now;
+            motorBuzzState           = false;
+            motorToggleTime          = 0;
+        }
+        prevTankFullManual = tankFull;
+
+        if (!tankFull && manualTankFullBuzzActive)
+            manualTankFullBuzzActive = false;
+
+        /* ---- Tank-full burst active ---- */
+        if (manualTankFullBuzzActive)
+        {
+            if ((now - manualTankFullBuzzStart) < TANK_FULL_BUZZ_MS)
+            {
+                /* Solid ON for the burst duration */
+                Buzzer_SetPin(true);
+                return;
+            }
+            else
+            {
+                /* Burst finished — return to on/off beep */
+                manualTankFullBuzzActive = false;
+                motorToggleTime          = 0;   /* restart on/off phase cleanly */
+                motorBuzzState           = false;
+            }
+        }
+
+        /* ---- Normal motor-running on/off beep ---- */
         if (buzzerSettings.pumpOnSound)
         {
             if ((now - motorToggleTime) >= 1000UL)
             {
                 motorToggleTime = now;
-                motorBuzzState = !motorBuzzState;
+                motorBuzzState  = !motorBuzzState;
             }
             Buzzer_SetPin(motorBuzzState);
         }
@@ -725,9 +764,51 @@ static void Buzzer_Update(void)
         }
         return;
     }
+
+    /* ==============================================================
+       NON-MANUAL MODE PATH  (original behaviour, unchanged)
+       Reset manual burst state whenever we leave manual mode.
+    ============================================================== */
+    manualTankFullBuzzActive = false;
+    prevTankFullManual       = false;
+
+    /* Priority 1: Tank-empty event (dry run fault) */
+    if (activeBuzzEvent == BUZZ_TANK_EMPTY)
+    {
+        Buzzer_TankEmptyPattern();
+        return;
+    }
+
+    /* Priority 2: Tank-full event (fired by handle_tank_full_delayed_stop
+       or load fault handler) */
+    if (activeBuzzEvent == BUZZ_TANK_FULL)
+    {
+        Buzzer_TankFullPattern();
+        return;
+    }
+
+    /* Priority 3: Motor-running on/off beep */
+    if (motorOn)
+    {
+        if (buzzerSettings.pumpOnSound)
+        {
+            if ((now - motorToggleTime) >= 1000UL)
+            {
+                motorToggleTime = now;
+                motorBuzzState  = !motorBuzzState;
+            }
+            Buzzer_SetPin(motorBuzzState);
+        }
+        else
+        {
+            Buzzer_SetPin(false);
+        }
+        return;
+    }
+
+    /* Motor off, no active event → silence */
     Buzzer_SetPin(false);
 }
-
 static inline uint32_t now_ms(void)
 {
     return HAL_GetTick();
@@ -761,10 +842,6 @@ static inline void clear_all_modes(void)
     countdownMode   = false;
 }
 
-/* ================================================================
-   FIX: ModelHandle_OnPowerUp now loads buzzer settings so the
-   buzzerSettings struct is valid before any event fires.
-================================================================ */
 void ModelHandle_OnPowerUp(void)
 {
     powerOnMs = HAL_GetTick();
@@ -773,7 +850,7 @@ void ModelHandle_OnPowerUp(void)
     autoDeadline = 0;
     dryState = DRY_IDLE;
 
-    ModelHandle_LoadBuzzerSettings();   /* FIX: must load before any buzzer event */
+    ModelHandle_LoadBuzzerSettings();
 
     if (timer_any_active_slot())
     {
@@ -847,13 +924,6 @@ bool Motor_GetStatus(void)
 {
     return Motor_IsRelayOn();
 }
-
-/* ================================================================
-   FIX 1: start_motor() — DRY_FAULT gate.
-   No mode is allowed to energise the relay while a dry run fault
-   is active.  MOTOR_OWNER_MANUAL is exempt per spec (doc §6:
-   manual mode ignores dry run protection entirely).
-================================================================ */
 static inline void start_motor(void)
 {
     if (HAL_GetTick() < bootStartBlockUntil)
@@ -1815,11 +1885,6 @@ void ModelHandle_Process(void)
     else
         motorOwner = MOTOR_OWNER_NONE;
 
-    /* ---------- Tank Full one-shot buzzer guard ----------
-       For AUTO owner: tank full is handled inside auto_tick() as a
-       soft stop (motor off, FSM → AUTO_ON_WAIT, autoActive stays true).
-       The buzzer still fires once here via the prevTankFull edge detect.
-       Manual mode intentionally ignores tank full per spec.            */
     static bool prevTankFull      = false;
     static bool tankFullBuzzFired = false;
 
@@ -1848,7 +1913,6 @@ void ModelHandle_Process(void)
             tankFullBuzzFired = false;
     }
 
-    /* ---------- Tank Empty Buzzer ---------- */
     static uint8_t prevLevel = 100;
     uint8_t currentLevel = get_tank_level_percent();
     if (currentLevel == 0 && prevLevel > 0)
@@ -1857,8 +1921,6 @@ void ModelHandle_Process(void)
             Buzzer_StartEvent(BUZZ_TANK_EMPTY);
     }
     prevLevel = currentLevel;
-
-    /* ---------- Motor Owner Execution ---------- */
     switch (motorOwner)
     {
         case MOTOR_OWNER_RESTART:
@@ -1881,7 +1943,6 @@ void ModelHandle_Process(void)
             break;
 
         case MOTOR_OWNER_MANUAL:
-            /* Doc §6: tank full does NOT stop motor in manual mode */
             if (!protectionFault)
                 start_motor();
             else
@@ -1931,9 +1992,6 @@ void ModelHandle_Process(void)
             break;
 
         case MOTOR_OWNER_AUTO:
-            /* auto_tick() handles tank-full internally as a soft stop.
-               Do NOT add an external tankFull check here — it would
-               conflict with the soft-stop / re-arm logic in auto_tick(). */
             auto_tick();
             break;
 
@@ -1941,19 +1999,7 @@ void ModelHandle_Process(void)
             stop_motor();
             break;
     }
-
-    /* ================================================================
-       Unified dry run handler – called AFTER owner execution.
-       Handles semi-auto, countdown, twist, restart.
-       Timer and Auto have their own internal FSMs.
-    ================================================================ */
     ModelHandle_SoftDryRunHandler();
-
-    /* ================================================================
-       Background AUTO gate — do NOT trigger while DRY_FAULT is active.
-       Also runs when autoActive=true but motor is off (soft-stopped
-       after tank full) so the level check inside can re-arm the FSM.
-    ================================================================ */
     if ((motorOwner == MOTOR_OWNER_NONE ||
          motorOwner == MOTOR_OWNER_AUTO) &&
         !tankFull &&
@@ -1961,7 +2007,6 @@ void ModelHandle_Process(void)
     {
         auto_mode_background_control();
     }
-
     leds_from_model();
     Buzzer_Update();
 }
@@ -1992,7 +2037,6 @@ void ModelHandle_SetUserSettings(uint32_t gap_seconds,
     if (gap_seconds > 86400UL) gap_seconds = 86400UL;
     if (retry > 20)    retry = 20;
     if (maxrun_min > 1440) maxrun_min = 1440;
-
     sys.gap_time_s  = gap_seconds;
     sys.retry_count = retry;
     sys.uv_limit    = uv_limit;
@@ -2000,13 +2044,9 @@ void ModelHandle_SetUserSettings(uint32_t gap_seconds,
     sys.overload    = (float)overload;
     sys.underload   = (float)underload;
     sys.maxrun_min  = maxrun_min;
-
-    /* When gap is set to 0, effective dry run is disabled */
     if (gap_seconds == 0)
         sys.dry_run_enable = 0;
-
     ModelHandle_SaveSettingsToEEPROM();
-
     senseOverLoad      = false;
     senseUnderLoad     = false;
     senseOverUnderVolt = false;
