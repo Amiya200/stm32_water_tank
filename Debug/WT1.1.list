@@ -39,13 +39,13 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  17 .debug_line   00023a13  00000000  00000000  00054fe2  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_str    0009b677  00000000  00000000  000789f5  2**0
+ 18 .debug_str    0009b67b  00000000  00000000  000789f5  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .comment      00000043  00000000  00000000  0011406c  2**0
+ 19 .comment      00000043  00000000  00000000  00114070  2**0
                   CONTENTS, READONLY
- 20 .debug_frame  00008e48  00000000  00000000  001140b0  2**2
+ 20 .debug_frame  00008e48  00000000  00000000  001140b4  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 21 .debug_line_str 00000062  00000000  00000000  0011cef8  2**0
+ 21 .debug_line_str 00000062  00000000  00000000  0011cefc  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -11903,8 +11903,8 @@ static inline void lcd_line(uint8_t row, const char* s)
 static uint8_t dash_page = 0;
 static uint32_t dash_cycle_start = 0;
 #define DASH_PAGE1_TIME 200000
-#define DASH_PAGE2_TIME 500
-#define DASH_PAGE3_TIME 500
+#define DASH_PAGE2_TIME 500000
+#define DASH_PAGE3_TIME 5000
 static inline void lcd_line0(const char* s){ lcd_line(0,s); }
  800545c:	b580      	push	{r7, lr}
  800545e:	b082      	sub	sp, #8
@@ -12312,8 +12312,8 @@ static void show_dash(void)
  8005708:	20000654 	.word	0x20000654
  800570c:	00030d3f 	.word	0x00030d3f
  8005710:	20000651 	.word	0x20000651
- 8005714:	00030f33 	.word	0x00030f33
- 8005718:	00031127 	.word	0x00031127
+ 8005714:	000aae5f 	.word	0x000aae5f
+ 8005718:	000ac1e7 	.word	0x000ac1e7
  800571c:	080111c4 	.word	0x080111c4
  8005720:	080111cc 	.word	0x080111cc
  8005724:	080111d4 	.word	0x080111d4

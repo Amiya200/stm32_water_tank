@@ -214,8 +214,8 @@ static inline void lcd_line(uint8_t row, const char* s)
 static uint8_t dash_page = 0;
 static uint32_t dash_cycle_start = 0;
 #define DASH_PAGE1_TIME 200000
-#define DASH_PAGE2_TIME 500
-#define DASH_PAGE3_TIME 500
+#define DASH_PAGE2_TIME 500000
+#define DASH_PAGE3_TIME 5000
 static inline void lcd_line0(const char* s){ lcd_line(0,s); }
 static inline void lcd_line1(const char* s){ lcd_line(1,s); }
 static void show_welcome(void)
