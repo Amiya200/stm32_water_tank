@@ -248,7 +248,6 @@ static void show_dash(void)
     char l0[17], l1[17];
     uint32_t now = HAL_GetTick();
 
-    /* Cycle timing */
     if (dash_cycle_start == 0)
         dash_cycle_start = now;
 
@@ -262,11 +261,8 @@ static void show_dash(void)
     bool        motorOn        = Motor_GetStatus();
     DryFSMState dryState       = ModelHandle_GetDryState();
     bool        dryEnabled     = ModelHandle_GetDryRunEnable();
-    /* senseDryRun: true = sensor detects water (normal)
-     *              false = pipe is DRY (fault condition)      */
-    bool        sensorHasWater = ModelHandle_IsDryRunActive();
+    bool        sensorHasWater = ModelHandle_IsDryRunActive(); // TRUE = water present
 
-    /* ---- Mode string (7 chars) ---- */
     const char *mode;
     if      (ModelHandle_IsRestartActive()) mode = "Refill ";
     else if (ModelHandle_IsVoltageFault())  mode = "VOLTERR";
@@ -283,49 +279,45 @@ static void show_dash(void)
 
     if (dash_page == 0)
     {
-        /* Line 0: %-7s M:ON/OFF  pct%  (16 chars) */
         snprintf(l0, sizeof(l0), "%-7sM:%-3s%3d%%",
                  mode, motorOn ? "ON " : "OFF", tankPercent);
 
-        /* G.W field (reused in several branches below) */
         const char *gw = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
 
-        /* -------------------------------------------------------
-         * Line 1 priority:
-         *  1. DRY_FAULT       → steady "DRY" alert  (no blink)
-         *  2. tank full       → TANK FULL message
-         *  3. dryEnabled + motorOn:
-         *        sensorHasWater → blink "DRY" (monitoring active)
-         *        !sensorHasWater→ steady "DRY" warning
-         *  4. dryEnabled only → steady "DRY" (feature enabled, motor off)
-         *  5. default         → normal G.W + time
-         * ------------------------------------------------------- */
+        /* -------- DRY LOGIC -------- */
 
         if (dryState == DRY_FAULT)
         {
-            /* Pipe confirmed dry — motor has stopped.
-             * Show steady DRY, no blinking. */
-            dryBlinkState = false;
-            snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
-                     gw, time.hour, time.min);
+            // 🔴 Blink ONLY "DRY" word (no screen refresh)
+            if ((now - dryBlinkLast) >= DRY_BLINK_MS)
+            {
+                dryBlinkState = !dryBlinkState;
+                dryBlinkLast  = now;
+            }
+
+            if (dryBlinkState)
+                snprintf(l1, sizeof(l1), "DRY FAULT %02u:%02u",
+                         time.hour, time.min);
+            else
+                snprintf(l1, sizeof(l1), "    FAULT %02u:%02u",
+                         time.hour, time.min);
         }
         else if (tankFull)
         {
-            snprintf(l1, sizeof(l1), "TANK FULL %02u:%02u ",
+            snprintf(l1, sizeof(l1), "TANK FULL %02u:%02u",
                      time.hour, time.min);
         }
         else if (dryEnabled && motorOn)
         {
-            if (sensorHasWater)
+            if (!sensorHasWater)
             {
-                /* Motor running, water detected → blink DRY to show
-                 * protection is active and monitoring.             */
+                // 🔴 Dry condition → blink DRY only
                 if ((now - dryBlinkLast) >= DRY_BLINK_MS)
                 {
                     dryBlinkState = !dryBlinkState;
                     dryBlinkLast  = now;
-                    screenNeedsRefresh = true;
                 }
+
                 if (dryBlinkState)
                     snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
                              gw, time.hour, time.min);
@@ -335,31 +327,27 @@ static void show_dash(void)
             }
             else
             {
-                /* Motor on but pipe dry — steady alert, screen stable. */
-                dryBlinkState = false;
                 snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
                          gw, time.hour, time.min);
             }
         }
         else if (dryEnabled)
         {
-            /* Feature enabled, motor off → show DRY indicator steady. */
             snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
                      gw, time.hour, time.min);
         }
         else
         {
-            /* Dry protection disabled — clean normal display. */
-            dryBlinkState = false;
             snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
                      gw, time.hour, time.min);
         }
     }
-    else /* dash_page == 1 */
+    else
     {
         const char *dow = "---";
         if (time.dow >= 1 && time.dow <= 7)
             dow = dowNames[(time.dow - 1) % 7];
+
         snprintf(l0, sizeof(l0), "Day:%-12.12s", dow);
         snprintf(l1, sizeof(l1), "%02u:%02u %3.0fV %4.1fA",
                  time.hour, time.min, g_voltageV, g_currentA);
@@ -368,6 +356,8 @@ static void show_dash(void)
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
+
 static void draw_menu_cursor(void)
 {
     if (ui != UI_MENU) return;
@@ -1498,8 +1488,6 @@ void Screen_HandleSwitches(void)
 void Screen_Update(void)
 {
     uint32_t now = HAL_GetTick();
-    static uint32_t lastBlink = 0;
-    (void)lastBlink;
 
     if (ui >= UI_MAX_)
     {
@@ -1523,49 +1511,28 @@ void Screen_Update(void)
         screenNeedsRefresh = true;
     }
 
-    /* Dash + Countdown: refresh every second for live clock/data */
-    if ((ui == UI_DASH || ui == UI_COUNTDOWN) &&
+    /* ✅ IMPORTANT: Do NOT refresh DASH every second */
+    if ((ui == UI_COUNTDOWN) &&
         (now - lastLcdUpdateTime) >= 1000)
     {
         lastLcdUpdateTime = now;
         screenNeedsRefresh = true;
     }
 
-    /* Force refresh during DRY_FAULT blink (only while sensor still dry) */
-    if (ui == UI_DASH &&
-        ModelHandle_GetDryState() == DRY_FAULT &&
-        !ModelHandle_IsDryRunActive())
-    {
-        if ((now - dryBlinkLast) >= DRY_BLINK_MS)
-            screenNeedsRefresh = true;
-    }
+    /* ❌ REMOVE any DRY_FAULT forced refresh block */
 
     if (screenNeedsRefresh || ui != last_ui)
     {
         lcd_clear();
         last_ui = ui;
         screenNeedsRefresh = false;
+
         switch (ui)
         {
-            case UI_WELCOME:            show_welcome();            break;
-            case UI_DASH:               show_dash();               break;
-            case UI_MENU:               show_menu();               break;
-            case UI_COUNTDOWN:          show_countdown();          break;
-            case UI_COUNTDOWN_EDIT_MIN: show_countdown_edit_min(); break;
-            case UI_DEVSET_MENU:        show_devset_menu();        break;
-            case UI_RESET_CONFIRM:      show_reset_confirm();      break;
-            case UI_DEVSET_EDIT_DATE:   show_devset_edit_date();   break;
-            case UI_DEVSET_EDIT_TIME:   show_devset_edit_time();   break;
-            case UI_DEVSET_EDIT_DAY:    show_devset_edit_day();    break;
-            case UI_SETTINGS_GAP:       show_settings_gap();       break;
-            case UI_SETTINGS_RETRY:     show_settings_retry();     break;
-            case UI_SETTINGS_UV:        show_settings_uv();        break;
-            case UI_SETTINGS_OV:        show_settings_ov();        break;
-            case UI_SETTINGS_OL:        show_settings_ol();        break;
-            case UI_SETTINGS_UL:        show_settings_ul();        break;
-            case UI_SETTINGS_MAXRUN:    show_settings_maxrun();    break;
-            case UI_SETTINGS_PWRREST:   show_settings_pwrrest();   break;
-            case UI_SETTINGS_FACTORY:   show_settings_factory();   break;
+            case UI_WELCOME:   show_welcome(); break;
+            case UI_DASH:      show_dash();    break;
+            case UI_MENU:      show_menu();    break;
+            case UI_COUNTDOWN: show_countdown(); break;
             default: break;
         }
     }
