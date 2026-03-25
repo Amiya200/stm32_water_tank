@@ -1,11 +1,3 @@
-/* ================================================================
-   uart_commands.c  –  UART command handler for Helonix Water Tank
-
-   Changes vs previous version:
-     FIX 5: Added @TINFO# command to fetch all timer slot info
-             (ON time, OFF time, day mask, enabled state per slot).
-             Also auto-sent when timer slots change.
-================================================================ */
 #include "uart_commands.h"
 #include "uart.h"
 #include "model_handle.h"
