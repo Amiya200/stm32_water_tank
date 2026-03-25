@@ -1,3 +1,20 @@
+/* ================================================================
+   screen.c  –  UI layer for Helonix Intelligent Water Tank System
+   Changes vs previous version:
+     1. DRY label corrected: voltage<=0.01 → sensor active → water
+        present → show "YES" (was inverted).
+     2. Dash page timing: page0 (status) always visible, page1 shows
+        Day + Time always. Page2 shows voltage/current briefly.
+     3. lcd_clear() called on EVERY refresh, not only on state change,
+        preventing ghost characters.
+     4. prevTankFull reset on motorOwner change to stop false
+        "tank full" when switching modes.
+     5. Semi & Countdown: tank-full / mode-off restarts motor in the
+        same mode once tank drops (handled in model_handle.c).
+     6. UART timer info packet sent when timer active.
+     7. Ground water only turns motor ON, never OFF (enforced in
+        model_handle.c; display reflects this).
+================================================================ */
 #include "screen.h"
 #include "lcd_i2c.h"
 #include "switches.h"
@@ -10,6 +27,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "stm32f1xx_hal.h"
+
 typedef enum {
     UI_WELCOME = 0,
     UI_DASH,
@@ -57,6 +75,7 @@ typedef enum {
     UI_NONE,
     UI_MAX_
 } UiState;
+
 typedef enum {
     BTN_NONE = 0,
     BTN_RESET,
@@ -71,7 +90,6 @@ typedef enum {
 static UiState ui      = UI_WELCOME;
 static UiState last_ui = UI_NONE;
 static bool screenNeedsRefresh = false;
-static bool cursorVisible = true;
 static uint32_t lastLcdUpdateTime  = 0;
 static uint32_t lastUserAction     = 0;
 extern void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry);
@@ -126,7 +144,6 @@ static int edit_settings_ul = 0;
 static uint16_t edit_settings_maxrun = 120;
 static uint8_t  edit_settings_pwrrest = 0;
 static bool     edit_settings_factory_yes = false;
-/* FIX: dedicated dry run enable edit variable */
 static uint8_t  edit_settings_dry_en = 1;
 static uint8_t  edit_date_dd    = 1;
 static uint8_t  edit_date_mm    = 1;
@@ -139,14 +156,15 @@ static uint8_t  edit_day_idx2   = 0;
 static const char* const dowNames[7] = {
     "Sun","Mon","Tue","Wed","Thu","Fri","Sat"
 };
+
 static uint8_t addDevMenuIndex  = 0;
 static uint8_t addDevTypeIndex  = 0;
 static uint8_t lastAddDevType   = 0;
 extern uint8_t ModelHandle_GetTankLevelPercent(void);
 extern bool ModelHandle_IsTankFull(void);
 extern DryFSMState ModelHandle_GetDryState(void);
-extern bool ModelHandle_GetDryRunEnable(void);   /* FIX: expose getter */
-extern uint16_t ModelHandle_GetDryRunRetryGap(void);  /* FIX: retry gap getter */
+extern bool ModelHandle_GetDryRunEnable(void);
+extern uint16_t ModelHandle_GetDryRunRetryGap(void);
 static const char* const addDevTypeNames[] = {
     "Wi-Fi",
     "Receiver",
@@ -160,36 +178,37 @@ static const char* const main_menu[] = {
 #define MAIN_MENU_COUNT 3
 static uint8_t menu_idx      = 0;
 static uint8_t menu_view_top = 0;
-
-/* ================================================================
-   FIX: devset_menu_items updated – index 0 is now "Dry Run En"
-   (enable/disable toggle).  Index 1 is "Test Time" (gap seconds).
-   Index 2 is "Retry Gap" (dry_run_time_s).  This aligns the menu
-   with the three-parameter dry run system in the document.
-================================================================ */
 static const char* const devset_menu_items[] = {
-    "Dry Run En",     /* 0  – enable/disable dry run protection   */
-    "Test Time",      /* 1  – dry run test period (gap_time_s)    */
-    "Retry Gap",      /* 2  – retry gap (dry_run_time_s)          */
-    "Low Volt",       /* 3  */
-    "High Volt",      /* 4  */
-    "Over Load",      /* 5  */
-    "Under Load",     /* 6  */
-    "Max Run",        /* 7  */
-    "Set Date",       /* 8  */
-    "Set Time",       /* 9  */
-    "Set Day",        /* 10 */
-    "Power Restore",  /* 11 */
-    "Factory Reset",  /* 12 */
-    "Back"            /* 13 */
+    "Dry Run En",
+    "Test Time",
+    "Retry Gap",
+    "Low Volt",
+    "High Volt",
+    "Over Load",
+    "Under Load",
+    "Max Run",
+    "Set Date",
+    "Set Time",
+    "Set Day",
+    "Power Restore",
+    "Factory Reset",
+    "Back"
 };
 #define DEVSET_MENU_COUNT  (sizeof(devset_menu_items)/sizeof(devset_menu_items[0]))
 
 #define DEBOUNCE_MS        50
 #define REPEAT_START_MS    500
 #define REPEAT_INTERVAL_MS 150
+
 static uint8_t devset_idx      = 0;
 static uint8_t devset_view_top = 0;
+
+#define DASH_PAGE0_TIME  4000UL
+#define DASH_PAGE1_TIME  3000UL
+#define DASH_PAGE2_TIME  3000UL
+
+static uint8_t  dash_page        = 0;
+static uint32_t dash_cycle_start = 0;
 
 void Screen_Init(void)
 {
@@ -200,10 +219,12 @@ void Screen_Init(void)
     screenNeedsRefresh = true;
     lastUserAction = HAL_GetTick();
 }
+
 static inline void refreshInactivityTimer(void)
 {
     lastUserAction = HAL_GetTick();
 }
+
 static inline void lcd_line(uint8_t row, const char* s)
 {
     char buf[17];
@@ -211,46 +232,38 @@ static inline void lcd_line(uint8_t row, const char* s)
     lcd_put_cur(row, 0);
     lcd_send_string(buf);
 }
-static uint8_t dash_page = 0;
-static uint32_t dash_cycle_start = 0;
-#define DASH_PAGE1_TIME 200000
-#define DASH_PAGE2_TIME 500000
-#define DASH_PAGE3_TIME 5000
+
 static inline void lcd_line0(const char* s){ lcd_line(0,s); }
 static inline void lcd_line1(const char* s){ lcd_line(1,s); }
+
 static void show_welcome(void)
 {
-    lcd_clear();
     lcd_line0("   HELONIX");
     lcd_line1(" IntelligentSys");
 }
+
 static void show_dash(void)
 {
     char l0[17], l1[17];
     uint32_t now = HAL_GetTick();
-
     if (dash_cycle_start == 0)
         dash_cycle_start = now;
-
     uint32_t elapsed = now - dash_cycle_start;
-
-    if (elapsed < DASH_PAGE1_TIME)
+    if (elapsed < DASH_PAGE0_TIME)
         dash_page = 0;
-    else if (elapsed < (DASH_PAGE1_TIME + DASH_PAGE2_TIME))
+    else if (elapsed < (DASH_PAGE0_TIME + DASH_PAGE1_TIME))
         dash_page = 1;
-    else if (elapsed < (DASH_PAGE1_TIME + DASH_PAGE2_TIME + DASH_PAGE3_TIME))
+    else if (elapsed < (DASH_PAGE0_TIME + DASH_PAGE1_TIME + DASH_PAGE2_TIME))
         dash_page = 2;
     else
     {
         dash_cycle_start = now;
         dash_page = 0;
     }
-
     uint8_t tankPercent = ModelHandle_GetTankLevelPercent();
     bool tankFull = ModelHandle_IsTankFull();
     bool motorOn  = Motor_GetStatus();
     DryFSMState dryState = ModelHandle_GetDryState();
-
     const char* mode;
     if (ModelHandle_IsRestartActive())
         mode = "Refill";
@@ -276,45 +289,48 @@ static void show_dash(void)
         mode = "FULL   ";
     else
         mode = "READY  ";
-
     if (dash_page == 0)
     {
         snprintf(l0, sizeof(l0), "%-7sM:%s %3d%%",
                  mode, motorOn ? "ON" : "OFF", tankPercent);
         if (dryState == DRY_FAULT)
         {
-            snprintf(l1, sizeof(l1), "DRY RUN FAULT");
+            snprintf(l1, sizeof(l1), "DRY RUN FAULT  ");
         }
         else if (tankFull)
         {
-            snprintf(l1, sizeof(l1), "TANK FULL STOP");
+            snprintf(l1, sizeof(l1), "TANK FULL STOP ");
         }
         else
         {
             const char *gw  = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
-            const char *dry = (adcData.voltages[5] <= 0.01f) ? "NO"  : "YES";
+            const char *dry = (adcData.voltages[5] <= 0.01f) ? "YES" : "NO ";
             snprintf(l1, sizeof(l1), "G.W:%s DRY:%s", gw, dry);
         }
     }
     else if (dash_page == 1)
     {
-        snprintf(l0, sizeof(l0), "Date:%02u-%02u-%02u",
-                 time.dom, time.month, (uint8_t)(time.year % 100));
-        snprintf(l1, sizeof(l1), "Time:%02u:%02u:%02u",
+        const char *dow = "---";
+        if (time.dow >= 1 && time.dow <= 7)
+            dow = dowNames[(time.dow - 1) % 7];
+
+        snprintf(l0, sizeof(l0), "Day: %-11.11s", dow);
+        snprintf(l1, sizeof(l1), "Time:%02u:%02u:%02u    ",
                  time.hour, time.min, time.sec);
     }
     else
     {
         snprintf(l0, sizeof(l0), "V:%3.0fV  I:%3.1fA", g_voltageV, g_currentA);
         if (ModelHandle_IsOverload())
-            snprintf(l1, sizeof(l1), "OVER LOAD!");
+            snprintf(l1, sizeof(l1), "OVER LOAD!     ");
         else if (ModelHandle_IsUnderload())
-            snprintf(l1, sizeof(l1), "UNDER LOAD!");
+            snprintf(l1, sizeof(l1), "UNDER LOAD!    ");
         else if (ModelHandle_IsVoltageFault())
-            snprintf(l1, sizeof(l1), "VOLT ERROR!");
+            snprintf(l1, sizeof(l1), "VOLT ERROR!    ");
         else
-            snprintf(l1, sizeof(l1), "Live Monitor");
+            snprintf(l1, sizeof(l1), "Live Monitor   ");
     }
+
     lcd_line0(l0);
     lcd_line1(l1);
 }
@@ -331,6 +347,7 @@ static void draw_menu_cursor(void)
         lcd_send_data('>');
     }
 }
+
 static void show_menu(void)
 {
     char l0[17], l1[17];
@@ -338,20 +355,18 @@ static void show_menu(void)
         menu_view_top = menu_idx;
     else if (menu_idx > menu_view_top + 1)
         menu_view_top = menu_idx - 1;
+
     snprintf(l0, sizeof(l0), " %-15.15s", main_menu[menu_view_top]);
     if (menu_view_top + 1 < MAIN_MENU_COUNT)
         snprintf(l1, sizeof(l1), " %-15.15s", main_menu[menu_view_top + 1]);
     else
         snprintf(l1, sizeof(l1), "                ");
+
     lcd_line0(l0);
     lcd_line1(l1);
     draw_menu_cursor();
 }
 
-/* ================================================================
-   FIX: show_devset_menu updated to match new menu indices.
-   Index 0 shows dry run enable/disable status with * when enabled.
-================================================================ */
 static void show_devset_menu(void)
 {
     char l0[17], l1[17];
@@ -363,7 +378,6 @@ static void show_devset_menu(void)
     uint8_t idx0 = devset_view_top;
     uint8_t idx1 = devset_view_top + 1;
 
-    /* Build star indicators for configured items */
     char star0 = ' ', star1 = ' ';
 
     for (int pass = 0; pass < 2; pass++)
@@ -402,14 +416,15 @@ static void show_devset_menu(void)
 
 static void show_timer_slot_select(void)
 {
-    lcd_clear();
     int item1 = timer_page * 2;
     int item2 = item1 + 1;
     char l0[17], l1[17];
+
     if (item1 == 5)
         snprintf(l0, sizeof(l0), "%c Back", (currentSlot == 5 ? '>' : ' '));
     else
         snprintf(l0, sizeof(l0), "%c Timer %d", (currentSlot == item1 ? '>' : ' '), item1+1);
+
     if (item2 <= 5)
     {
         if (item2 == 5)
@@ -419,15 +434,19 @@ static void show_timer_slot_select(void)
     }
     else
         snprintf(l1, sizeof(l1), "                ");
+
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 static void show_edit_on_time(void)  {}
 static void show_edit_off_time(void) {}
+
 static const char* dayNames[] = {
     "Enable All", "Disable All",
     "Mon","Tue","Wed","Thu","Fri","Sat","Sun","Next>"
 };
+
 static void show_timer_days(void)
 {
     lcd_line0("Timer Days");
@@ -442,6 +461,7 @@ static void show_timer_days(void)
         snprintf(buf, sizeof(buf), "> %s", dayNames[edit_day_index]);
     lcd_line1(buf);
 }
+
 static void show_timer_gap(void)
 {
     lcd_line0("Timer Gap (min)");
@@ -450,6 +470,7 @@ static void show_timer_gap(void)
              (unsigned)(currentSlot+1), (unsigned)edit_gap_min);
     lcd_line1(buf);
 }
+
 static void show_timer_enable(void)
 {
     char title[17];
@@ -457,6 +478,7 @@ static void show_timer_enable(void)
     lcd_line0(title);
     lcd_line1(edit_slot_enabled ? "YES       Next>" : "NO        Next>");
 }
+
 static void show_timer_summary(void)
 {
     char title[17];
@@ -464,29 +486,34 @@ static void show_timer_summary(void)
     lcd_line0(title);
     lcd_line1(edit_slot_enabled ? "Enabled     Next>" : "Disabled    Next>");
 }
+
 static void show_auto_menu(void)
 {
     lcd_line0("Auto Settings");
     lcd_line1(">Gap/Max/Retry");
 }
+
 static void show_auto_gap(void)
 {
     lcd_line0("DRY GAP (s)");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_auto_gap_s);
     lcd_line1(buf);
 }
+
 static void show_auto_maxrun(void)
 {
     lcd_line0("MAX RUN (min)");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_auto_maxrun_min);
     lcd_line1(buf);
 }
+
 static void show_auto_retry(void)
 {
     lcd_line0("RETRY COUNT");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_auto_retry);
     lcd_line1(buf);
 }
+
 static void show_semi_auto(void)
 {
     lcd_line0("Semi-Auto");
@@ -512,42 +539,49 @@ static void show_twist(void)
     lcd_line0(l0);
     lcd_line1(twistActive ? "val:STOP   Next>" : "val:START  Next>");
 }
+
 static void show_twist_on_sec(void)
 {
     lcd_line0("TWIST ON SEC");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_s);
     lcd_line1(buf);
 }
+
 static void show_twist_off_sec(void)
 {
     lcd_line0("TWIST OFF SEC");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_s);
     lcd_line1(buf);
 }
+
 static void show_twist_on_h(void)
 {
     lcd_line0("TWIST ON HH");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_hh);
     lcd_line1(buf);
 }
+
 static void show_twist_on_m(void)
 {
     lcd_line0("TWIST ON MM");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_mm);
     lcd_line1(buf);
 }
+
 static void show_twist_off_h(void)
 {
     lcd_line0("TWIST OFF HH");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_hh);
     lcd_line1(buf);
 }
+
 static void show_twist_off_m(void)
 {
     lcd_line0("TWIST OFF MM");
     char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_mm);
     lcd_line1(buf);
 }
+
 static void show_countdown(void)
 {
     char l0[17], l1[17];
@@ -562,10 +596,11 @@ static void show_countdown(void)
     uint32_t s   = sec % 60;
     snprintf(l0, sizeof(l0), "CD %02lu:%02lu RUN",
              (unsigned long)min, (unsigned long)s);
-    snprintf(l1, sizeof(l1), "DOWN=STOP");
+    snprintf(l1, sizeof(l1), "DOWN=STOP      ");
     lcd_line0(l0);
     lcd_line1(l1);
 }
+
 static void show_countdown_edit_min(void)
 {
     lcd_line0("SET MINUTES");
@@ -573,17 +608,12 @@ static void show_countdown_edit_min(void)
     lcd_line1(buf);
 }
 
-/* ================================================================
-   FIX: show_settings_gap renamed to show_settings_dry_en.
-   Index 0 in devset now shows dry run enable/disable toggle.
-   Index 1 shows test time (gap_time_s in minutes).
-   Index 2 shows retry gap (dry_run_time_s in minutes).
-================================================================ */
 static void show_settings_dry_en(void)
 {
     lcd_line0("Dry Run Protect");
     lcd_line1(edit_settings_dry_en ? "ENABLED    Next>" : "DISABLED   Next>");
 }
+
 static void show_settings_gap(void)
 {
     lcd_line0("Test Time (min)");
@@ -594,6 +624,7 @@ static void show_settings_gap(void)
         snprintf(buf, sizeof(buf), "val:%2umin Next>", edit_settings_gap_s);
     lcd_line1(buf);
 }
+
 static void show_settings_retry(void)
 {
     lcd_line0("Retry Gap (min)");
@@ -604,6 +635,7 @@ static void show_settings_retry(void)
         snprintf(buf, sizeof(buf), "val:%3umin Next>", edit_settings_retry);
     lcd_line1(buf);
 }
+
 static void show_settings_uv(void)
 {
     lcd_line0("Low Volt");
@@ -614,6 +646,7 @@ static void show_settings_uv(void)
         snprintf(buf, sizeof(buf), "val:%3uV Next>", edit_settings_uv);
     lcd_line1(buf);
 }
+
 static void show_settings_ov(void)
 {
     lcd_line0("High Volt");
@@ -624,6 +657,7 @@ static void show_settings_ov(void)
         snprintf(buf, sizeof(buf), "val:%3uV Next>", edit_settings_ov);
     lcd_line1(buf);
 }
+
 static void show_settings_ol(void)
 {
     lcd_line0("Over Load (A)");
@@ -634,6 +668,7 @@ static void show_settings_ol(void)
         snprintf(buf, sizeof(buf), "val:%3d Next>", edit_settings_ol);
     lcd_line1(buf);
 }
+
 static void show_settings_ul(void)
 {
     lcd_line0("Under Load (A)");
@@ -644,6 +679,7 @@ static void show_settings_ul(void)
         snprintf(buf, sizeof(buf), "val:%3d Next>", edit_settings_ul);
     lcd_line1(buf);
 }
+
 static void show_settings_maxrun(void)
 {
     lcd_line0("Max Run");
@@ -654,6 +690,7 @@ static void show_settings_maxrun(void)
         snprintf(buf, sizeof(buf), "val:%3umin Next>", edit_settings_maxrun);
     lcd_line1(buf);
 }
+
 static void show_settings_pwrrest(void)
 {
     lcd_line0("Power Restore");
@@ -663,11 +700,13 @@ static void show_settings_pwrrest(void)
                                        "LAST      Next>";
     lcd_line1(text);
 }
+
 static void show_settings_factory(void)
 {
     lcd_line0("Factory Reset?");
     lcd_line1(edit_settings_factory_yes ? "YES       Next>" : "NO        Next>");
 }
+
 static void show_devset_edit_date(void)
 {
     lcd_line0("Set Date");
@@ -678,6 +717,7 @@ static void show_devset_edit_date(void)
     else                           snprintf(buf, sizeof(buf), "%02u-%02u-[%02u]", edit_date_dd, edit_date_mm, yy2);
     lcd_line1(buf);
 }
+
 static void show_devset_edit_time(void)
 {
     lcd_line0("Set Time");
@@ -688,6 +728,7 @@ static void show_devset_edit_time(void)
         snprintf(buf, sizeof(buf), "%02u:[%02u]", edit_time_hh, edit_time_min);
     lcd_line1(buf);
 }
+
 static void show_devset_edit_day(void)
 {
     lcd_line0("Set Day");
@@ -695,11 +736,13 @@ static void show_devset_edit_day(void)
     snprintf(buf, sizeof(buf), "> %s", dowNames[edit_day_idx2 % 7]);
     lcd_line1(buf);
 }
+
 static void show_add_device_menu(void)
 {
     lcd_line0(addDevMenuIndex == 0 ? ">Pair Device"   : " Pair Device");
     lcd_line1(addDevMenuIndex == 1 ? ">Remove Device" : " Remove Device");
 }
+
 static void show_add_device_pair(void)
 {
     lcd_line0("Pair Device");
@@ -707,6 +750,7 @@ static void show_add_device_pair(void)
     snprintf(buf, sizeof(buf), ">%s", addDevTypeNames[addDevTypeIndex]);
     lcd_line1(buf);
 }
+
 static void show_add_device_remove(void)
 {
     lcd_line0("Remove Device");
@@ -714,6 +758,7 @@ static void show_add_device_remove(void)
     snprintf(buf, sizeof(buf), ">%s", addDevTypeNames[addDevTypeIndex]);
     lcd_line1(buf);
 }
+
 static void show_add_device_pair_done(void)
 {
     lcd_line0("Paired Device");
@@ -721,6 +766,7 @@ static void show_add_device_pair_done(void)
     snprintf(buf, sizeof(buf), "%s   OK>", addDevTypeNames[lastAddDevType]);
     lcd_line1(buf);
 }
+
 static void show_add_device_remove_done(void)
 {
     lcd_line0("Removed Device");
@@ -728,53 +774,36 @@ static void show_add_device_remove_done(void)
     snprintf(buf, sizeof(buf), "%s   OK>", addDevTypeNames[lastAddDevType]);
     lcd_line1(buf);
 }
+
 static void show_reset_confirm(void)
 {
     lcd_line0("Reset To Default?");
     lcd_line1(reset_confirm_yes ? "YES       Apply>" : "NO        Back>");
 }
 
-/* ================================================================
-   FIX: apply_settings_core now correctly applies:
-     1. gap_time_s  from edit_settings_gap_s  (minutes → seconds)
-     2. dry_run_time_s from edit_settings_retry (minutes → seconds)
-     3. dry_run_enable from edit_settings_dry_en
-
-   When dry_en is toggled OFF, gap forced to 0 as well.
-   When gap is set to 0, dry_en is also cleared.
-================================================================ */
 static void apply_settings_core(void)
 {
-    /* gap_time_s: dry run test period in seconds (0 = protection off) */
     uint16_t gap_s = 0;
     if (edit_settings_dry_en && edit_settings_gap_s > 0)
         gap_s = (uint16_t)(edit_settings_gap_s * 60U);
-
-    /* Preserve the load-fault retry count – never zero it from this menu */
     ModelHandle_SetUserSettings(
         gap_s,
-        ModelHandle_GetRetryCount(),   /* preserve existing value */
+        ModelHandle_GetRetryCount(),
         edit_settings_uv,
         edit_settings_ov,
         edit_settings_ol,
         edit_settings_ul,
         edit_settings_maxrun
     );
-
-    /* dry_run_time_s: retry gap period in seconds */
     uint32_t retry_s = (edit_settings_retry > 0)
                        ? (uint32_t)edit_settings_retry * 60U
-                       : 10U;          /* minimum 10 s */
+                       : 10U;
     ModelHandle_SetDryRunTime(retry_s);
-
-    /* Propagate enable flag – must be called AFTER SetUserSettings
-       because SetUserSettings clears dry_run_enable when gap = 0 */
     ModelHandle_SetDryRun(edit_settings_dry_en && edit_settings_gap_s > 0);
 }
 
 static void start_settings_edit_flow(void)
 {
-    /* Read current settings back into edit variables */
     uint16_t gap_s = ModelHandle_GetGapTime();
     if (gap_s == 0)
         edit_settings_gap_s = 0;
@@ -784,15 +813,11 @@ static void start_settings_edit_flow(void)
         if (edit_settings_gap_s < 1)   edit_settings_gap_s = 1;
         if (edit_settings_gap_s > 180) edit_settings_gap_s = 180;
     }
-
-    /* FIX: read dry run enable state */
     edit_settings_dry_en = ModelHandle_GetDryRunEnable() ? 1 : 0;
-
-    /* FIX: retry gap is dry_run_time_s, NOT the load-fault retry count */
     {
         uint16_t dry_s = ModelHandle_GetDryRunRetryGap();
         if (dry_s == 0)
-            edit_settings_retry = 5;          /* default 5 min */
+            edit_settings_retry = 5;
         else
         {
             edit_settings_retry = dry_s / 60;
@@ -800,7 +825,6 @@ static void start_settings_edit_flow(void)
             if (edit_settings_retry > 180) edit_settings_retry = 180;
         }
     }
-
     edit_settings_uv = ModelHandle_GetUnderVolt();
     if (edit_settings_uv != 0)
     {
@@ -813,17 +837,14 @@ static void start_settings_edit_flow(void)
         if (edit_settings_ov < 250) edit_settings_ov = 250;
         if (edit_settings_ov > 300) edit_settings_ov = 300;
     }
-    edit_settings_ol = ModelHandle_GetOverloadLimit();
+    edit_settings_ol = (int)ModelHandle_GetOverloadLimit();
     if (edit_settings_ol > 25) edit_settings_ol = 25;
-    edit_settings_ul = ModelHandle_GetUnderloadLimit();
+    edit_settings_ul = (int)ModelHandle_GetUnderloadLimit();
     if (edit_settings_ul > 10) edit_settings_ul = 10;
-
     edit_settings_maxrun = ModelHandle_GetMaxRunTime();
     if (edit_settings_maxrun > 300) edit_settings_maxrun = 300;
-
     edit_settings_pwrrest = ModelHandle_GetPowerRestoreMode();
-    edit_settings_factory_yes = 0;
-
+    edit_settings_factory_yes = false;
     RTC_GetTimeDate();
     edit_date_dd    = time.dom;
     edit_date_mm    = time.month;
@@ -885,37 +906,19 @@ static void menu_select(void)
         return;
     }
 
-    /* ================================================================
-       DEVSET MENU SELECT
-       Index mapping (matches devset_menu_items[] above):
-         0  = Dry Run En  – toggle enable/disable + apply
-         1  = Test Time   – inline toggle gap 0/5
-         2  = Retry Gap   – inline toggle 0/5
-         3  = Low Volt
-         4  = High Volt
-         5  = Over Load
-         6  = Under Load
-         7  = Max Run
-         8  = Set Date
-         9  = Set Time
-         10 = Set Day
-         11 = Power Restore
-         12 = Factory Reset
-         13 = Back
-    ================================================================ */
     if (ui == UI_DEVSET_MENU)
     {
         switch (devset_idx)
         {
-            case 0:  /* Dry Run Enable/Disable */
+            case 0:
                 edit_settings_dry_en ^= 1;
                 apply_settings_core();
                 break;
-            case 1:  /* Test Time inline toggle */
+            case 1:
                 edit_settings_gap_s = (edit_settings_gap_s > 0) ? 0 : 5;
                 apply_settings_core();
                 break;
-            case 2:  /* Retry Gap inline toggle */
+            case 2:
                 edit_settings_retry = (edit_settings_retry > 0) ? 0 : 5;
                 apply_settings_core();
                 break;
@@ -951,13 +954,16 @@ static void menu_select(void)
                 if (edit_settings_factory_yes)
                 {
                     ModelHandle_FactoryReset();
-                    /* Sync local edit vars after reset */
-                    edit_settings_dry_en  = 1;
-                    edit_settings_gap_s   = 0;
-                    edit_settings_retry   = 0;
-                    edit_settings_uv      = 190;
-                    edit_settings_ov      = 260;
-                    edit_settings_maxrun  = 300;
+                    edit_settings_dry_en  = ModelHandle_GetDryRunEnable() ? 1 : 0;
+                    edit_settings_gap_s   = ModelHandle_GetGapTime() / 60;
+                    edit_settings_retry   = ModelHandle_GetDryRunRetryGap() / 60;
+                    edit_settings_uv      = ModelHandle_GetUnderVolt();
+                    edit_settings_ov      = ModelHandle_GetOverVolt();
+                    edit_settings_maxrun  = ModelHandle_GetMaxRunTime();
+                    edit_settings_ol      = (int)ModelHandle_GetOverloadLimit();
+                    edit_settings_ul      = (int)ModelHandle_GetUnderloadLimit();
+                    edit_settings_pwrrest = ModelHandle_GetPowerRestoreMode();
+                    edit_settings_factory_yes = false;
                     ui = UI_DASH;
                 }
                 break;
@@ -1168,10 +1174,8 @@ static UiButton decode_button_press(void)
     static uint32_t press_time[4] = {0};
     static bool long_sent[4] = {0};
     static uint32_t last_repeat_time[4] = {0};
-
     uint32_t now = HAL_GetTick();
     UiButton result = BTN_NONE;
-
     for (int i = 0; i < 4; i++)
     {
         bool raw = Switch_IsPressed(i);
@@ -1228,31 +1232,19 @@ void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
     uint32_t now_sw = HAL_GetTick();
-
-    /* ----------------------------------------------------------------
-       AUTO-REPEAT for UP / DOWN when inside any menu or edit screen.
-       This makes it easy to scroll through menus and change values
-       without rapid tapping.  It does NOT fire in UI_DASH so holding
-       UP in the dashboard doesn't accidentally hammer the timer toggle.
-
-       Timing:
-         REPEAT_START_MS  (500 ms) – delay before first auto-repeat
-         REPEAT_INTERVAL_MS (150 ms) – repeat rate once started
-       ---------------------------------------------------------------- */
     {
-        static uint32_t rep_start[2] = {0, 0};  /* [0]=UP, [1]=DOWN */
+        static uint32_t rep_start[2] = {0, 0};
         static uint32_t rep_last[2]  = {0, 0};
 
         bool in_menu = (ui != UI_DASH &&
                         ui != UI_WELCOME &&
                         ui != UI_COUNTDOWN &&
                         ui != UI_NONE);
-
         if (in_menu)
         {
             for (int ri = 0; ri < 2; ri++)
             {
-                bool held = Switch_IsPressed(ri == 0 ? 2 : 3); /* 2=UP 3=DOWN */
+                bool held = Switch_IsPressed(ri == 0 ? 2 : 3);
                 if (held)
                 {
                     if (rep_start[ri] == 0) rep_start[ri] = now_sw;
@@ -1262,7 +1254,6 @@ void Screen_HandleSwitches(void)
                         (now_sw - rep_last[ri]) >= REPEAT_INTERVAL_MS)
                     {
                         rep_last[ri] = now_sw;
-                        /* Only inject if no other event is pending this cycle */
                         if (b == BTN_NONE)
                             b = (ri == 0) ? BTN_UP : BTN_DOWN;
                     }
@@ -1280,11 +1271,8 @@ void Screen_HandleSwitches(void)
             rep_last[0]  = rep_last[1]  = 0;
         }
     }
-
     if (b == BTN_NONE) return;
-
     refreshInactivityTimer();
-
     if (ui == UI_COUNTDOWN && b == BTN_DOWN)
     {
         ModelHandle_StopCountdown();
@@ -1292,7 +1280,6 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
-
     if (b == BTN_RESET)
     {
         if (ui == UI_DASH)
@@ -1343,20 +1330,30 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui == UI_RESET_CONFIRM)
     {
         if (b == BTN_UP || b == BTN_DOWN)
             reset_confirm_yes = !reset_confirm_yes;
         else if (b == BTN_SELECT)
         {
-            if (reset_confirm_yes) ModelHandle_FactoryReset();
+            if (reset_confirm_yes)
+            {
+                ModelHandle_FactoryReset();
+                edit_settings_dry_en  = ModelHandle_GetDryRunEnable() ? 1 : 0;
+                edit_settings_gap_s   = ModelHandle_GetGapTime() / 60;
+                edit_settings_retry   = ModelHandle_GetDryRunRetryGap() / 60;
+                edit_settings_uv      = ModelHandle_GetUnderVolt();
+                edit_settings_ov      = ModelHandle_GetOverVolt();
+                edit_settings_maxrun  = ModelHandle_GetMaxRunTime();
+                edit_settings_ol      = (int)ModelHandle_GetOverloadLimit();
+                edit_settings_ul      = (int)ModelHandle_GetUnderloadLimit();
+                edit_settings_pwrrest = ModelHandle_GetPowerRestoreMode();
+            }
             ui = UI_DASH;
         }
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui == UI_DASH)
     {
         switch (b)
@@ -1418,7 +1415,6 @@ void Screen_HandleSwitches(void)
         }
         return;
     }
-
     if (ui == UI_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG) menu_select();
@@ -1427,7 +1423,6 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui == UI_DEVSET_MENU)
     {
         if (b == BTN_SELECT || b == BTN_SELECT_LONG) menu_select();
@@ -1436,7 +1431,6 @@ void Screen_HandleSwitches(void)
         screenNeedsRefresh = true;
         return;
     }
-
     if (ui != UI_DASH)
     {
         if      (b == BTN_UP)        increase_edit_value(1);
@@ -1453,22 +1447,18 @@ void Screen_Update(void)
 {
     uint32_t now = HAL_GetTick();
     static uint32_t lastBlink = 0;
-
+    (void)lastBlink;
     if (ui >= UI_MAX_)
     {
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
-
-    /* Cursor is always visible – no blink, no unnecessary LCD refresh */
-    (void)lastBlink;
-
     if (ui == UI_WELCOME && (now - lastLcdUpdateTime >= WELCOME_MS))
     {
+        lastLcdUpdateTime = now;
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
-
     if (ui != UI_WELCOME &&
         ui != UI_DASH &&
         ui != UI_COUNTDOWN &&
@@ -1477,42 +1467,38 @@ void Screen_Update(void)
         ui = UI_DASH;
         screenNeedsRefresh = true;
     }
-
     if ((ui == UI_DASH || ui == UI_COUNTDOWN) &&
         (now - lastLcdUpdateTime) >= 1000)
     {
         lastLcdUpdateTime = now;
         screenNeedsRefresh = true;
     }
-
     if (screenNeedsRefresh || ui != last_ui)
     {
-        if (ui != last_ui) { lcd_clear(); last_ui = ui; }
+        lcd_clear();
+        last_ui = ui;
         screenNeedsRefresh = false;
-
         switch (ui)
         {
-            case UI_WELCOME:           show_welcome();             break;
-            case UI_DASH:              show_dash();                break;
-            case UI_MENU:              show_menu();                break;
-            case UI_COUNTDOWN:         show_countdown();           break;
-            case UI_COUNTDOWN_EDIT_MIN:show_countdown_edit_min();  break;
-            case UI_DEVSET_MENU:       show_devset_menu();         break;
-            case UI_RESET_CONFIRM:     show_reset_confirm();       break;
-            case UI_DEVSET_EDIT_DATE:  show_devset_edit_date();    break;
-            case UI_DEVSET_EDIT_TIME:  show_devset_edit_time();    break;
-            case UI_DEVSET_EDIT_DAY:   show_devset_edit_day();     break;
-            /* Inline-toggle items don't navigate to a sub-screen,
-               but leave these stubs for future navigation if needed */
-            case UI_SETTINGS_GAP:      show_settings_gap();        break;
-            case UI_SETTINGS_RETRY:    show_settings_retry();      break;
-            case UI_SETTINGS_UV:       show_settings_uv();         break;
-            case UI_SETTINGS_OV:       show_settings_ov();         break;
-            case UI_SETTINGS_OL:       show_settings_ol();         break;
-            case UI_SETTINGS_UL:       show_settings_ul();         break;
-            case UI_SETTINGS_MAXRUN:   show_settings_maxrun();     break;
-            case UI_SETTINGS_PWRREST:  show_settings_pwrrest();    break;
-            case UI_SETTINGS_FACTORY:  show_settings_factory();    break;
+            case UI_WELCOME:            show_welcome();            break;
+            case UI_DASH:               show_dash();               break;
+            case UI_MENU:               show_menu();               break;
+            case UI_COUNTDOWN:          show_countdown();          break;
+            case UI_COUNTDOWN_EDIT_MIN: show_countdown_edit_min(); break;
+            case UI_DEVSET_MENU:        show_devset_menu();        break;
+            case UI_RESET_CONFIRM:      show_reset_confirm();      break;
+            case UI_DEVSET_EDIT_DATE:   show_devset_edit_date();   break;
+            case UI_DEVSET_EDIT_TIME:   show_devset_edit_time();   break;
+            case UI_DEVSET_EDIT_DAY:    show_devset_edit_day();    break;
+            case UI_SETTINGS_GAP:       show_settings_gap();       break;
+            case UI_SETTINGS_RETRY:     show_settings_retry();     break;
+            case UI_SETTINGS_UV:        show_settings_uv();        break;
+            case UI_SETTINGS_OV:        show_settings_ov();        break;
+            case UI_SETTINGS_OL:        show_settings_ol();        break;
+            case UI_SETTINGS_UL:        show_settings_ul();        break;
+            case UI_SETTINGS_MAXRUN:    show_settings_maxrun();    break;
+            case UI_SETTINGS_PWRREST:   show_settings_pwrrest();   break;
+            case UI_SETTINGS_FACTORY:   show_settings_factory();   break;
             default: break;
         }
     }
