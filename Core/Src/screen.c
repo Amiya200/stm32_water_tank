@@ -70,31 +70,25 @@ typedef enum {
     BTN_UP_LONG,
     BTN_DOWN_LONG
 } UiButton;
-
 static UiState ui      = UI_WELCOME;
 static UiState last_ui = UI_NONE;
 static bool screenNeedsRefresh = false;
 static uint32_t lastLcdUpdateTime  = 0;
 static uint32_t lastUserAction     = 0;
-
 extern void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry);
 extern void ModelHandle_StartTimerNearestSlot(void);
 extern void ModelHandle_StopTimer(void);
 extern void ModelHandle_StopSemiAuto(void);
 extern void ModelHandle_FactoryReset(void);
-
 #define WELCOME_MS         2500
 #define CURSOR_BLINK_MS     400
 #define AUTO_BACK_MS      60000
 #define LONG_PRESS_MS      3000
 #define CONTINUOUS_STEP_MS  250
-
-/* Dash page timing: Page0 = 5000ms, Page1 = 1500ms */
-#define DASH_PAGE0_TIME  5000UL
-#define DASH_PAGE1_TIME  1500UL
-
+#define DASH_PAGE0_TIME   4500UL
+#define DASH_PAGE1_TIME   150UL
+#define DRY_BLINK_MS       400UL
 static bool reset_confirm_yes = false;
-
 extern ADC_Data adcData;
 extern TimerSlot timerSlots[5];
 extern TwistSettings twistSettings;
@@ -106,7 +100,6 @@ extern volatile bool countdownActive;
 extern volatile bool twistActive;
 extern volatile bool autoActive;
 extern volatile uint32_t countdownDuration;
-
 static uint8_t edit_on_h = 0;
 static uint8_t edit_on_m = 0;
 static uint8_t edit_off_h = 0;
@@ -146,37 +139,30 @@ static uint8_t  edit_time_hh    = 0;
 static uint8_t  edit_time_min   = 0;
 static uint8_t  edit_time_field = 0;
 static uint8_t  edit_day_idx2   = 0;
-
 static const char* const dowNames[7] = {
     "Sun","Mon","Tue","Wed","Thu","Fri","Sat"
 };
-
 static uint8_t addDevMenuIndex  = 0;
 static uint8_t addDevTypeIndex  = 0;
 static uint8_t lastAddDevType   = 0;
-
 extern uint8_t ModelHandle_GetTankLevelPercent(void);
 extern bool ModelHandle_IsTankFull(void);
 extern DryFSMState ModelHandle_GetDryState(void);
 extern bool ModelHandle_GetDryRunEnable(void);
 extern uint16_t ModelHandle_GetDryRunRetryGap(void);
-
 static const char* const addDevTypeNames[] = {
     "Wi-Fi",
     "Receiver",
     "Transmitter"
 };
-
 static const char* const main_menu[] = {
     "Add New Device",
     "Device Setup",
     "Reset To Default"
 };
 #define MAIN_MENU_COUNT 3
-
 static uint8_t menu_idx      = 0;
 static uint8_t menu_view_top = 0;
-
 static const char* const devset_menu_items[] = {
     "Dry Run En",
     "Test Time",
@@ -194,23 +180,15 @@ static const char* const devset_menu_items[] = {
     "Back"
 };
 #define DEVSET_MENU_COUNT  (sizeof(devset_menu_items)/sizeof(devset_menu_items[0]))
-
 #define DEBOUNCE_MS        50
 #define REPEAT_START_MS    500
 #define REPEAT_INTERVAL_MS 150
-
 static uint8_t devset_idx      = 0;
 static uint8_t devset_view_top = 0;
-
-/* Dash page state */
 static uint8_t  dash_page        = 0;
 static uint32_t dash_cycle_start = 0;
-
-/* Dry-run blink state for dash display */
-static bool     dryBlinkState    = false;
-static uint32_t dryBlinkLast     = 0;
-#define DRY_BLINK_MS  400UL
-
+static uint8_t  dry_blink_slot   = 0;
+static uint32_t dry_blink_start  = 0;
 void Screen_Init(void)
 {
     lcd_init();
@@ -247,22 +225,28 @@ static void show_dash(void)
 {
     char l0[17], l1[17];
     uint32_t now = HAL_GetTick();
-
     if (dash_cycle_start == 0)
         dash_cycle_start = now;
-
     uint32_t elapsed = now - dash_cycle_start;
-    if      (elapsed < DASH_PAGE0_TIME)                      dash_page = 0;
-    else if (elapsed < (DASH_PAGE0_TIME + DASH_PAGE1_TIME))  dash_page = 1;
-    else  { dash_cycle_start = now; dash_page = 0; }
-
+    uint8_t  new_page;
+    if      (elapsed < DASH_PAGE0_TIME)                      new_page = 0;
+    else if (elapsed < (DASH_PAGE0_TIME + DASH_PAGE1_TIME))  new_page = 1;
+    else  { dash_cycle_start = now; new_page = 0; }
+    if (new_page != dash_page)
+    {
+        dash_page          = new_page;
+        screenNeedsRefresh = true;
+        dry_blink_slot     = 0;
+        dry_blink_start    = now;
+        return;
+    }
     uint8_t     tankPercent    = ModelHandle_GetTankLevelPercent();
     bool        tankFull       = ModelHandle_IsTankFull();
     bool        motorOn        = Motor_GetStatus();
     DryFSMState dryState       = ModelHandle_GetDryState();
     bool        dryEnabled     = ModelHandle_GetDryRunEnable();
-    bool        sensorHasWater = ModelHandle_IsDryRunActive(); // TRUE = water present
-
+    bool        sensorHasWater = ModelHandle_IsDryRunActive(); /* TRUE = water present */
+    const char *gw             = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
     const char *mode;
     if      (ModelHandle_IsRestartActive()) mode = "Refill ";
     else if (ModelHandle_IsVoltageFault())  mode = "VOLTERR";
@@ -281,55 +265,34 @@ static void show_dash(void)
     {
         snprintf(l0, sizeof(l0), "%-7sM:%-3s%3d%%",
                  mode, motorOn ? "ON " : "OFF", tankPercent);
-
-        const char *gw = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
-
-        /* -------- DRY LOGIC -------- */
-
+        if ((now - dry_blink_start) >= DRY_BLINK_MS)
+        {
+            dry_blink_slot  = dry_blink_slot ? 0 : 1;
+            dry_blink_start = now;
+        }
+        bool dryVisible = (dry_blink_slot == 0);
         if (dryState == DRY_FAULT)
         {
-            // 🔴 Blink ONLY "DRY" word (no screen refresh)
-            if ((now - dryBlinkLast) >= DRY_BLINK_MS)
-            {
-                dryBlinkState = !dryBlinkState;
-                dryBlinkLast  = now;
-            }
-
-            if (dryBlinkState)
-                snprintf(l1, sizeof(l1), "DRY FAULT %02u:%02u",
-                         time.hour, time.min);
+            if (dryVisible)
+                snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
+                         gw, time.hour, time.min);
             else
-                snprintf(l1, sizeof(l1), "    FAULT %02u:%02u",
-                         time.hour, time.min);
+                snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
+                         gw, time.hour, time.min);
         }
         else if (tankFull)
         {
             snprintf(l1, sizeof(l1), "TANK FULL %02u:%02u",
                      time.hour, time.min);
         }
-        else if (dryEnabled && motorOn)
+        else if (dryEnabled && motorOn && !sensorHasWater)
         {
-            if (!sensorHasWater)
-            {
-                // 🔴 Dry condition → blink DRY only
-                if ((now - dryBlinkLast) >= DRY_BLINK_MS)
-                {
-                    dryBlinkState = !dryBlinkState;
-                    dryBlinkLast  = now;
-                }
-
-                if (dryBlinkState)
-                    snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
-                             gw, time.hour, time.min);
-                else
-                    snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
-                             gw, time.hour, time.min);
-            }
-            else
-            {
+            if (dryVisible)
                 snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
                          gw, time.hour, time.min);
-            }
+            else
+                snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
+                         gw, time.hour, time.min);
         }
         else if (dryEnabled)
         {
@@ -341,6 +304,9 @@ static void show_dash(void)
             snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
                      gw, time.hour, time.min);
         }
+
+        lcd_line0(l0);
+        lcd_line1(l1);
     }
     else
     {
@@ -348,13 +314,13 @@ static void show_dash(void)
         if (time.dow >= 1 && time.dow <= 7)
             dow = dowNames[(time.dow - 1) % 7];
 
-        snprintf(l0, sizeof(l0), "Day:%-12.12s", dow);
-        snprintf(l1, sizeof(l1), "%02u:%02u %3.0fV %4.1fA",
+        snprintf(l1, sizeof(l0), "%-12.12s", dow);
+        snprintf(l0, sizeof(l1), "%02u:%02u %3.0fV %4.1fA",
                  time.hour, time.min, g_voltageV, g_currentA);
-    }
 
-    lcd_line0(l0);
-    lcd_line1(l1);
+        lcd_line0(l0);
+        lcd_line1(l1);
+    }
 }
 
 
@@ -563,55 +529,12 @@ static void show_twist(void)
     lcd_line1(twistActive ? "val:STOP   Next>" : "val:START  Next>");
 }
 
-static void show_twist_on_sec(void)
-{
-    lcd_line0("TWIST ON SEC");
-    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_s);
-    lcd_line1(buf);
-}
-
-static void show_twist_off_sec(void)
-{
-    lcd_line0("TWIST OFF SEC");
-    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_s);
-    lcd_line1(buf);
-}
-
-static void show_twist_on_h(void)
-{
-    lcd_line0("TWIST ON HH");
-    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_hh);
-    lcd_line1(buf);
-}
-
-static void show_twist_on_m(void)
-{
-    lcd_line0("TWIST ON MM");
-    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_on_mm);
-    lcd_line1(buf);
-}
-
-static void show_twist_off_h(void)
-{
-    lcd_line0("TWIST OFF HH");
-    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_hh);
-    lcd_line1(buf);
-}
-
-static void show_twist_off_m(void)
-{
-    lcd_line0("TWIST OFF MM");
-    char buf[17]; snprintf(buf, sizeof(buf), "val:%03u Next>", edit_twist_off_mm);
-    lcd_line1(buf);
-}
 
 static void show_countdown(void)
 {
     char l0[17], l1[17];
     if (!countdownActive)
     {
-        /* Per requirement: even when countdown stops (tank full hold or expired),
-         * keep showing COUNTDOWN mode on display with motor-off status. */
         uint8_t pct = ModelHandle_GetTankLevelPercent();
         const char *gw  = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
         snprintf(l0, sizeof(l0), "COUNT M:OFF%3d%%", pct);
@@ -1495,6 +1418,7 @@ void Screen_Update(void)
         screenNeedsRefresh = true;
     }
 
+    /* Welcome → Dash transition */
     if (ui == UI_WELCOME && (now - lastLcdUpdateTime >= WELCOME_MS))
     {
         lastLcdUpdateTime = now;
@@ -1502,6 +1426,7 @@ void Screen_Update(void)
         screenNeedsRefresh = true;
     }
 
+    /* Auto-back to dash on inactivity (not from welcome/dash/countdown) */
     if (ui != UI_WELCOME &&
         ui != UI_DASH &&
         ui != UI_COUNTDOWN &&
@@ -1511,7 +1436,7 @@ void Screen_Update(void)
         screenNeedsRefresh = true;
     }
 
-    /* ✅ IMPORTANT: Do NOT refresh DASH every second */
+    /* Countdown: refresh every second so timer counts down visibly */
     if ((ui == UI_COUNTDOWN) &&
         (now - lastLcdUpdateTime) >= 1000)
     {
@@ -1519,19 +1444,45 @@ void Screen_Update(void)
         screenNeedsRefresh = true;
     }
 
-    /* ❌ REMOVE any DRY_FAULT forced refresh block */
+    /* ---------------------------------------------------------------
+     * Dashboard in-place refresh:
+     *   – Page 0 is refreshed every DRY_BLINK_MS so the DRY text can
+     *     blink without a full lcd_clear().  We call show_dash() which
+     *     writes both lines in-place.  show_dash() itself will set
+     *     screenNeedsRefresh=true and return early if the page needs
+     *     to change (which triggers the full clear path below).
+     *   – No refresh is needed while on page 1 (static content) except
+     *     on entry.
+     * --------------------------------------------------------------- */
+    if (ui == UI_DASH && dash_page == 0 &&
+        (now - dry_blink_start) >= DRY_BLINK_MS)
+    {
+        /* Update blink slot and rewrite lines in-place (no lcd_clear) */
+        dry_blink_slot  = dry_blink_slot ? 0 : 1;
+        dry_blink_start = now;
+        show_dash();  /* writes lines directly; no clear */
+        /* If show_dash() changed the page it already set screenNeedsRefresh */
+    }
 
+    /* Full redraw path: only when state changes or page switches */
     if (screenNeedsRefresh || ui != last_ui)
     {
         lcd_clear();
         last_ui = ui;
         screenNeedsRefresh = false;
 
+        /* Reset blink state on every full redraw so blink starts cleanly */
+        if (ui == UI_DASH)
+        {
+            dry_blink_slot  = 0;
+            dry_blink_start = now;
+        }
+
         switch (ui)
         {
-            case UI_WELCOME:   show_welcome(); break;
-            case UI_DASH:      show_dash();    break;
-            case UI_MENU:      show_menu();    break;
+            case UI_WELCOME:   show_welcome();   break;
+            case UI_DASH:      show_dash();      break;
+            case UI_MENU:      show_menu();      break;
             case UI_COUNTDOWN: show_countdown(); break;
             default: break;
         }

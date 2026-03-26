@@ -980,7 +980,12 @@ void ModelHandle_CheckGroundWater(void)
     }
     else
     {
-        /* Ground water lost: immediately clear stable state and stop motor if auto */
+        /*
+         * Ground water lost: clear stable state so next detection
+         * must stabilise again — but we do NOT stop the motor here.
+         * Motor control on ground-water loss is handled inside auto_tick()
+         * by transitioning to the dry-run test cycle instead of stopping.
+         */
         detectStart = 0;
         stableState = false;
     }
@@ -1315,7 +1320,7 @@ void ModelHandle_StartSemiAuto(void)
     semiDeadline         = 0;
     semiWaterLossPending = false;
     senseMaxRunReached   = false;
-    semiTankFullHold     = false;   /* clear hold so motor can run on fresh start */
+    semiTankFullHold     = false;
     dryState             = DRY_IDLE;
     start_motor();
     ModelHandle_SaveModeState();
@@ -1385,10 +1390,10 @@ void ModelHandle_LoadAutoSettings(void)
 
 /* -------------------------------------------------------------------------
  * auto_mode_background_control:
- *   - Ground water check ONLY when auto mode is starting/off (to decide if
- *     motor should be turned ON). Once motor is on, groundWater false
- *     will stop the motor immediately. After the dry gap test, no more
- *     ground water re-check is done to restart.
+ *   Decides whether to START auto mode based on tank level and ground water.
+ *   Ground water is only checked at STARTUP of auto (before motor runs).
+ *   Once auto is running, ground water absence does NOT stop the motor —
+ *   it transitions to the dry-run test cycle instead (handled in auto_tick).
  * -------------------------------------------------------------------------*/
 static void auto_mode_background_control(void)
 {
@@ -1399,7 +1404,7 @@ static void auto_mode_background_control(void)
     if (now < bootBlockUntil) return;
     if (manualActive || semiAutoActive || timerActive || countdownActive || twistActive) return;
 
-    /* Ground water must be checked before starting auto */
+    /* Ground water must be present before AUTO mode starts for the first time */
     ModelHandle_CheckGroundWater();
     uint8_t level = get_tank_level_percent();
     if (!autoActive &&
@@ -1430,11 +1435,22 @@ void ModelHandle_SetBuzzerSettings(uint8_t pump, uint8_t full, uint8_t empty)
 
 /* -------------------------------------------------------------------------
  * auto_tick:
- *   - Ground water is checked ONLY to decide to START motor (AUTO_ON_WAIT).
- *   - Once running (AUTO_OFF_WAIT), if groundWater becomes false, STOP motor.
- *   - After the gap test period (dry check) we do NOT re-check ground water
- *     to restart; the motor stays off until user re-enables or background
- *     control triggers again.
+ *
+ *   Ground water behaviour (UPDATED):
+ *   ─────────────────────────────────
+ *   • AUTO_ON_WAIT  : ground water IS checked. If absent, motor is not
+ *                     started yet — we wait until it appears.
+ *   • AUTO_OFF_WAIT : motor is running. If ground water is lost we do NOT
+ *                     stop the motor. Instead we immediately transition to
+ *                     AUTO_DRY_CHECK (dry-run test cycle) so the dry-run
+ *                     logic decides whether the motor should keep running.
+ *   • AUTO_DRY_CHECK: just waits for the retry gap, no ground water check.
+ *
+ *   Rationale: losing ground-water signal while the pump is running may be
+ *   a transient sensor glitch or the pump drawing down the source. The
+ *   dry-run sensor (voltages[5]) is the authoritative water-presence test.
+ *   Ground water is only an enabling condition to START the pump, not to
+ *   keep it running.
  * -------------------------------------------------------------------------*/
 static void auto_tick(void)
 {
@@ -1453,14 +1469,16 @@ static void auto_tick(void)
 
     if (!dry_protection_enabled())
     {
-        if (autoState == AUTO_IDLE || autoState == AUTO_DRY_CHECK) autoState = AUTO_ON_WAIT;
+        /* ── No dry-run protection path ── */
+        if (autoState == AUTO_IDLE || autoState == AUTO_DRY_CHECK)
+            autoState = AUTO_ON_WAIT;
 
         if (autoState == AUTO_ON_WAIT)
         {
             if (!Motor_GetStatus() && level > AUTO_START_LEVEL_PERCENT) return;
-            /* Check ground water to decide motor start */
+            /* Check ground water only to decide whether to START the motor */
             ModelHandle_CheckGroundWater();
-            if (!groundWater) return;
+            if (!groundWater) return;   /* wait for ground water to start */
             motorOwner    = MOTOR_OWNER_AUTO;
             autoState     = AUTO_OFF_WAIT;
             stateDeadline = 0;
@@ -1470,23 +1488,36 @@ static void auto_tick(void)
         }
         if (autoState == AUTO_OFF_WAIT)
         {
-            /* If ground water lost while running, stop motor */
+            /*
+             * Motor is running.
+             * Ground water loss does NOT stop the motor — transition to
+             * dry-run test so the dry-run sensor decides.
+             */
             ModelHandle_CheckGroundWater();
             if (!groundWater)
             {
-                stop_motor();
-                autoState     = AUTO_ON_WAIT;
-                stateDeadline = 0;
+                /*
+                 * No ground water while running: enter dry-check cycle.
+                 * The motor keeps running through the test period; if
+                 * dry-run sensor also shows no water it will fault out.
+                 * If dry-run sensor shows water we return to OFF_WAIT.
+                 */
+                autoState     = AUTO_DRY_CHECK;
+                stateDeadline = now + (uint32_t)sys.gap_time_s * 1000UL;
+                /* keep motor running — dry-run handler takes over */
+                dryState = DRY_WAITING;
                 return;
             }
             dryState = DRY_IDLE;
             start_motor();
             return;
         }
+        /* AUTO_DRY_CHECK without dry protection: just go back to ON_WAIT */
         autoState = AUTO_ON_WAIT; stateDeadline = 0;
         return;
     }
 
+    /* ── Dry-run protection enabled path ── */
     uint32_t dryTestMs  = (uint32_t)sys.gap_time_s     * 1000UL;
     uint32_t retryGapMs = (uint32_t)sys.dry_run_time_s * 1000UL;
 
@@ -1496,9 +1527,9 @@ static void auto_tick(void)
             if (stateDeadline == 0)
             {
                 if (level > AUTO_START_LEVEL_PERCENT) break;
-                /* Ground water check: only here when starting */
+                /* Ground water check: only when starting */
                 ModelHandle_CheckGroundWater();
-                if (!groundWater) break;
+                if (!groundWater) break;   /* wait — but do NOT stop motor */
                 motorOwner    = MOTOR_OWNER_AUTO;
                 start_motor();
                 stateDeadline = now + dryTestMs;
@@ -1510,23 +1541,45 @@ static void auto_tick(void)
             else
                 { stop_motor(); autoState = AUTO_DRY_CHECK; stateDeadline = now + retryGapMs; }
             break;
+
         case AUTO_DRY_CHECK:
-            /* During retry gap: no ground water re-check, just wait */
+            /* Waiting in retry gap — no ground water re-check, just wait */
             if (now >= stateDeadline) { autoState = AUTO_ON_WAIT; stateDeadline = 0; }
             break;
+
         case AUTO_OFF_WAIT:
-            /* Running: stop if ground water lost */
+            /*
+             * Motor is running.
+             * Ground water loss does NOT stop the motor.
+             * Instead, transition to dry-run test cycle so the dry-run
+             * sensor is the authoritative check.
+             */
             ModelHandle_CheckGroundWater();
             if (!groundWater)
             {
+                /*
+                 * Ground water gone while running: switch to DRY_CHECK
+                 * cycle. Motor keeps running; dry-run sensor will fault
+                 * if water is truly absent.
+                 */
                 stop_motor();
-                autoState     = AUTO_ON_WAIT;
-                stateDeadline = 0;
+                autoState     = AUTO_DRY_CHECK;
+                stateDeadline = now + retryGapMs;
+                dryState      = DRY_FAULT;   /* mark so display shows DRY */
                 break;
             }
             start_motor();
             if (!senseDryRun)
-                { stop_motor(); autoState = AUTO_DRY_CHECK; stateDeadline = now + retryGapMs; }
+            {
+                stop_motor();
+                autoState     = AUTO_DRY_CHECK;
+                stateDeadline = now + retryGapMs;
+                dryState      = DRY_FAULT;
+            }
+            else
+            {
+                dryState = DRY_IDLE;
+            }
             break;
 
         default:
@@ -1546,7 +1599,7 @@ void ModelHandle_StartCountdown(uint32_t seconds)
     cd_deadline        = now + (seconds * 1000UL);
     countdownDuration  = seconds;
     motorOwner         = MOTOR_OWNER_COUNTDOWN;
-    cdTankFullHold     = false;     /* clear hold on fresh countdown start */
+    cdTankFullHold     = false;
     dryState           = DRY_IDLE;
     start_motor();
     ModelHandle_SaveModeState();
@@ -1561,8 +1614,6 @@ void ModelHandle_StopCountdown(void)
     cdTankFullHold    = false;
     dryState          = DRY_IDLE;
     stop_motor();
-    /* NOTE: countdownActive is set false but the display will still show
-     * COUNTDOWN mode (motor off) - this is handled in screen.c show_countdown() */
     ModelHandle_SaveModeState();
 }
 
@@ -1766,9 +1817,6 @@ void ModelHandle_Process(void)
             }
             else if (tankFull || semiTankFullHold)
             {
-                /* Tank full: latch hold flag — motor will NOT restart until
-                 * user explicitly re-enables semi-auto via button or UART.
-                 * semiAutoActive stays true so display shows "SEMI OFF". */
                 semiTankFullHold = true;
                 stop_motor();
             }
@@ -1789,9 +1837,6 @@ void ModelHandle_Process(void)
             if (protectionFault) { ModelHandle_StopCountdown(); break; }
             if (tankFull || cdTankFullHold)
             {
-                /* Tank full: latch hold flag — motor will NOT restart until
-                 * user explicitly restarts countdown via button or UART.
-                 * countdownActive stays true so display shows "CD WAIT". */
                 cdTankFullHold = true;
                 stop_motor();
             }
