@@ -80,14 +80,14 @@ extern void ModelHandle_StartTimerNearestSlot(void);
 extern void ModelHandle_StopTimer(void);
 extern void ModelHandle_StopSemiAuto(void);
 extern void ModelHandle_FactoryReset(void);
-#define WELCOME_MS         2500
+#define WELCOME_MS          2500
 #define CURSOR_BLINK_MS     400
-#define AUTO_BACK_MS      60000
-#define LONG_PRESS_MS      3000
+#define AUTO_BACK_MS        60000
+#define LONG_PRESS_MS       3000
 #define CONTINUOUS_STEP_MS  250
-#define DASH_PAGE0_TIME   4500UL
-#define DASH_PAGE1_TIME   150UL
-#define DRY_BLINK_MS       400UL
+#define DASH_PAGE0_TIME     4500UL
+#define DASH_PAGE1_TIME     1500UL
+#define DRY_BLINK_MS        400UL
 static bool reset_confirm_yes = false;
 extern ADC_Data adcData;
 extern TimerSlot timerSlots[5];
@@ -221,17 +221,21 @@ static void show_welcome(void)
     lcd_line1(" IntelligentSys");
 }
 
+
 static void show_dash(void)
 {
     char l0[17], l1[17];
     uint32_t now = HAL_GetTick();
+
     if (dash_cycle_start == 0)
-        dash_cycle_start = now;
+    	dash_cycle_start += (DASH_PAGE0_TIME + DASH_PAGE1_TIME);
+
     uint32_t elapsed = now - dash_cycle_start;
     uint8_t  new_page;
-    if      (elapsed < DASH_PAGE0_TIME)                      new_page = 0;
-    else if (elapsed < (DASH_PAGE0_TIME + DASH_PAGE1_TIME))  new_page = 1;
+    if      (elapsed < DASH_PAGE0_TIME)                     new_page = 0;
+    else if (elapsed < (DASH_PAGE0_TIME + DASH_PAGE1_TIME)) new_page = 1;
     else  { dash_cycle_start = now; new_page = 0; }
+
     if (new_page != dash_page)
     {
         dash_page          = new_page;
@@ -240,13 +244,15 @@ static void show_dash(void)
         dry_blink_start    = now;
         return;
     }
+
     uint8_t     tankPercent    = ModelHandle_GetTankLevelPercent();
     bool        tankFull       = ModelHandle_IsTankFull();
     bool        motorOn        = Motor_GetStatus();
-    DryFSMState dryState       = ModelHandle_GetDryState();
+    DryFSMState dryFSMState    = ModelHandle_GetDryState();
     bool        dryEnabled     = ModelHandle_GetDryRunEnable();
     bool        sensorHasWater = ModelHandle_IsDryRunActive(); /* TRUE = water present */
     const char *gw             = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
+
     const char *mode;
     if      (ModelHandle_IsRestartActive()) mode = "Refill ";
     else if (ModelHandle_IsVoltageFault())  mode = "VOLTERR";
@@ -263,43 +269,24 @@ static void show_dash(void)
 
     if (dash_page == 0)
     {
+        /* ── Line 0: mode | motor status | tank level ── */
         snprintf(l0, sizeof(l0), "%-7sM:%-3s%3d%%",
                  mode, motorOn ? "ON " : "OFF", tankPercent);
-        if ((now - dry_blink_start) >= DRY_BLINK_MS)
+        bool dryBlink = (dryFSMState == DRY_FAULT) ||
+                        (dryEnabled && motorOn && !sensorHasWater);
+
+        bool dryTextVisible = dryBlink ? (dry_blink_slot == 0) : dryEnabled;
+
+        if (tankFull)
         {
-            dry_blink_slot  = dry_blink_slot ? 0 : 1;
-            dry_blink_start = now;
+            snprintf(l1, sizeof(l1), "TANK FULL %02u:%02u", time.hour, time.min);
         }
-        bool dryVisible = (dry_blink_slot == 0);
-        if (dryState == DRY_FAULT)
-        {
-            if (dryVisible)
-                snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
-                         gw, time.hour, time.min);
-            else
-                snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
-                         gw, time.hour, time.min);
-        }
-        else if (tankFull)
-        {
-            snprintf(l1, sizeof(l1), "TANK FULL %02u:%02u",
-                     time.hour, time.min);
-        }
-        else if (dryEnabled && motorOn && !sensorHasWater)
-        {
-            if (dryVisible)
-                snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
-                         gw, time.hour, time.min);
-            else
-                snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
-                         gw, time.hour, time.min);
-        }
-        else if (dryEnabled)
+        else if (senseDryRun == false)
         {
             snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
                      gw, time.hour, time.min);
         }
-        else
+        else if(senseDryRun == true)
         {
             snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
                      gw, time.hour, time.min);
@@ -308,21 +295,20 @@ static void show_dash(void)
         lcd_line0(l0);
         lcd_line1(l1);
     }
-    else
+    else /* page 1 */
     {
         const char *dow = "---";
         if (time.dow >= 1 && time.dow <= 7)
             dow = dowNames[(time.dow - 1) % 7];
 
-        snprintf(l1, sizeof(l0), "%-12.12s", dow);
-        snprintf(l0, sizeof(l1), "%02u:%02u %3.0fV %4.1fA",
+        snprintf(l0, sizeof(l0), "%02u:%02u %3.0fV %4.1fA",
                  time.hour, time.min, g_voltageV, g_currentA);
+        snprintf(l1, sizeof(l1), "%-12.12s", dow);
 
         lcd_line0(l0);
         lcd_line1(l1);
     }
 }
-
 
 static void draw_menu_cursor(void)
 {
