@@ -1168,13 +1168,34 @@ void ModelHandle_SaveBuzzerSettings(void)
     EEPROM_WriteBuffer(EE_ADDR_BUZZER_BLOCK, (uint8_t*)&buzzerSettings, sizeof(buzzerSettings));
 }
 
+/* ── FIX 3: Restore defaults when EEPROM returns all-zeros ─────────────────
+ * Some I2C EEPROMs read back 0x00 on unwritten addresses (not 0xFF).
+ * The original "> 1" clamp only rescues 0xFF; a 0x00 read leaves all
+ * three flags = 0, silently disabling every buzzer event forever.
+ * If all three are zero after the clamp, treat the block as uninitialised
+ * and write the factory defaults back to EEPROM.
+ * ───────────────────────────────────────────────────────────────────────── */
 void ModelHandle_LoadBuzzerSettings(void)
 {
     EEPROM_ReadBuffer(EE_ADDR_BUZZER_BLOCK, (uint8_t*)&buzzerSettings, sizeof(buzzerSettings));
-    if (buzzerSettings.pumpOnSound   > 1) buzzerSettings.pumpOnSound   = 1;
+
+    /* Clamp: any value other than 0 or 1 → 1 */
+    if (buzzerSettings.pumpOnSound    > 1) buzzerSettings.pumpOnSound    = 1;
     if (buzzerSettings.tankFullSound  > 1) buzzerSettings.tankFullSound  = 1;
     if (buzzerSettings.tankEmptySound > 1) buzzerSettings.tankEmptySound = 1;
+
+    /* All-zero means uninitialised EEPROM → restore factory defaults */
+    if (!buzzerSettings.pumpOnSound    &&
+        !buzzerSettings.tankFullSound  &&
+        !buzzerSettings.tankEmptySound)
+    {
+        buzzerSettings.pumpOnSound    = 1;
+        buzzerSettings.tankFullSound  = 1;
+        buzzerSettings.tankEmptySound = 1;
+        ModelHandle_SaveBuzzerSettings();   /* persist so this only runs once */
+    }
 }
+
 
 void ModelHandle_ProcessTimerSlots(void)
 {

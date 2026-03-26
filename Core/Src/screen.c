@@ -226,9 +226,8 @@ static void show_dash(void)
 {
     char l0[17], l1[17];
     uint32_t now = HAL_GetTick();
-
     if (dash_cycle_start == 0)
-    	dash_cycle_start += (DASH_PAGE0_TIME + DASH_PAGE1_TIME);
+        dash_cycle_start = now;
 
     uint32_t elapsed = now - dash_cycle_start;
     uint8_t  new_page;
@@ -1430,36 +1429,54 @@ void Screen_Update(void)
         screenNeedsRefresh = true;
     }
 
-    /* ---------------------------------------------------------------
-     * Dashboard in-place refresh:
-     *   – Page 0 is refreshed every DRY_BLINK_MS so the DRY text can
-     *     blink without a full lcd_clear().  We call show_dash() which
-     *     writes both lines in-place.  show_dash() itself will set
-     *     screenNeedsRefresh=true and return early if the page needs
-     *     to change (which triggers the full clear path below).
-     *   – No refresh is needed while on page 1 (static content) except
-     *     on entry.
-     * --------------------------------------------------------------- */
+    /* ── FIX 1: Properly seed dash_cycle_start on first DASH entry ──────────
+     * The original did:  dash_cycle_start += (PAGE0 + PAGE1)  which is
+     * 0 += X = X — a large future timestamp that makes elapsed always
+     * exceed the window immediately, causing instant wrong-page transitions.
+     * Setting it to 'now' lets elapsed start at 0 correctly.
+     * ────────────────────────────────────────────────────────────────────── */
+    if (ui == UI_DASH && dash_cycle_start == 0)
+        dash_cycle_start = now;
+
+    /* ── Page 0: blink refresh + page-transition detection ──────────────── */
     if (ui == UI_DASH && dash_page == 0 &&
         (now - dry_blink_start) >= DRY_BLINK_MS)
     {
-        /* Update blink slot and rewrite lines in-place (no lcd_clear) */
         dry_blink_slot  = dry_blink_slot ? 0 : 1;
         dry_blink_start = now;
-        show_dash();  /* writes lines directly; no clear */
-        /* If show_dash() changed the page it already set screenNeedsRefresh */
+        show_dash();    /* writes lines in-place; sets screenNeedsRefresh if
+                           page transition is detected inside show_dash()   */
     }
 
-    /* Full redraw path: only when state changes or page switches */
+    /* ── FIX 2: Page 1 ALSO needs a periodic show_dash() call ───────────────
+     * Without this, show_dash() is never reached while on page 1, so the
+     * elapsed-time check for the page-back transition never runs → stuck
+     * on page 1 forever.  We reuse dry_blink_start as the poll timer;
+     * it is reset on every full redraw so there is no stale carry-over.
+     * ────────────────────────────────────────────────────────────────────── */
+    if (ui == UI_DASH && dash_page == 1 &&
+        (now - dry_blink_start) >= DRY_BLINK_MS)
+    {
+        dry_blink_start = now;
+        show_dash();    /* detects elapsed >= PAGE0_TIME+PAGE1_TIME and
+                           sets screenNeedsRefresh to trigger full redraw  */
+    }
+
+    /* ── Full redraw: triggered by state change or page switch ──────────── */
     if (screenNeedsRefresh || ui != last_ui)
     {
         lcd_clear();
         last_ui = ui;
         screenNeedsRefresh = false;
 
-        /* Reset blink state on every full redraw so blink starts cleanly */
+        /* Reset blink/cycle state on every fresh DASH draw so page 0
+           always starts cleanly and the cycle timer is aligned to now. */
         if (ui == UI_DASH)
         {
+            /* Only re-seed cycle_start if it was cleared (e.g. returning
+               from a menu); preserve it during page transitions so the
+               cycle keeps its correct phase.                              */
+            if (dash_cycle_start == 0) dash_cycle_start = now;
             dry_blink_slot  = 0;
             dry_blink_start = now;
         }
