@@ -1483,11 +1483,46 @@ void Screen_Update(void)
 
         switch (ui)
         {
-            case UI_WELCOME:   show_welcome();   break;
-            case UI_DASH:      show_dash();      break;
-            case UI_MENU:      show_menu();      break;
-            case UI_COUNTDOWN: show_countdown(); break;
-            default: break;
+            case UI_WELCOME:              show_welcome(); break;
+            case UI_DASH:                 show_dash(); break;
+            case UI_MENU:                 show_menu(); break;
+
+            case UI_DEVSET_MENU:          show_devset_menu(); break;
+
+            case UI_ADD_DEVICE_MENU:      show_add_device_menu(); break;
+            case UI_ADD_DEVICE_PAIR:      show_add_device_pair(); break;
+            case UI_ADD_DEVICE_REMOVE:    show_add_device_remove(); break;
+            case UI_ADD_DEVICE_PAIR_DONE: show_add_device_pair_done(); break;
+            case UI_ADD_DEVICE_REMOVE_DONE: show_add_device_remove_done(); break;
+
+            case UI_DEVSET_EDIT_DATE:     show_devset_edit_date(); break;
+            case UI_DEVSET_EDIT_TIME:     show_devset_edit_time(); break;
+            case UI_DEVSET_EDIT_DAY:      show_devset_edit_day(); break;
+
+            case UI_RESET_CONFIRM:        show_reset_confirm(); break;
+
+            case UI_COUNTDOWN:            show_countdown(); break;
+            case UI_COUNTDOWN_EDIT_MIN:   show_countdown_edit_min(); break;
+
+            case UI_TIMER_SLOT_SELECT:    show_timer_slot_select(); break;
+            case UI_TIMER_EDIT_DAYS:      show_timer_days(); break;
+            case UI_TIMER_EDIT_GAP:       show_timer_gap(); break;
+            case UI_TIMER_EDIT_ENABLE:    show_timer_enable(); break;
+            case UI_TIMER_EDIT_SUMMARY:   show_timer_summary(); break;
+
+            case UI_AUTO_MENU:            show_auto_menu(); break;
+            case UI_AUTO_EDIT_GAP:        show_auto_gap(); break;
+            case UI_AUTO_EDIT_MAXRUN:     show_auto_maxrun(); break;
+            case UI_AUTO_EDIT_RETRY:      show_auto_retry(); break;
+
+            case UI_SEMI_AUTO:            show_semi_auto(); break;
+
+            case UI_TWIST:                show_twist(); break;
+
+            default:
+                lcd_line0("Unknown UI");
+                lcd_line1("Check state");
+                break;
         }
     }
 }
