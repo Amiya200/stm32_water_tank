@@ -70,16 +70,19 @@ typedef enum {
     BTN_UP_LONG,
     BTN_DOWN_LONG
 } UiButton;
+
 static UiState ui      = UI_WELCOME;
 static UiState last_ui = UI_NONE;
 static bool screenNeedsRefresh = false;
 static uint32_t lastLcdUpdateTime  = 0;
 static uint32_t lastUserAction     = 0;
+
 extern void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry);
 extern void ModelHandle_StartTimerNearestSlot(void);
 extern void ModelHandle_StopTimer(void);
 extern void ModelHandle_StopSemiAuto(void);
 extern void ModelHandle_FactoryReset(void);
+
 #define WELCOME_MS          2500
 #define CURSOR_BLINK_MS     400
 #define AUTO_BACK_MS        60000
@@ -88,7 +91,9 @@ extern void ModelHandle_FactoryReset(void);
 #define DASH_PAGE0_TIME     4500UL
 #define DASH_PAGE1_TIME     1500UL
 #define DRY_BLINK_MS        400UL
+
 static bool reset_confirm_yes = false;
+
 extern ADC_Data adcData;
 extern TimerSlot timerSlots[5];
 extern TwistSettings twistSettings;
@@ -100,6 +105,7 @@ extern volatile bool countdownActive;
 extern volatile bool twistActive;
 extern volatile bool autoActive;
 extern volatile uint32_t countdownDuration;
+
 static uint8_t edit_on_h = 0;
 static uint8_t edit_on_m = 0;
 static uint8_t edit_off_h = 0;
@@ -111,16 +117,20 @@ static uint8_t edit_gap_min = 0;
 static bool edit_slot_enabled = true;
 static uint8_t currentSlot = 0;
 static uint8_t timer_page = 0;
+
 static uint16_t edit_auto_gap_s      = 60;
 static uint16_t edit_auto_maxrun_min = 120;
 static uint16_t edit_auto_retry      = 0;
+
 static uint16_t edit_twist_on_s  = 5;
 static uint16_t edit_twist_off_s = 5;
 static uint8_t edit_twist_on_hh  = 6;
 static uint8_t edit_twist_on_mm  = 0;
 static uint8_t edit_twist_off_hh = 18;
 static uint8_t edit_twist_off_mm = 0;
+
 static uint16_t edit_countdown_min = 1;
+
 static uint16_t edit_settings_gap_s = 10;
 static uint8_t  edit_settings_retry = 3;
 static uint16_t edit_settings_uv    = 180;
@@ -131,6 +141,7 @@ static uint16_t edit_settings_maxrun = 120;
 static uint8_t  edit_settings_pwrrest = 0;
 static bool     edit_settings_factory_yes = false;
 static uint8_t  edit_settings_dry_en = 1;
+
 static uint8_t  edit_date_dd    = 1;
 static uint8_t  edit_date_mm    = 1;
 static uint16_t edit_date_yyyy  = 2025;
@@ -139,30 +150,37 @@ static uint8_t  edit_time_hh    = 0;
 static uint8_t  edit_time_min   = 0;
 static uint8_t  edit_time_field = 0;
 static uint8_t  edit_day_idx2   = 0;
+
 static const char* const dowNames[7] = {
     "Sun","Mon","Tue","Wed","Thu","Fri","Sat"
 };
+
 static uint8_t addDevMenuIndex  = 0;
 static uint8_t addDevTypeIndex  = 0;
 static uint8_t lastAddDevType   = 0;
+
 extern uint8_t ModelHandle_GetTankLevelPercent(void);
 extern bool ModelHandle_IsTankFull(void);
 extern DryFSMState ModelHandle_GetDryState(void);
 extern bool ModelHandle_GetDryRunEnable(void);
 extern uint16_t ModelHandle_GetDryRunRetryGap(void);
+
 static const char* const addDevTypeNames[] = {
     "Wi-Fi",
     "Receiver",
     "Transmitter"
 };
+
 static const char* const main_menu[] = {
     "Add New Device",
     "Device Setup",
     "Reset To Default"
 };
 #define MAIN_MENU_COUNT 3
+
 static uint8_t menu_idx      = 0;
 static uint8_t menu_view_top = 0;
+
 static const char* const devset_menu_items[] = {
     "Dry Run En",
     "Test Time",
@@ -180,15 +198,64 @@ static const char* const devset_menu_items[] = {
     "Back"
 };
 #define DEVSET_MENU_COUNT  (sizeof(devset_menu_items)/sizeof(devset_menu_items[0]))
+
 #define DEBOUNCE_MS        50
 #define REPEAT_START_MS    500
 #define REPEAT_INTERVAL_MS 150
+
 static uint8_t devset_idx      = 0;
 static uint8_t devset_view_top = 0;
+
 static uint8_t  dash_page        = 0;
 static uint32_t dash_cycle_start = 0;
 static uint8_t  dry_blink_slot   = 0;
 static uint32_t dry_blink_start  = 0;
+
+/* ── Sticky mode indicators ─────────────────────────────────────────────────
+ * Once semi-auto or countdown becomes active, these flags are set to true.
+ * They remain true and keep showing the mode label on the dash even after
+ * the mode turns OFF, until a competing active mode clears them.
+ *
+ * ROOT CAUSE NOTE (countdown):
+ *   Pressing BTN_DOWN immediately moves ui → UI_COUNTDOWN, so show_dash()
+ *   is NEVER called while countdownActive==true via the button path.
+ *   That means relying solely on show_dash() to set dash_countdown_shown
+ *   doesn't work for button-triggered countdown.
+ *   FIX: sticky_set_countdown() is called in Screen_HandleSwitches at the
+ *   exact point the countdown starts, BEFORE the ui state changes.
+ * ─────────────────────────────────────────────────────────────────────────*/
+static bool dash_semi_shown      = false;
+static bool dash_countdown_shown = false;
+
+/* ── Helper: clear sticky flags (called on factory reset) ───────────────── */
+static inline void clear_sticky_mode_flags(void)
+{
+    dash_semi_shown      = false;
+    dash_countdown_shown = false;
+}
+
+/* ── Helper: record countdown as the last active mode ───────────────────────
+ * Sets dash_countdown_shown and clears dash_semi_shown so countdown always
+ * supersedes a previous sticky SEMI label.
+ * Called at every point countdown starts (button + UART paths).
+ * ─────────────────────────────────────────────────────────────────────────*/
+static inline void sticky_set_countdown(void)
+{
+    dash_countdown_shown = true;
+    dash_semi_shown      = false;
+}
+
+/* ── Helper: record semi-auto as the last active mode ───────────────────────
+ * Sets dash_semi_shown and clears dash_countdown_shown so semi-auto always
+ * supersedes a previous sticky COUNT label.
+ * Called at every point semi-auto starts (button + UART paths).
+ * ─────────────────────────────────────────────────────────────────────────*/
+static inline void sticky_set_semi(void)
+{
+    dash_semi_shown      = true;
+    dash_countdown_shown = false;
+}
+
 void Screen_Init(void)
 {
     lcd_init();
@@ -221,7 +288,6 @@ static void show_welcome(void)
     lcd_line1(" IntelligentSys");
 }
 
-
 static void show_dash(void)
 {
     char l0[17], l1[17];
@@ -252,25 +318,50 @@ static void show_dash(void)
     bool        sensorHasWater = ModelHandle_IsDryRunActive(); /* TRUE = water present */
     const char *gw             = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
 
+    /* ── Update sticky flags (covers UART path where show_dash IS reached
+     *    while the mode is live; button path is already handled in
+     *    Screen_HandleSwitches via sticky_set_*) ──────────────────────── */
+    if (semiAutoActive)   sticky_set_semi();
+    if (countdownActive)  sticky_set_countdown();
+
+    /* Any dominant active mode clears both sticky indicators */
+    if (timerActive || autoActive || twistActive || manualActive ||
+        ModelHandle_IsRestartActive() || ModelHandle_IsVoltageFault() ||
+        ModelHandle_IsOverload()      || ModelHandle_IsUnderload())
+    {
+        dash_semi_shown      = false;
+        dash_countdown_shown = false;
+    }
+
+    /* ── Resolve display mode string ───────────────────────────────────────
+     * Priority (high→low):
+     *   fault/restart > timer > auto > countdown > twist > semi > manual >
+     *   tank full > sticky-countdown > sticky-semi > READY
+     *
+     * sticky-countdown is intentionally checked BEFORE sticky-semi so the
+     * most-recently-used mode always wins the label race.
+     * ──────────────────────────────────────────────────────────────────── */
     const char *mode;
     if      (ModelHandle_IsRestartActive()) mode = "Refill ";
     else if (ModelHandle_IsVoltageFault())  mode = "VOLTERR";
     else if (ModelHandle_IsOverload())      mode = "OVERLD ";
     else if (ModelHandle_IsUnderload())     mode = "UNDERLD";
     else if (timerActive)                   mode = "TIMER  ";
-    else if (autoActive)      mode = motorOn ? "AUTO   " : "AUTO WT";
-    else if (countdownActive) mode = motorOn ? "COUNT  " : "CD WAIT";
-    else if (twistActive)     mode = motorOn ? "TWIST  " : "TWIST W";
-    else if (semiAutoActive)  mode = motorOn ? "SEMI   " : "SEMI OF";
-    else if (manualActive)    mode = "MANUAL ";
-    else if (tankFull)        mode = "FULL   ";
-    else                      mode = "READY  ";
+    else if (autoActive)       mode = motorOn ? "AUTO   " : "AUTO WT";
+    else if (countdownActive)  mode = motorOn ? "COUNT  " : "CD WAIT";
+    else if (twistActive)      mode = motorOn ? "TWIST  " : "TWIST W";
+    else if (semiAutoActive)   mode = motorOn ? "SEMI   " : "SEMI OF";
+    else if (manualActive)     mode = "MANUAL ";
+    else if (tankFull)         mode = "FULL   ";
+    else if (dash_countdown_shown) mode = "COUNT  ";   /* was ON, now OFF – sticky */
+    else if (dash_semi_shown)      mode = "SEMI   ";   /* was ON, now OFF – sticky */
+    else                           mode = "READY  ";
 
     if (dash_page == 0)
     {
-        /* ── Line 0: mode | motor status | tank level ── */
         snprintf(l0, sizeof(l0), "%-7sM:%-3s%3d%%",
                  mode, motorOn ? "ON " : "OFF", tankPercent);
+
         bool dryBlink = (dryFSMState == DRY_FAULT) ||
                         (dryEnabled && motorOn && !sensorHasWater);
 
@@ -285,7 +376,7 @@ static void show_dash(void)
             snprintf(l1, sizeof(l1), "G.W:%-3s DRY%02u:%02u",
                      gw, time.hour, time.min);
         }
-        else if(senseDryRun == true)
+        else if (senseDryRun == true)
         {
             snprintf(l1, sizeof(l1), "G.W:%-3s    %02u:%02u",
                      gw, time.hour, time.min);
@@ -513,7 +604,6 @@ static void show_twist(void)
     lcd_line0(l0);
     lcd_line1(twistActive ? "val:STOP   Next>" : "val:START  Next>");
 }
-
 
 static void show_countdown(void)
 {
@@ -902,6 +992,7 @@ static void menu_select(void)
                     edit_settings_ul      = (int)ModelHandle_GetUnderloadLimit();
                     edit_settings_pwrrest = ModelHandle_GetPowerRestoreMode();
                     edit_settings_factory_yes = false;
+                    clear_sticky_mode_flags();
                     ui = UI_DASH;
                 }
                 break;
@@ -1289,6 +1380,7 @@ void Screen_HandleSwitches(void)
                 edit_settings_ol      = (int)ModelHandle_GetOverloadLimit();
                 edit_settings_ul      = (int)ModelHandle_GetUnderloadLimit();
                 edit_settings_pwrrest = ModelHandle_GetPowerRestoreMode();
+                clear_sticky_mode_flags();
             }
             ui = UI_DASH;
         }
@@ -1304,7 +1396,6 @@ void Screen_HandleSwitches(void)
                 ModelHandle_ToggleManual();
                 break;
             case BTN_SELECT:
-                /* AUTO ON/OFF toggle (auto mode is the primary SELECT action on dash) */
                 if (!autoActive)
                     ModelHandle_StartAuto(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
                 else
@@ -1317,7 +1408,6 @@ void Screen_HandleSwitches(void)
                 screenNeedsRefresh = true;
                 return;
             case BTN_UP:
-                /* TIMER only works within AUTO mode */
                 if (autoActive)
                 {
                     if (!timerActive)
@@ -1328,17 +1418,38 @@ void Screen_HandleSwitches(void)
                 screenNeedsRefresh = true;
                 break;
             case BTN_UP_LONG:
+                /* ── Semi-auto toggle ──────────────────────────────────────
+                 * sticky_set_semi() called here so it is symmetric with the
+                 * countdown path and works even if show_dash() scheduling
+                 * were ever changed.
+                 * ──────────────────────────────────────────────────────── */
                 if (!semiAutoActive)
+                {
                     ModelHandle_StartSemiAuto();
+                    sticky_set_semi();          /* set sticky at start */
+                }
                 else
+                {
                     ModelHandle_StopSemiAuto();
+                }
                 screenNeedsRefresh = true;
                 break;
             case BTN_DOWN:
+                /* ── Countdown toggle ──────────────────────────────────────
+                 * sticky_set_countdown() is called HERE, BEFORE ui changes
+                 * to UI_COUNTDOWN.  This is the critical fix:
+                 *
+                 * Once ui == UI_COUNTDOWN, show_dash() is never called while
+                 * countdownActive is true (button path), so we cannot rely on
+                 * show_dash() to set dash_countdown_shown in time.
+                 * Setting it here guarantees the flag is correct when the
+                 * user later stops the countdown and returns to the dash.
+                 * ──────────────────────────────────────────────────────── */
                 if (!countdownActive)
                 {
                     ModelHandle_StartCountdown(edit_countdown_min * 60);
                     countdownActive = true;
+                    sticky_set_countdown();     /* ← MUST be before ui changes */
                     ui = UI_COUNTDOWN;
                 }
                 else
@@ -1429,53 +1540,32 @@ void Screen_Update(void)
         screenNeedsRefresh = true;
     }
 
-    /* ── FIX 1: Properly seed dash_cycle_start on first DASH entry ──────────
-     * The original did:  dash_cycle_start += (PAGE0 + PAGE1)  which is
-     * 0 += X = X — a large future timestamp that makes elapsed always
-     * exceed the window immediately, causing instant wrong-page transitions.
-     * Setting it to 'now' lets elapsed start at 0 correctly.
-     * ────────────────────────────────────────────────────────────────────── */
     if (ui == UI_DASH && dash_cycle_start == 0)
         dash_cycle_start = now;
 
-    /* ── Page 0: blink refresh + page-transition detection ──────────────── */
     if (ui == UI_DASH && dash_page == 0 &&
         (now - dry_blink_start) >= DRY_BLINK_MS)
     {
         dry_blink_slot  = dry_blink_slot ? 0 : 1;
         dry_blink_start = now;
-        show_dash();    /* writes lines in-place; sets screenNeedsRefresh if
-                           page transition is detected inside show_dash()   */
+        show_dash();
     }
 
-    /* ── FIX 2: Page 1 ALSO needs a periodic show_dash() call ───────────────
-     * Without this, show_dash() is never reached while on page 1, so the
-     * elapsed-time check for the page-back transition never runs → stuck
-     * on page 1 forever.  We reuse dry_blink_start as the poll timer;
-     * it is reset on every full redraw so there is no stale carry-over.
-     * ────────────────────────────────────────────────────────────────────── */
     if (ui == UI_DASH && dash_page == 1 &&
         (now - dry_blink_start) >= DRY_BLINK_MS)
     {
         dry_blink_start = now;
-        show_dash();    /* detects elapsed >= PAGE0_TIME+PAGE1_TIME and
-                           sets screenNeedsRefresh to trigger full redraw  */
+        show_dash();
     }
 
-    /* ── Full redraw: triggered by state change or page switch ──────────── */
     if (screenNeedsRefresh || ui != last_ui)
     {
         lcd_clear();
         last_ui = ui;
         screenNeedsRefresh = false;
 
-        /* Reset blink/cycle state on every fresh DASH draw so page 0
-           always starts cleanly and the cycle timer is aligned to now. */
         if (ui == UI_DASH)
         {
-            /* Only re-seed cycle_start if it was cleared (e.g. returning
-               from a menu); preserve it during page transitions so the
-               cycle keeps its correct phase.                              */
             if (dash_cycle_start == 0) dash_cycle_start = now;
             dry_blink_slot  = 0;
             dry_blink_start = now;
