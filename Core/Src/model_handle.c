@@ -177,16 +177,44 @@ typedef enum {
 static volatile MotorOwner motorOwner = MOTOR_OWNER_NONE;
 static MotorOwner prevMotorOwner = MOTOR_OWNER_NONE;
 
-typedef struct
+/* ── Buzzer EEPROM block ────────────────────────────────────────────────────
+ *
+ * PROBLEM THAT THIS SOLVES:
+ *   The previous implementation detected "uninitialised EEPROM" by checking
+ *   whether all three buzzer flags were zero.  This is ambiguous: a user who
+ *   deliberately disables every buzzer also produces all-zero values.  On the
+ *   next reset the "uninitialised" branch fires, writes defaults (all 1), and
+ *   the user's preference is silently overwritten.
+ *
+ * FIX:
+ *   Store a signature + CRC alongside the three flags.  If the signature and
+ *   CRC both match we unconditionally trust whatever is in EEPROM — even all
+ *   zeros.  Only when the block is genuinely uninitialised (wrong signature
+ *   or bad CRC) do we write factory defaults.  This is the same pattern
+ *   already used for SystemEEPROMBlock and TimerEEPROMBlock.
+ *
+ * ─────────────────────────────────────────────────────────────────────────*/
+#define BUZZ_SIG          0xB155   /* arbitrary 16-bit magic, must not be 0x0000 or 0xFFFF */
+#define EE_ADDR_BUZZER_BLOCK 0x0500
+
+typedef struct __attribute__((packed))
 {
+    uint16_t sig;           /* BUZZ_SIG when block is valid          */
+    uint8_t  pumpOnSound;   /* 0 = off, 1 = on                       */
+    uint8_t  tankFullSound;
+    uint8_t  tankEmptySound;
+    uint16_t crc;           /* CRC16 over all preceding bytes        */
+} BuzzerEEPROMBlock;
+
+typedef struct {
     uint8_t pumpOnSound;
     uint8_t tankFullSound;
     uint8_t tankEmptySound;
 } BuzzerSettings;
 
-static BuzzerSettings buzzerSettings = {1,1,1};
+static BuzzerSettings buzzerSettings = {1, 1, 1};
+
 static uint32_t cd_deadline = 0;
-#define EE_ADDR_BUZZER_BLOCK 0x0500
 
 typedef enum {
     LOAD_NORMAL = 0,
@@ -345,6 +373,9 @@ static uint16_t SYS_CRC16(const uint8_t *data, uint16_t len)
     }
     return crc;
 }
+
+/* Reuse the same CRC16 for the buzzer block */
+#define Buzzer_CRC16  SYS_CRC16
 
 void ModelHandle_SaveSettingsToEEPROM(void)
 {
@@ -645,18 +676,12 @@ void ModelHandle_SetDryRunAndRetry(uint32_t retry_gap_sec, uint16_t dry_time_sec
     ModelHandle_SaveSettingsToEEPROM();
 }
 
-/* -------------------------------------------------------------------------
- * Timer is only allowed when AUTO mode is ON.
- * Button3 press will only enable/disable timer within auto context.
- * -------------------------------------------------------------------------*/
 void ModelHandle_Button3_SinglePress(void)
 {
-    /* Guard: timer only works when auto mode is active */
     if (!autoActive) return;
 
     if (!timerActive)
     {
-        /* Keep auto active, just enable timer within it */
         timerActive        = true;
         motorOwner         = MOTOR_OWNER_TIMER;
         timerState         = TIMER_RUN_TEST;
@@ -668,7 +693,6 @@ void ModelHandle_Button3_SinglePress(void)
     else
     {
         timerActive = false;
-        /* Return ownership to AUTO */
         motorOwner  = MOTOR_OWNER_AUTO;
         dryState    = DRY_IDLE;
         stop_motor();
@@ -699,11 +723,16 @@ void ModelHandle_FactoryReset(void)
 
     powerRestoreMode = 0;
     ModelHandle_SaveModeState();
+
+    /* Reset buzzer settings to factory defaults on factory reset */
+    buzzerSettings.pumpOnSound    = 1;
+    buzzerSettings.tankFullSound  = 1;
+    buzzerSettings.tankEmptySound = 1;
+    ModelHandle_SaveBuzzerSettings();
 }
 
 void ModelHandle_StartTimerNearestSlot(void)
 {
-    /* Timer can only be started when auto is active */
     if (!autoActive) return;
     timerActive        = true;
     motorOwner         = MOTOR_OWNER_TIMER;
@@ -844,7 +873,6 @@ void ModelHandle_OnPowerUp(void)
     dryState            = DRY_IDLE;
     ModelHandle_LoadBuzzerSettings();
 
-    /* Timer only activates if auto is also active */
     if (autoActive && timer_any_active_slot())
     {
         timerActive        = true;
@@ -980,12 +1008,6 @@ void ModelHandle_CheckGroundWater(void)
     }
     else
     {
-        /*
-         * Ground water lost: clear stable state so next detection
-         * must stabilise again — but we do NOT stop the motor here.
-         * Motor control on ground-water loss is handled inside auto_tick()
-         * by transitioning to the dry-run test cycle instead of stopping.
-         */
         detectStart = 0;
         stableState = false;
     }
@@ -1163,45 +1185,66 @@ static uint16_t get_active_timer_gap_minutes(void)
     return 0;
 }
 
+/* ── ModelHandle_SaveBuzzerSettings ─────────────────────────────────────────
+ * Writes a signature-protected block so the load function can distinguish
+ * "user wrote all zeros" from "EEPROM was never written".
+ * ─────────────────────────────────────────────────────────────────────────*/
 void ModelHandle_SaveBuzzerSettings(void)
 {
-    EEPROM_WriteBuffer(EE_ADDR_BUZZER_BLOCK, (uint8_t*)&buzzerSettings, sizeof(buzzerSettings));
+    BuzzerEEPROMBlock b;
+    memset(&b, 0, sizeof(b));
+    b.sig           = BUZZ_SIG;
+    b.pumpOnSound   = buzzerSettings.pumpOnSound   ? 1 : 0;
+    b.tankFullSound = buzzerSettings.tankFullSound  ? 1 : 0;
+    b.tankEmptySound= buzzerSettings.tankEmptySound ? 1 : 0;
+    /* CRC covers everything except the crc field itself (last 2 bytes) */
+    b.crc = Buzzer_CRC16((uint8_t*)&b, sizeof(b) - sizeof(uint16_t));
+    EEPROM_WriteBlockSafe(EE_ADDR_BUZZER_BLOCK, (uint8_t*)&b, sizeof(b));
 }
 
-/* ── FIX 3: Restore defaults when EEPROM returns all-zeros ─────────────────
- * Some I2C EEPROMs read back 0x00 on unwritten addresses (not 0xFF).
- * The original "> 1" clamp only rescues 0xFF; a 0x00 read leaves all
- * three flags = 0, silently disabling every buzzer event forever.
- * If all three are zero after the clamp, treat the block as uninitialised
- * and write the factory defaults back to EEPROM.
- * ───────────────────────────────────────────────────────────────────────── */
+/* ── ModelHandle_LoadBuzzerSettings ─────────────────────────────────────────
+ *
+ * BUG FIXED:
+ *   The previous implementation detected uninitialised EEPROM by checking
+ *   whether all three flags were zero.  This falsely triggers when the user
+ *   deliberately disables every buzzer, causing factory defaults to be
+ *   written back on every reset and overwriting the user's preference.
+ *
+ * FIX:
+ *   Use a signature + CRC (same pattern as SystemEEPROMBlock / TimerEEPROMBlock).
+ *   • Signature + CRC valid  → trust stored values unconditionally, even if
+ *                              all three flags are zero.
+ *   • Signature / CRC bad    → genuine first-boot or corrupt block; write
+ *                              factory defaults once and return.
+ *
+ * ─────────────────────────────────────────────────────────────────────────*/
 void ModelHandle_LoadBuzzerSettings(void)
 {
-    EEPROM_ReadBuffer(EE_ADDR_BUZZER_BLOCK, (uint8_t*)&buzzerSettings, sizeof(buzzerSettings));
+    BuzzerEEPROMBlock b;
+    EEPROM_ReadBuffer(EE_ADDR_BUZZER_BLOCK, (uint8_t*)&b, sizeof(b));
 
-    /* Clamp: any value other than 0 or 1 → 1 */
-    if (buzzerSettings.pumpOnSound    > 1) buzzerSettings.pumpOnSound    = 1;
-    if (buzzerSettings.tankFullSound  > 1) buzzerSettings.tankFullSound  = 1;
-    if (buzzerSettings.tankEmptySound > 1) buzzerSettings.tankEmptySound = 1;
+    uint16_t crc = Buzzer_CRC16((uint8_t*)&b, sizeof(b) - sizeof(uint16_t));
 
-    /* All-zero means uninitialised EEPROM → restore factory defaults */
-    if (!buzzerSettings.pumpOnSound    &&
-        !buzzerSettings.tankFullSound  &&
-        !buzzerSettings.tankEmptySound)
+    if (b.sig != BUZZ_SIG || crc != b.crc)
     {
+        /* Block is uninitialised or corrupt — write factory defaults once */
         buzzerSettings.pumpOnSound    = 1;
         buzzerSettings.tankFullSound  = 1;
         buzzerSettings.tankEmptySound = 1;
-        ModelHandle_SaveBuzzerSettings();   /* persist so this only runs once */
+        ModelHandle_SaveBuzzerSettings();
+        return;
     }
-}
 
+    /* Valid block: accept whatever the user saved, including all-zeros */
+    buzzerSettings.pumpOnSound    = b.pumpOnSound    ? 1 : 0;
+    buzzerSettings.tankFullSound  = b.tankFullSound  ? 1 : 0;
+    buzzerSettings.tankEmptySound = b.tankEmptySound ? 1 : 0;
+}
 
 void ModelHandle_ProcessTimerSlots(void)
 {
     if (!timerActive) return;
 
-    /* Timer is subordinate to AUTO mode - if auto stops, timer stops too */
     if (!autoActive)
     {
         timerActive        = false;
@@ -1308,7 +1351,6 @@ void ModelHandle_StopTimer(void)
     timerActive        = false;
     timerStateDeadline = 0;
     dryState           = DRY_IDLE;
-    /* If in auto mode, return ownership to auto */
     if (autoActive)
         motorOwner = MOTOR_OWNER_AUTO;
     else
@@ -1318,7 +1360,6 @@ void ModelHandle_StopTimer(void)
 
 void ModelHandle_CheckAutoTimerActivation(void)
 {
-    /* Timer auto-activation only when auto mode is running */
     if (!autoActive) return;
     if (timerActive) return;
     if (timer_any_active_slot())
@@ -1369,7 +1410,6 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry)
     stateDeadline    = 0;
     motorOwner       = MOTOR_OWNER_AUTO;
     dryState         = DRY_IDLE;
-    /* Check if there's a timer slot active right now */
     if (timer_any_active_slot())
     {
         timerActive        = true;
@@ -1382,7 +1422,6 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry)
 
 void ModelHandle_StopAuto(void)
 {
-    /* Stopping auto also stops timer (timer is subordinate to auto) */
     timerActive        = false;
     timerStateDeadline = 0;
     stop_motor();
@@ -1409,13 +1448,6 @@ void ModelHandle_LoadAutoSettings(void)
         { auto_retry_limit = 3; EEPROM_WriteBlockSafe(0x0304, (uint8_t*)&auto_retry_limit, sizeof(auto_retry_limit)); }
 }
 
-/* -------------------------------------------------------------------------
- * auto_mode_background_control:
- *   Decides whether to START auto mode based on tank level and ground water.
- *   Ground water is only checked at STARTUP of auto (before motor runs).
- *   Once auto is running, ground water absence does NOT stop the motor —
- *   it transitions to the dry-run test cycle instead (handled in auto_tick).
- * -------------------------------------------------------------------------*/
 static void auto_mode_background_control(void)
 {
     if (!autoBackgroundEnabled) return;
@@ -1425,7 +1457,6 @@ static void auto_mode_background_control(void)
     if (now < bootBlockUntil) return;
     if (manualActive || semiAutoActive || timerActive || countdownActive || twistActive) return;
 
-    /* Ground water must be present before AUTO mode starts for the first time */
     ModelHandle_CheckGroundWater();
     uint8_t level = get_tank_level_percent();
     if (!autoActive &&
@@ -1454,25 +1485,6 @@ void ModelHandle_SetBuzzerSettings(uint8_t pump, uint8_t full, uint8_t empty)
     ModelHandle_SaveBuzzerSettings();
 }
 
-/* -------------------------------------------------------------------------
- * auto_tick:
- *
- *   Ground water behaviour (UPDATED):
- *   ─────────────────────────────────
- *   • AUTO_ON_WAIT  : ground water IS checked. If absent, motor is not
- *                     started yet — we wait until it appears.
- *   • AUTO_OFF_WAIT : motor is running. If ground water is lost we do NOT
- *                     stop the motor. Instead we immediately transition to
- *                     AUTO_DRY_CHECK (dry-run test cycle) so the dry-run
- *                     logic decides whether the motor should keep running.
- *   • AUTO_DRY_CHECK: just waits for the retry gap, no ground water check.
- *
- *   Rationale: losing ground-water signal while the pump is running may be
- *   a transient sensor glitch or the pump drawing down the source. The
- *   dry-run sensor (voltages[5]) is the authoritative water-presence test.
- *   Ground water is only an enabling condition to START the pump, not to
- *   keep it running.
- * -------------------------------------------------------------------------*/
 static void auto_tick(void)
 {
     if (!autoActive) return;
@@ -1490,16 +1502,14 @@ static void auto_tick(void)
 
     if (!dry_protection_enabled())
     {
-        /* ── No dry-run protection path ── */
         if (autoState == AUTO_IDLE || autoState == AUTO_DRY_CHECK)
             autoState = AUTO_ON_WAIT;
 
         if (autoState == AUTO_ON_WAIT)
         {
             if (!Motor_GetStatus() && level > AUTO_START_LEVEL_PERCENT) return;
-            /* Check ground water only to decide whether to START the motor */
             ModelHandle_CheckGroundWater();
-            if (!groundWater) return;   /* wait for ground water to start */
+            if (!groundWater) return;
             motorOwner    = MOTOR_OWNER_AUTO;
             autoState     = AUTO_OFF_WAIT;
             stateDeadline = 0;
@@ -1509,23 +1519,11 @@ static void auto_tick(void)
         }
         if (autoState == AUTO_OFF_WAIT)
         {
-            /*
-             * Motor is running.
-             * Ground water loss does NOT stop the motor — transition to
-             * dry-run test so the dry-run sensor decides.
-             */
             ModelHandle_CheckGroundWater();
             if (!groundWater)
             {
-                /*
-                 * No ground water while running: enter dry-check cycle.
-                 * The motor keeps running through the test period; if
-                 * dry-run sensor also shows no water it will fault out.
-                 * If dry-run sensor shows water we return to OFF_WAIT.
-                 */
                 autoState     = AUTO_DRY_CHECK;
                 stateDeadline = now + (uint32_t)sys.gap_time_s * 1000UL;
-                /* keep motor running — dry-run handler takes over */
                 dryState = DRY_WAITING;
                 return;
             }
@@ -1533,12 +1531,10 @@ static void auto_tick(void)
             start_motor();
             return;
         }
-        /* AUTO_DRY_CHECK without dry protection: just go back to ON_WAIT */
         autoState = AUTO_ON_WAIT; stateDeadline = 0;
         return;
     }
 
-    /* ── Dry-run protection enabled path ── */
     uint32_t dryTestMs  = (uint32_t)sys.gap_time_s     * 1000UL;
     uint32_t retryGapMs = (uint32_t)sys.dry_run_time_s * 1000UL;
 
@@ -1548,9 +1544,8 @@ static void auto_tick(void)
             if (stateDeadline == 0)
             {
                 if (level > AUTO_START_LEVEL_PERCENT) break;
-                /* Ground water check: only when starting */
                 ModelHandle_CheckGroundWater();
-                if (!groundWater) break;   /* wait — but do NOT stop motor */
+                if (!groundWater) break;
                 motorOwner    = MOTOR_OWNER_AUTO;
                 start_motor();
                 stateDeadline = now + dryTestMs;
@@ -1564,29 +1559,17 @@ static void auto_tick(void)
             break;
 
         case AUTO_DRY_CHECK:
-            /* Waiting in retry gap — no ground water re-check, just wait */
             if (now >= stateDeadline) { autoState = AUTO_ON_WAIT; stateDeadline = 0; }
             break;
 
         case AUTO_OFF_WAIT:
-            /*
-             * Motor is running.
-             * Ground water loss does NOT stop the motor.
-             * Instead, transition to dry-run test cycle so the dry-run
-             * sensor is the authoritative check.
-             */
             ModelHandle_CheckGroundWater();
             if (!groundWater)
             {
-                /*
-                 * Ground water gone while running: switch to DRY_CHECK
-                 * cycle. Motor keeps running; dry-run sensor will fault
-                 * if water is truly absent.
-                 */
                 stop_motor();
                 autoState     = AUTO_DRY_CHECK;
                 stateDeadline = now + retryGapMs;
-                dryState      = DRY_FAULT;   /* mark so display shows DRY */
+                dryState      = DRY_FAULT;
                 break;
             }
             start_motor();
