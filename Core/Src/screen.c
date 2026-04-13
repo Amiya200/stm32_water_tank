@@ -5,7 +5,6 @@
 #include "adc.h"
 #include "rtc_i2c.h"
 #include "acs712.h"
-#include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -89,7 +88,7 @@ extern void ModelHandle_FactoryReset(void);
 #define LONG_PRESS_MS       3000
 #define CONTINUOUS_STEP_MS  250
 #define DASH_PAGE0_TIME     4500UL
-#define DASH_PAGE1_TIME     1500UL
+#define DASH_PAGE1_TIME     2500UL
 #define DRY_BLINK_MS        400UL
 
 static bool reset_confirm_yes = false;
@@ -210,46 +209,20 @@ static uint8_t  dash_page        = 0;
 static uint32_t dash_cycle_start = 0;
 static uint8_t  dry_blink_slot   = 0;
 static uint32_t dry_blink_start  = 0;
-
-/* ── Sticky mode indicators ─────────────────────────────────────────────────
- * Once semi-auto or countdown becomes active, these flags are set to true.
- * They remain true and keep showing the mode label on the dash even after
- * the mode turns OFF, until a competing active mode clears them.
- *
- * ROOT CAUSE NOTE (countdown):
- *   Pressing BTN_DOWN immediately moves ui → UI_COUNTDOWN, so show_dash()
- *   is NEVER called while countdownActive==true via the button path.
- *   That means relying solely on show_dash() to set dash_countdown_shown
- *   doesn't work for button-triggered countdown.
- *   FIX: sticky_set_countdown() is called in Screen_HandleSwitches at the
- *   exact point the countdown starts, BEFORE the ui state changes.
- * ─────────────────────────────────────────────────────────────────────────*/
 static bool dash_semi_shown      = false;
 static bool dash_countdown_shown = false;
-
-/* ── Helper: clear sticky flags (called on factory reset) ───────────────── */
 static inline void clear_sticky_mode_flags(void)
 {
     dash_semi_shown      = false;
     dash_countdown_shown = false;
 }
 
-/* ── Helper: record countdown as the last active mode ───────────────────────
- * Sets dash_countdown_shown and clears dash_semi_shown so countdown always
- * supersedes a previous sticky SEMI label.
- * Called at every point countdown starts (button + UART paths).
- * ─────────────────────────────────────────────────────────────────────────*/
 static inline void sticky_set_countdown(void)
 {
     dash_countdown_shown = true;
     dash_semi_shown      = false;
 }
 
-/* ── Helper: record semi-auto as the last active mode ───────────────────────
- * Sets dash_semi_shown and clears dash_countdown_shown so semi-auto always
- * supersedes a previous sticky COUNT label.
- * Called at every point semi-auto starts (button + UART paths).
- * ─────────────────────────────────────────────────────────────────────────*/
 static inline void sticky_set_semi(void)
 {
     dash_semi_shown      = true;
@@ -318,13 +291,8 @@ static void show_dash(void)
     bool        sensorHasWater = ModelHandle_IsDryRunActive(); /* TRUE = water present */
     const char *gw             = (adcData.voltages[4] <= 0.01f) ? "YES" : "NO ";
 
-    /* ── Update sticky flags (covers UART path where show_dash IS reached
-     *    while the mode is live; button path is already handled in
-     *    Screen_HandleSwitches via sticky_set_*) ──────────────────────── */
     if (semiAutoActive)   sticky_set_semi();
     if (countdownActive)  sticky_set_countdown();
-
-    /* Any dominant active mode clears both sticky indicators */
     if (timerActive || autoActive || twistActive || manualActive ||
         ModelHandle_IsRestartActive() || ModelHandle_IsVoltageFault() ||
         ModelHandle_IsOverload()      || ModelHandle_IsUnderload())
@@ -333,28 +301,20 @@ static void show_dash(void)
         dash_countdown_shown = false;
     }
 
-    /* ── Resolve display mode string ───────────────────────────────────────
-     * Priority (high→low):
-     *   fault/restart > timer > auto > countdown > twist > semi > manual >
-     *   tank full > sticky-countdown > sticky-semi > READY
-     *
-     * sticky-countdown is intentionally checked BEFORE sticky-semi so the
-     * most-recently-used mode always wins the label race.
-     * ──────────────────────────────────────────────────────────────────── */
     const char *mode;
     if      (ModelHandle_IsRestartActive()) mode = "Refill ";
     else if (ModelHandle_IsVoltageFault())  mode = "VOLTERR";
     else if (ModelHandle_IsOverload())      mode = "OVERLD ";
     else if (ModelHandle_IsUnderload())     mode = "UNDERLD";
-    else if (timerActive)                   mode = "TIMER  ";
-    else if (autoActive)       mode = motorOn ? "AUTO   " : "AUTO WT";
+    else if (timerActive)                   mode = "AUTO  ";
+    else if (autoActive)       mode = motorOn ? "AUTO   " : "AUTO W";
     else if (countdownActive)  mode = motorOn ? "COUNT  " : "CD WAIT";
     else if (twistActive)      mode = motorOn ? "TWIST  " : "TWIST W";
-    else if (semiAutoActive)   mode = motorOn ? "SEMI   " : "SEMI OF";
+    else if (semiAutoActive)   mode = motorOn ? "SEMI   " : "SEMI";
     else if (manualActive)     mode = "MANUAL ";
     else if (tankFull)         mode = "FULL   ";
-    else if (dash_countdown_shown) mode = "COUNT  ";   /* was ON, now OFF – sticky */
-    else if (dash_semi_shown)      mode = "SEMI   ";   /* was ON, now OFF – sticky */
+    else if (dash_countdown_shown) mode = "COUNT  ";
+    else if (dash_semi_shown)      mode = "SEMI   ";
     else                           mode = "READY  ";
 
     if (dash_page == 0)
@@ -1197,66 +1157,97 @@ void decrease_edit_value(uint8_t step)
 
 static UiButton decode_button_press(void)
 {
-    static bool last_raw[4] = {0};
-    static bool stable_state[4] = {0};
-    static uint32_t last_change_time[4] = {0};
-    static uint32_t press_time[4] = {0};
-    static bool long_sent[4] = {0};
-    static uint32_t last_repeat_time[4] = {0};
+    #define BTN_COUNT 4
+
+    typedef struct {
+        bool raw;
+        bool stable;
+        uint32_t lastChange;
+        uint32_t pressTime;
+        uint32_t lastRepeat;
+        bool longSent;
+    } BtnState;
+
+    static BtnState btn[BTN_COUNT] = {0};
+
     uint32_t now = HAL_GetTick();
-    UiButton result = BTN_NONE;
-    for (int i = 0; i < 4; i++)
+    UiButton event = BTN_NONE;
+
+    for (int i = 0; i < BTN_COUNT; i++)
     {
         bool raw = Switch_IsPressed(i);
-        if (raw != last_raw[i])
+
+        // 🔹 Detect change
+        if (raw != btn[i].raw)
         {
-            last_change_time[i] = now;
-            last_raw[i] = raw;
+            btn[i].raw = raw;
+            btn[i].lastChange = now;
         }
-        if ((now - last_change_time[i]) > DEBOUNCE_MS)
+
+        // 🔹 Debounce
+        if ((now - btn[i].lastChange) > 40) // smoother (40ms)
         {
-            if (stable_state[i] != raw)
+            if (btn[i].stable != raw)
             {
-                stable_state[i] = raw;
-                if (raw)
+                btn[i].stable = raw;
+
+                if (raw) // 🔘 Pressed
                 {
-                    press_time[i] = now;
-                    long_sent[i]  = false;
+                    btn[i].pressTime = now;
+                    btn[i].longSent = false;
+                    btn[i].lastRepeat = now;
                 }
-                else
+                else // 🔘 Released
                 {
-                    if (!long_sent[i])
+                    if (!btn[i].longSent)
                     {
                         switch (i)
                         {
-                            case 0: result = BTN_RESET;  break;
-                            case 1: result = BTN_SELECT; break;
-                            case 2: result = BTN_UP;     break;
-                            case 3: result = BTN_DOWN;   break;
+                            case 0: return BTN_RESET;
+                            case 1: return BTN_SELECT;
+                            case 2: return BTN_UP;
+                            case 3: return BTN_DOWN;
                         }
                     }
                 }
             }
         }
-        if (stable_state[i] && !long_sent[i])
+
+        // 🔹 Long Press
+        if (btn[i].stable && !btn[i].longSent)
         {
-            if ((now - press_time[i]) >= LONG_PRESS_MS)
+            if ((now - btn[i].pressTime) > 800) // faster long press
             {
-                long_sent[i] = true;
-                last_repeat_time[i] = now;
+                btn[i].longSent = true;
+
                 switch (i)
                 {
-                    case 0: result = BTN_RESET_LONG;  break;
-                    case 1: result = BTN_SELECT_LONG; break;
-                    case 2: result = BTN_UP_LONG;     break;
-                    case 3: result = BTN_DOWN_LONG;   break;
+                    case 0: return BTN_RESET_LONG;
+                    case 1: return BTN_SELECT_LONG;
+                    case 2: return BTN_UP_LONG;
+                    case 3: return BTN_DOWN_LONG;
+                }
+            }
+        }
+
+        // 🔹 Hold Repeat (Smooth scrolling)
+        if (btn[i].stable && btn[i].longSent)
+        {
+            if ((now - btn[i].lastRepeat) > 120) // smoother repeat
+            {
+                btn[i].lastRepeat = now;
+
+                switch (i)
+                {
+                    case 2: return BTN_UP;
+                    case 3: return BTN_DOWN;
                 }
             }
         }
     }
-    return result;
-}
 
+    return event;
+}
 void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
