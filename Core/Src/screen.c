@@ -306,7 +306,7 @@ static void show_dash(void)
     else if (ModelHandle_IsVoltageFault())  mode = "VOLTERR";
     else if (ModelHandle_IsOverload())      mode = "OVERLD ";
     else if (ModelHandle_IsUnderload())     mode = "UNDERLD";
-    else if (timerActive)                   mode = "AUTO  ";
+    else if (timerActive)                   mode = "AUTO(T)";
     else if (autoActive)       mode = motorOn ? "AUTO   " : "AUTO W";
     else if (countdownActive)  mode = motorOn ? "COUNT  " : "CD WAIT";
     else if (twistActive)      mode = motorOn ? "TWIST  " : "TWIST W";

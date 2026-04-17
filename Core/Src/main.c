@@ -165,7 +165,7 @@ int main(void)
         Screen_HandleSwitches();
         Screen_Update();
         LED_Task();
-        LoRa_Task();
+//        LoRa_Task();
         HAL_Delay(10);
     }
 }

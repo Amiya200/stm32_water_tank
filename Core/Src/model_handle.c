@@ -1687,7 +1687,62 @@ static void leds_from_model(void)
     if (senseOverUnderVolt) LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_BLINK, 350);
     LED_ApplyIntents();
 }
+/* ─────────────────────────────────────────────────────────────────────────
+ * Timer Mode Auto Transition
+ *   • Any enabled slot's ON time reached → timerActive = true,
+ *     motorOwner becomes TIMER, ProcessTimerSlots then drives the pump.
+ *   • Slot's OFF time reached (no slot currently active) → timerActive
+ *     = false, auto mode is re-armed and resumes level-based control.
+ * Called every tick from ModelHandle_Process().
+ * ─────────────────────────────────────────────────────────────────────────*/
+static void timer_auto_transition(void)
+{
+    /* Foreground modes override timer — don't touch state while they run */
+    if (manualActive || semiAutoActive || countdownActive ||
+        twistActive  || restartActive)
+        return;
 
+    /* If the user explicitly turned auto off (ToggleManual sets this),
+     * respect that and do not auto-enter timer mode.                    */
+    if (!autoActive && !timerActive && autoUserLocked)
+        return;
+
+    bool slotActive = timer_any_active_slot();
+
+    /* ── ON edge: a slot window just started ────────────────────────── */
+    if (slotActive && !timerActive)
+    {
+        /* Timer runs "under" auto — make sure auto is enabled */
+        if (!autoActive) { autoActive = true; autoUserLocked = false; }
+
+        timerActive        = true;
+        timerState         = TIMER_RUN_TEST;
+        timerStateDeadline = 0;
+        motorOwner         = MOTOR_OWNER_TIMER;
+        dryState           = DRY_IDLE;
+        ModelHandle_SaveModeState();
+        return;
+    }
+
+    /* ── OFF edge: slot window just ended → fall back to auto mode ──── */
+    if (!slotActive && timerActive)
+    {
+        timerActive        = false;
+        timerState         = TIMER_RUN_TEST;
+        timerStateDeadline = 0;
+        stop_motor();
+
+        /* Re-arm auto mode so level-based filling continues */
+        autoActive     = true;
+        autoUserLocked = false;
+        autoState      = AUTO_ON_WAIT;
+        stateDeadline  = 0;
+        motorOwner     = MOTOR_OWNER_AUTO;
+        dryState       = DRY_IDLE;
+        ModelHandle_SaveModeState();
+        return;
+    }
+}
 void ModelHandle_Process(void)
 {
     uint32_t now = HAL_GetTick();
@@ -1702,7 +1757,7 @@ void ModelHandle_Process(void)
     ModelHandle_CheckDryRun();
     ModelHandle_CheckLoadFault();
     check_max_run();
-
+    timer_auto_transition();
     bool protectionFault = senseOverLoad || senseUnderLoad || senseOverUnderVolt || senseMaxRunReached;
     bool tankFull        = isTankFull();
 
