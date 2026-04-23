@@ -39,13 +39,13 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  17 .debug_line   000240d7  00000000  00000000  00057934  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_str    0009b6eb  00000000  00000000  0007ba0b  2**0
+ 18 .debug_str    0009b6e7  00000000  00000000  0007ba0b  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .comment      00000043  00000000  00000000  001170f6  2**0
+ 19 .comment      00000043  00000000  00000000  001170f2  2**0
                   CONTENTS, READONLY
- 20 .debug_frame  00008eb8  00000000  00000000  0011713c  2**2
+ 20 .debug_frame  00008eb8  00000000  00000000  00117138  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 21 .debug_line_str 00000062  00000000  00000000  0011fff4  2**0
+ 21 .debug_line_str 00000062  00000000  00000000  0011fff0  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -3877,7 +3877,7 @@ static void LoRa_Reset(void)
  80021a2:	af00      	add	r7, sp, #0
     HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_RESET);
  80021a4:	2200      	movs	r2, #0
- 80021a6:	2102      	movs	r1, #2
+ 80021a6:	2140      	movs	r1, #64	@ 0x40
  80021a8:	4807      	ldr	r0, [pc, #28]	@ (80021c8 <LoRa_Reset+0x28>)
  80021aa:	f009 fa76 	bl	800b69a <HAL_GPIO_WritePin>
     HAL_Delay(5);
@@ -3885,7 +3885,7 @@ static void LoRa_Reset(void)
  80021b0:	f008 f912 	bl	800a3d8 <HAL_Delay>
     HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_SET);
  80021b4:	2201      	movs	r2, #1
- 80021b6:	2102      	movs	r1, #2
+ 80021b6:	2140      	movs	r1, #64	@ 0x40
  80021b8:	4803      	ldr	r0, [pc, #12]	@ (80021c8 <LoRa_Reset+0x28>)
  80021ba:	f009 fa6e 	bl	800b69a <HAL_GPIO_WritePin>
     HAL_Delay(10);
@@ -3894,7 +3894,7 @@ static void LoRa_Reset(void)
 }
  80021c4:	bf00      	nop
  80021c6:	bd80      	pop	{r7, pc}
- 80021c8:	40010800 	.word	0x40010800
+ 80021c8:	40010c00 	.word	0x40010c00
 
 080021cc <LoRa_Init>:
 
@@ -4020,7 +4020,7 @@ uint8_t LoRa_ReceivePacket(uint8_t *buffer, int16_t *rssi)
  80022ac:	6039      	str	r1, [r7, #0]
     /* DIO0 goes high when RxDone IRQ fires */
     if (HAL_GPIO_ReadPin(LORA_DIO0_PORT, LORA_DIO0_PIN) == GPIO_PIN_RESET)
- 80022ae:	2101      	movs	r1, #1
+ 80022ae:	2180      	movs	r1, #128	@ 0x80
  80022b0:	4820      	ldr	r0, [pc, #128]	@ (8002334 <LoRa_ReceivePacket+0x90>)
  80022b2:	f009 f9db 	bl	800b66c <HAL_GPIO_ReadPin>
  80022b6:	4603      	mov	r3, r0
@@ -4099,7 +4099,7 @@ uint8_t LoRa_ReceivePacket(uint8_t *buffer, int16_t *rssi)
  800232e:	46bd      	mov	sp, r7
  8002330:	bd80      	pop	{r7, pc}
  8002332:	bf00      	nop
- 8002334:	40010800 	.word	0x40010800
+ 8002334:	40010c00 	.word	0x40010c00
 
 08002338 <parse_tank_level>:
  *

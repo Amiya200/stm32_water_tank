@@ -14,14 +14,14 @@
 #define LORA_MODE_RECEIVER      1
 
 /* ── GPIO pin definitions — adjust to match your board ─────────────── */
-#define LORA_NSS_PORT       GPIOA
-#define LORA_NSS_PIN        LORA_SELECT_Pin      /* PA4 typically       */
+#define LORA_NSS_PORT    GPIOA
+#define LORA_NSS_PIN     GPIO_PIN_15
 
-#define LORA_RESET_PORT     GPIOA
-#define LORA_RESET_PIN      GPIO_PIN_1           /* adjust if needed    */
+#define LORA_RESET_PORT  GPIOB
+#define LORA_RESET_PIN   GPIO_PIN_6
 
-#define LORA_DIO0_PORT      GPIOA
-#define LORA_DIO0_PIN       GPIO_PIN_0           /* adjust if needed    */
+#define LORA_DIO0_PORT   GPIOB
+#define LORA_DIO0_PIN    GPIO_PIN_7
 
 /* ── Global mode variable (defined in lora.c of each node) ─────────── */
 extern uint8_t loraMode;
