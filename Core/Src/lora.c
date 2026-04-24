@@ -1,67 +1,117 @@
 /* ====================================================================
- * lora.c  —  RECEIVER (motor-controller node)
+ * lora.c  —  RECEIVER  (motor-controller node)
  *
- * What changed vs the old version:
+ * Packet protocol (both nodes must match exactly):
  *
- * 1. LoRa_Task() now parses incoming @TL:<percent># packets and stores
- *    the level in g_wirelessTankLevel with a timestamp.
+ *   TX → RX   @HI#                          startup hello
+ *   RX → TX   @OK#                          hello reply
+ *   TX → RX   @TL:<3d>,SN:<5d>#            data  e.g. @TL:080,SN:00003#
+ *   RX → TX   @ACK:<5d>#                   ack   e.g. @ACK:00003#
  *
- * 2. Two new public functions expose the data to adc.c:
- *      LoRa_GetWirelessTankLevel()  — returns 0-100
- *      LoRa_IsWirelessDataValid()   — false if > 60 s since last packet
+ * Connection state
+ *   g_loraConnected = 1  when a valid data packet arrived recently
+ *   g_loraConnected = 0  after WIRELESS_TIMEOUT_MS (60 s) of silence
+ *                        OR immediately on power-up until first packet
  *
- * 3. A lightweight string parser (parse_tank_level) is used instead
- *    of sscanf to keep flash/RAM usage minimal.
+ * Auto-reconnect
+ *   If the transmitter goes offline and comes back, the first valid
+ *   @TL:...,SN:...# packet immediately sets g_loraConnected = 1 again.
+ *   No manual reset, no reboot needed on either side.
  *
- * Packet format expected from transmitter:
- *      @TL:<percent>#    e.g.  @TL:80#   @TL:0#   @TL:100#
+ * Modem settings  (MUST match transmitter lora.c exactly)
+ *   Frequency  : 433 MHz
+ *   BW         : 125 kHz
+ *   SF         : 7
+ *   CR         : 4/5
+ *   CRC        : ON  (0x1E = 0x74)
+ *   Sync word  : 0x12 (public)
+ *   Header     : Explicit
  * ==================================================================== */
 
 #include "lora.h"
 #include "stm32f1xx_hal.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include "led.h"
 
-/* ── Mode / globals ─────────────────────────────────────────────────── */
+/* ── UART helpers — implemented in main.c ──────────────────────────── */
+extern void UART_Print  (const char *s);
+//extern void UART_PrintLn(const char *s);
+
+/* ── SPI handle — configured in main.c / MX_SPI1_Init() ────────────── */
+extern SPI_HandleTypeDef hspi1;
+
+/* ════════════════════════════════════════════════════════════════════
+ *  MODULE-LEVEL STATE
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* Runtime mode flag */
 uint8_t  loraMode        = LORA_MODE_RECEIVER;
+
+/* Shared RX buffer and packet counter (extern'd in lora.h) */
 uint8_t  rxBuffer_l[64]  = {0};
 uint32_t rxPacketCount_l = 0;
 
-extern SPI_HandleTypeDef hspi1;
-
-/* ── Wireless data state ────────────────────────────────────────────── */
-#define WIRELESS_TIMEOUT_MS  60000UL   /* 60 s without a packet → invalid */
+/* Wireless tank level state */
+#define WIRELESS_TIMEOUT_MS   60000UL   /* silence threshold → disconnect      */
+#define ACK_TX_TIMEOUT_MS       300UL   /* max wait for TxDone when sending ACK */
 
 static uint8_t  g_wirelessTankLevel  = 0;
 static uint32_t g_wirelessLastRxTick = 0;
 static bool     g_wirelessDataValid  = false;
 
-/* ── Public getters used by adc.c ───────────────────────────────────── */
-uint8_t LoRa_GetWirelessTankLevel(void) { return g_wirelessTankLevel; }
+/* Shared connection flag (extern'd in lora.h; same variable on TX side) */
+uint8_t g_loraConnected = 0;
+
+/* TX statistics stubs — defined on TX side only; externs keep linker happy */
+uint32_t g_lora_tx_ok    = 0;
+uint32_t g_lora_tx_retry = 0;
+uint32_t g_lora_tx_fail  = 0;
+
+/* ════════════════════════════════════════════════════════════════════
+ *  PUBLIC GETTERS
+ * ════════════════════════════════════════════════════════════════════ */
+
+uint8_t LoRa_GetWirelessTankLevel(void)
+{
+    return g_wirelessTankLevel;
+}
 
 bool LoRa_IsWirelessDataValid(void)
 {
     if (!g_wirelessDataValid) return false;
-    /* Auto-invalidate after timeout */
+
     if ((HAL_GetTick() - g_wirelessLastRxTick) > WIRELESS_TIMEOUT_MS)
     {
         g_wirelessDataValid = false;
+        if (g_loraConnected)
+        {
+            g_loraConnected = 0;
+//            UART_PrintLn("[LORA-RX] Link TIMEOUT — no packet for 60 s  connected=0");
+            LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 500);
+        }
         return false;
     }
     return true;
 }
 
-/* ── NSS macros ─────────────────────────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════
+ *  NSS / FREQUENCY CONSTANTS
+ * ════════════════════════════════════════════════════════════════════ */
+
 #define NSS_LOW()  HAL_GPIO_WritePin(LORA_NSS_PORT, LORA_NSS_PIN, GPIO_PIN_RESET)
 #define NSS_HIGH() HAL_GPIO_WritePin(LORA_NSS_PORT, LORA_NSS_PIN, GPIO_PIN_SET)
 
-#define LORA_FREQUENCY 433000000UL
+#define LORA_FREQUENCY_HZ   433000000UL
 
-/* ── SPI helpers ────────────────────────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════
+ *  SPI REGISTER ACCESS  (public — declared in lora.h)
+ * ════════════════════════════════════════════════════════════════════ */
+
 void LoRa_WriteReg(uint8_t addr, uint8_t data)
 {
-    uint8_t buf[2] = { addr | 0x80, data };
+    uint8_t buf[2] = { (uint8_t)(addr | 0x80), data };
     NSS_LOW();
     HAL_SPI_Transmit(&hspi1, buf, 2, HAL_MAX_DELAY);
     NSS_HIGH();
@@ -81,8 +131,8 @@ void LoRa_WriteBuffer(uint8_t addr, const uint8_t *buffer, uint8_t size)
 {
     uint8_t a = addr | 0x80;
     NSS_LOW();
-    HAL_SPI_Transmit(&hspi1, &a,           1,    HAL_MAX_DELAY);
-    HAL_SPI_Transmit(&hspi1, (uint8_t*)buffer, size, HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi1, &a,               1,    HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi1, (uint8_t *)buffer, size, HAL_MAX_DELAY);
     NSS_HIGH();
 }
 
@@ -95,7 +145,11 @@ void LoRa_ReadBuffer(uint8_t addr, uint8_t *buffer, uint8_t size)
     NSS_HIGH();
 }
 
-/* ── Hardware reset ─────────────────────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════
+ *  INTERNAL HELPERS  (all static — not visible outside this file)
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* ── Hardware reset pulse ───────────────────────────────────────────── */
 static void LoRa_Reset(void)
 {
     HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_RESET);
@@ -104,117 +158,270 @@ static void LoRa_Reset(void)
     HAL_Delay(10);
 }
 
-/* ── Init (RX continuous mode) ──────────────────────────────────────── */
-void LoRa_Init(void)
+/* ── Enter RX-Continuous mode ───────────────────────────────────────── */
+static void LoRa_EnterRxContinuous(void)
 {
-    LoRa_Reset();
-
-    LoRa_WriteReg(0x01, 0x80);            /* LoRa + Sleep              */
-    HAL_Delay(10);
-
-    uint64_t frf = ((uint64_t)LORA_FREQUENCY << 19) / 32000000ULL;
-    LoRa_WriteReg(0x06, (uint8_t)(frf >> 16));
-    LoRa_WriteReg(0x07, (uint8_t)(frf >>  8));
-    LoRa_WriteReg(0x08, (uint8_t)(frf));
-
-    LoRa_WriteReg(0x0E, 0x00);            /* TX FIFO base              */
-    LoRa_WriteReg(0x0F, 0x00);            /* RX FIFO base              */
-    LoRa_WriteReg(0x09, 0x8F);            /* PA config                 */
-    LoRa_WriteReg(0x0C, 0x23);            /* LNA boost                 */
-    LoRa_WriteReg(0x4D, 0x87);            /* PA DAGC                   */
-
-    /* Modem config — must match transmitter exactly */
-    LoRa_WriteReg(0x1D, 0x72);            /* BW125, CR4/5, explicit hdr*/
-    LoRa_WriteReg(0x1E, 0x70);            /* SF7, CRC OFF              */
-    LoRa_WriteReg(0x26, 0x04);            /* Low DR optimise OFF       */
-    LoRa_WriteReg(0x39, 0x12);            /* Public sync word          */
-
-    LoRa_WriteReg(0x12, 0xFF);            /* Clear IRQ flags           */
-    LoRa_WriteReg(0x01, 0x85);            /* RX Continuous mode        */
-
-    LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_STEADY, 1);
+    LoRa_WriteReg(0x12, 0xFF);   /* clear all IRQ flags  */
+    LoRa_WriteReg(0x01, 0x85);   /* mode = RX_CONT       */
 }
 
-/* ── Receive a packet (non-blocking, polls DIO0) ────────────────────── */
-uint8_t LoRa_ReceivePacket(uint8_t *buffer, int16_t *rssi)
+/* ── Poll DIO0 and read one packet (non-blocking) ───────────────────── */
+static uint8_t LoRa_ReceivePacket(uint8_t *buffer, int16_t *rssi)
 {
-    /* DIO0 goes high when RxDone IRQ fires */
+    /* DIO0 = RxDone.  Low → nothing yet. */
     if (HAL_GPIO_ReadPin(LORA_DIO0_PORT, LORA_DIO0_PIN) == GPIO_PIN_RESET)
         return 0;
 
     uint8_t irq = LoRa_ReadReg(0x12);
 
-    /* CRC error — discard */
+    /* CRC error — clear and bail */
     if (irq & 0x20)
+    {
+        LoRa_WriteReg(0x12, 0xFF);
+//        UART_PrintLn("[LORA-RX] CRC error — packet discarded");
+        return 0;
+    }
+
+    /* Payload length sanity */
+    uint8_t len = LoRa_ReadReg(0x13);
+    if (len == 0 || len > 63)
     {
         LoRa_WriteReg(0x12, 0xFF);
         return 0;
     }
 
-    uint8_t len      = LoRa_ReadReg(0x13);          /* Payload length  */
-    uint8_t fifoAddr = LoRa_ReadReg(0x10);           /* Current RX addr */
+    /* Read payload from FIFO */
+    uint8_t fifoAddr = LoRa_ReadReg(0x10);   /* RegFifoRxCurrentAddr */
     LoRa_WriteReg(0x0D, fifoAddr);
     LoRa_ReadBuffer(0x00, buffer, len);
 
-    int16_t raw = (int16_t)LoRa_ReadReg(0x1A);
-    *rssi = -157 + raw;
+    /* RSSI */
+    *rssi = -157 + (int16_t)LoRa_ReadReg(0x1A);
 
-    LoRa_WriteReg(0x12, 0xFF);                       /* Clear IRQs      */
+    LoRa_WriteReg(0x12, 0xFF);   /* clear all IRQ flags */
     return len;
 }
 
-/* ── Lightweight @TL:<level># parser ────────────────────────────────
- *
- * Returns the parsed level (0-100) on success, or 0xFF on any error.
- * Avoids sscanf to minimise code-size impact.
+/* ── Send a short reply packet then return to RX-Continuous ─────────── *
+ * Used for both @OK# (hello reply) and @ACK:<seq># (data ACK).         *
+ * The entire TX+return-to-RX takes < 150 ms at SF7/BW125.              *
  * ──────────────────────────────────────────────────────────────────── */
-static uint8_t parse_tank_level(const char *pkt)
+static void LoRa_SendReply(const char *pkt)
 {
-    /* Expect exactly: @TL:<digits># */
-    if (pkt[0] != '@' || pkt[1] != 'T' || pkt[2] != 'L' || pkt[3] != ':')
-        return 0xFF;
+    uint8_t len = (uint8_t)strlen(pkt);
+    if (len == 0) return;
 
+    /* 1. Standby */
+    LoRa_WriteReg(0x01, 0x81);
+    HAL_Delay(1);
+
+    /* 2. Load FIFO */
+    LoRa_WriteReg(0x0D, 0x00);
+    LoRa_WriteBuffer(0x00, (const uint8_t *)pkt, len);
+    LoRa_WriteReg(0x22, len);    /* RegPayloadLength  */
+    LoRa_WriteReg(0x12, 0xFF);   /* clear IRQ flags   */
+
+    /* 3. TX mode */
+    LoRa_WriteReg(0x01, 0x83);
+
+    /* 4. Poll TxDone (bit 3) */
+    uint32_t t0 = HAL_GetTick();
+    while (!(LoRa_ReadReg(0x12) & 0x08))
+    {
+        if ((HAL_GetTick() - t0) > ACK_TX_TIMEOUT_MS) break;
+    }
+    LoRa_WriteReg(0x12, 0x08);   /* clear TxDone flag */
+
+    /* 5. Back to RX-Continuous */
+    LoRa_EnterRxContinuous();
+}
+
+/* ── Build and send @ACK:<5d># ──────────────────────────────────────── */
+static void LoRa_SendACK(uint32_t seq)
+{
+    char ack[24];
+    snprintf(ack, sizeof(ack), "@ACK:%05lu#", (unsigned long)seq);
+
+    char log[48];
+    snprintf(log, sizeof(log), "[LORA-RX] TX ACK \"%s\"", ack);
+//    UART_PrintLn(log);
+
+    LoRa_SendReply(ack);
+}
+
+/* ── Parse @TL:<level>[,<anything>],SN:<seq># ───────────────────────── *
+ *                                                                        *
+ * Accepts any extra comma-separated fields between TL and SN            *
+ * (e.g. WD:0) so the transmitter can evolve its packet freely.          *
+ * ──────────────────────────────────────────────────────────────────── */
+static bool parse_data_packet(const char *pkt,
+                               uint8_t   *level_out,
+                               uint32_t  *seq_out)
+{
+    /* Must start with @TL: */
+    if (pkt[0] != '@' || pkt[1] != 'T' || pkt[2] != 'L' || pkt[3] != ':')
+        return false;
+
+    /* Parse level digits (0-100) */
     const char *p   = pkt + 4;
     uint16_t    val = 0;
+    if (*p < '0' || *p > '9') return false;
 
     while (*p >= '0' && *p <= '9')
     {
         val = (uint16_t)(val * 10u + (uint16_t)(*p - '0'));
-        if (val > 100) return 0xFF;   /* out of range */
+        if (val > 100) return false;
         p++;
     }
+    *level_out = (uint8_t)val;
 
-    if (*p != '#') return 0xFF;       /* missing terminator */
-    return (uint8_t)val;
+    /* Find ",SN:" anywhere after the level field */
+    const char *sn = strstr(p, ",SN:");
+    if (!sn) return false;
+    sn += 4;   /* skip ",SN:" */
+
+    if (*sn < '0' || *sn > '9') return false;
+
+    uint32_t s = 0;
+    while (*sn >= '0' && *sn <= '9')
+    {
+        s = s * 10u + (uint32_t)(*sn - '0');
+        sn++;
+    }
+
+    if (*sn != '#') return false;   /* terminator required */
+    *seq_out = s;
+    return true;
 }
 
-/* ── Task — call every loop iteration from main() ───────────────────
- *
- * Polls for a received packet, parses it, and updates the wireless
- * tank level.  Must be called frequently (every 10–50 ms) so that
- * DIO0 is sampled quickly after a packet arrives.
+/* ════════════════════════════════════════════════════════════════════
+ *  PUBLIC API
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* ── LoRa_Init — call once in main() after all HAL/GPIO inits ────────── */
+void LoRa_Init(void)
+{
+    char buf[72];
+
+    LoRa_Reset();
+//    UART_PrintLn("[LORA-RX] Init: starting SX127x …");
+
+    /* Verify SPI comms — version register must read 0x12 */
+    uint8_t ver = LoRa_ReadReg(0x42);
+    snprintf(buf, sizeof(buf),
+             "[LORA-RX] Init: chip version=0x%02X (expect 0x12)", ver);
+//    UART_PrintLn(buf);
+    if (ver != 0x12)
+//        UART_PrintLn("[LORA-RX] WARNING: unexpected version — check SPI/NSS!");
+
+    /* LoRa sleep mode (required before changing most registers) */
+    LoRa_WriteReg(0x01, 0x80);
+    HAL_Delay(10);
+
+    /* Frequency: 433 MHz */
+    uint64_t frf = ((uint64_t)LORA_FREQUENCY_HZ << 19) / 32000000ULL;
+    LoRa_WriteReg(0x06, (uint8_t)(frf >> 16));
+    LoRa_WriteReg(0x07, (uint8_t)(frf >>  8));
+    LoRa_WriteReg(0x08, (uint8_t)(frf      ));
+
+    /* FIFO base addresses */
+    LoRa_WriteReg(0x0E, 0x00);   /* RegFifoTxBaseAddr = 0  */
+    LoRa_WriteReg(0x0F, 0x00);   /* RegFifoRxBaseAddr = 0  */
+
+    /* RF front-end */
+    LoRa_WriteReg(0x09, 0x8F);   /* PA_BOOST, MaxPower=7, OutputPower=15 */
+    LoRa_WriteReg(0x0C, 0x23);   /* LNA: highest gain, LNA boost ON       */
+    LoRa_WriteReg(0x4D, 0x87);   /* RegPaDac: PA DAGC ON                  */
+
+    /* ── Modem config — MUST match transmitter exactly ─────────────── */
+    LoRa_WriteReg(0x1D, 0x72);   /* BW=125 kHz | CR=4/5 | ExplicitHeader  */
+    LoRa_WriteReg(0x1E, 0x74);   /* SF=7 | CRC=ON                          */
+    LoRa_WriteReg(0x26, 0x04);   /* LowDataRateOptimize=OFF                 */
+    LoRa_WriteReg(0x39, 0x12);   /* SyncWord = 0x12 (public LoRa)           */
+
+//    UART_PrintLn("[LORA-RX] Init: BW=125kHz SF=7 CR=4/5 CRC=ON sync=0x12");
+
+    /* Start listening */
+    LoRa_EnterRxContinuous();
+
+//    UART_PrintLn("[LORA-RX] Init: RX-Continuous — waiting for transmitter …");
+    LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_STEADY, 1);
+}
+
+/* ── LoRa_Task — call every loop iteration (every ~10 ms) ────────────── *
+ *                                                                         *
+ * Non-blocking.  Returns immediately when no packet is waiting.          *
+ * On a valid @TL:...,SN:...# packet:                                     *
+ *   1. Updates g_wirelessTankLevel and connection state.                 *
+ *   2. Sends @ACK:<seq># (RX briefly becomes TX ~100 ms, then reverts).  *
+ * On @HI# hello: replies @OK#.                                           *
+ * Connection auto-drops after 60 s of silence; auto-restores on the      *
+ * very next valid packet, with no reboot needed on either side.          *
  * ──────────────────────────────────────────────────────────────────── */
 void LoRa_Task(void)
 {
     if (loraMode != LORA_MODE_RECEIVER) return;
 
+    /* ── Periodic connection timeout check ──────────────────────────── */
+    /* Call even when no packet arrives so the 60 s watchdog ticks.     */
+    if (g_loraConnected)
+        LoRa_IsWirelessDataValid();   /* clears g_loraConnected on timeout */
+
+    /* ── Poll for incoming packet ───────────────────────────────────── */
     int16_t rssi = 0;
     uint8_t len  = LoRa_ReceivePacket(rxBuffer_l, &rssi);
 
-    if (len == 0) return;             /* No packet this cycle          */
+    if (len == 0) return;            /* nothing this cycle — done */
 
-    rxBuffer_l[len] = '\0';           /* NUL-terminate for parsing     */
+    rxBuffer_l[len] = '\0';          /* NUL-terminate for string operations */
     rxPacketCount_l++;
 
-    uint8_t level = parse_tank_level((char*)rxBuffer_l);
+    char log[80];
+    snprintf(log, sizeof(log),
+             "[LORA-RX] pkt #%lu  \"%s\"  RSSI=%d dBm  (%u B)",
+             (unsigned long)rxPacketCount_l,
+             (char *)rxBuffer_l, (int)rssi, len);
+//    UART_PrintLn(log);
 
-    if (level != 0xFF)                /* Valid @TL:<n># packet         */
+    /* ── HELLO handshake ────────────────────────────────────────────── */
+    if (strcmp((char *)rxBuffer_l, "@HI#") == 0)
     {
+//        UART_PrintLn("[LORA-RX] Got @HI# — sending @OK#");
+        LoRa_SendReply("@OK#");
+        return;
+    }
+
+    /* ── Data packet ────────────────────────────────────────────────── */
+    uint8_t  level = 0;
+    uint32_t seq   = 0;
+
+    if (parse_data_packet((char *)rxBuffer_l, &level, &seq))
+    {
+        bool wasDisconnected = (g_loraConnected == 0);
+
         g_wirelessTankLevel  = level;
         g_wirelessLastRxTick = HAL_GetTick();
         g_wirelessDataValid  = true;
-    }
-    /* Unknown/malformed packets are silently ignored                  */
+        g_loraConnected      = 1;     /* ← link confirmed (or restored)    */
 
-    LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 120);
+        if (wasDisconnected)
+//            UART_PrintLn("[LORA-RX] Link RESTORED — transmitter is back online");
+
+        snprintf(log, sizeof(log),
+                 "[LORA-RX] Data OK: level=%u%%  seq=%05lu  connected=1",
+                 level, (unsigned long)seq);
+//        UART_PrintLn(log);
+
+        LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 120);
+
+        /* Send ACK — RX briefly becomes TX then returns to RX-CONT */
+        LoRa_SendACK(seq);
+    }
+    else
+    {
+        snprintf(log, sizeof(log),
+                 "[LORA-RX] Unknown / malformed packet ignored: \"%s\"",
+                 (char *)rxBuffer_l);
+//        UART_PrintLn(log);
+    }
 }
