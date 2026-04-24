@@ -1,5 +1,5 @@
-../Core/Src/adc.c:94:14:readChannelVoltage	40	static
-../Core/Src/adc.c:115:6:ADC_Init	16	static
-../Core/Src/adc.c:127:13:inject_wireless_level	40	static
-../Core/Src/adc.c:156:6:ADC_ReadAllChannels	64	static
-../Core/Src/adc.c:270:9:ADC_CheckMaxVoltage	24	static
+../Core/Src/adc.c:121:14:readChannelVoltage	40	static
+../Core/Src/adc.c:142:6:ADC_Init	16	static
+../Core/Src/adc.c:165:13:inject_wireless_level	40	static
+../Core/Src/adc.c:232:6:ADC_ReadAllChannels	72	static
+../Core/Src/adc.c:355:9:ADC_CheckMaxVoltage	24	static

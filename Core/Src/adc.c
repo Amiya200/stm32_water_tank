@@ -1,41 +1,64 @@
 /* ====================================================================
- * adc.c  —  RECEIVER (motor-controller node)
+ * adc.c  —  RECEIVER  (motor-controller node)
  *
- * What changed vs the old version:
+ * NODE TYPE: LORA_RECEIVER_NODE
  *
- * After every local ADC scan, ADC_ReadAllChannels() checks whether
- * a valid LoRa wireless level is available.  If so, it synthesises
- * probe voltages for CH0–CH3 (the tank level probes) from the
- * remote reading.
+ * ── Two-channel source selection ────────────────────────────────────
  *
- * CH4 (ground water) and CH5 (dry run) are at the MOTOR SIDE and
- * continue to be read from local ADC — unchanged.
+ *  Every call to ADC_ReadAllChannels() does:
  *
- * Voltage synthesis logic:
+ *    Step 1 — Read ALL 6 local ADC channels through the EMA filter.
+ *             This keeps s_filtered[] current even when LoRa is active,
+ *             so the fallback path has fresh values instantly.
+ *
+ *    Step 2 — Check LoRa_IsWirelessDataValid().
+ *              If VALID   → call inject_wireless_level() which
+ *                           OVERWRITES:
+ *                             voltages[0..3]  from TL (tank level)
+ *                             voltages[5]     from WD (well-dry flag)
+ *                           CH4 (ground water) is ALWAYS from local ADC.
+ *              If INVALID → local ADC values used for ALL channels
+ *                           (safe bench / fallback mode).
+ *
+ * ── Voltage synthesis for CH0–CH3 (tank level probes) ───────────────
+ *
  *   model_handle.c uses  PROBE_THRESHOLD = 0.50 V
- *   voltage < 0.50 V  →  probe is submerged (water has reached it)
- *   voltage > 0.50 V  →  probe is above water
+ *   voltage < 0.50 V  →  probe submerged  (water has reached it)
+ *   voltage ≥ 0.50 V  →  probe above water
  *
- *   Receiver probe layout (4 probes):
- *     voltages[0] = 100 % probe   (submerged when tank ≥ 100 %)
- *     voltages[1] =  75 % probe   (submerged when tank ≥  75 %)
- *     voltages[2] =  50 % probe   (submerged when tank ≥  50 %)
- *     voltages[3] =  25 % probe   (submerged when tank ≥  25 %)
+ *   Receiver probe layout:
+ *     voltages[0] = 100 % probe
+ *     voltages[1] =  75 % probe
+ *     voltages[2] =  50 % probe
+ *     voltages[3] =  25 % probe
  *
- *   Transmitter → Receiver level mapping:
- *     TX 100 %  →  RX 100 %
- *     TX  80 %  →  RX  75 %  (80 ≥ 75)
- *     TX  60 %  →  RX  50 %
- *     TX  40 %  →  RX  25 %
- *     TX  20 %  →  RX   0 %  (below lowest probe)
- *     TX   0 %  →  RX   0 %
+ *   Wireless level → probe synthesis:
+ *     TX 100 % → RX all 4 submerged  (FULL)
+ *     TX  80 % → RX 75 % + below submerged
+ *     TX  60 % → RX 50 % + below submerged
+ *     TX  40 % → RX 25 % probe submerged only
+ *     TX  20 % → RX all 4 dry       (EMPTY/LOW)
+ *     TX   0 % → RX all 4 dry
  *
- * If no valid wireless data (LoRa timed out > 60 s), local ADC
- * probes are used as fall-back — safe default for wired testing.
+ * ── Voltage synthesis for CH5 (dry-run / well-dry sensor) ───────────
+ *
+ *   model_handle.c ModelHandle_CheckDryRun():
+ *     senseDryRun = (voltages[5] < 0.30 V)
+ *
+ *   WD=0 (transmitter: well has water) →  inject 1.0 V  →  senseDryRun=false
+ *   WD=1 (transmitter: well DRY)       →  inject 0.0 V  →  senseDryRun=true
+ *                                          → motor protection will activate
+ *
+ * ── Offline fallback ─────────────────────────────────────────────────
+ *
+ *   When LoRa link is down (no packet for >60 s):
+ *     CH0–CH3 → physical ADC (local level probes at motor side)
+ *     CH5     → physical ADC (local dry-run sensor at motor side)
+ *     CH4     → physical ADC (always — ground water is local)
  * ==================================================================== */
 
 #include "adc.h"
-#include "lora.h"           /* LoRa_IsWirelessDataValid / LoRa_GetWirelessTankLevel */
+#include "lora.h"       /* LoRa_IsWirelessDataValid / LoRa_GetWireless*() */
 #include "main.h"
 #include "uart.h"
 #include "global.h"
@@ -59,9 +82,17 @@
 #define VREF                      3.3f
 #define ADC_RES                   4095.0f
 
-/* ── Probe voltage levels used when injecting wireless data ─────────── */
-#define PROBE_SUBMERGED   0.0f   /* < PROBE_THRESHOLD (0.50 V) = water  */
-#define PROBE_DRY         1.0f   /* > PROBE_THRESHOLD          = no water*/
+/* ── Injected probe voltages used when writing wireless data ─────────
+ *
+ *  PROBE_SUBMERGED  must be < PROBE_THRESHOLD (0.50 V)
+ *  PROBE_DRY        must be > PROBE_THRESHOLD
+ *  SENSOR_WATER     must be ≥ 0.30 V  (senseDryRun = false)
+ *  SENSOR_DRY       must be <  0.30 V (senseDryRun = true  → protection)
+ * ──────────────────────────────────────────────────────────────────── */
+#define PROBE_SUBMERGED  0.0f   /* < PROBE_THRESHOLD → water present    */
+#define PROBE_DRY        1.0f   /* > PROBE_THRESHOLD → no water         */
+#define SENSOR_WATER     1.0f   /* CH5 voltage when WD=0 (well OK)      */
+#define SENSOR_DRY       0.0f   /* CH5 voltage when WD=1 (well dry)     */
 
 /* ── Module state ───────────────────────────────────────────────────── */
 float g_adcVoltages[ADC_CHANNEL_COUNT] = {0};
@@ -69,11 +100,10 @@ float g_acVoltage_raw = 0.0f;
 float g_acCurrent_raw = 0.0f;
 float g_acVoltage_avg = 0.0f;
 float g_acCurrent_avg = 0.0f;
-bool  g_overload  = false;
+bool  g_overload      = false;
 
 static float   s_filtered[ADC_CHANNEL_COUNT]   = {0};
 static uint8_t s_level_flags[ADC_CHANNEL_COUNT] = {0};
-static uint8_t s_low_counts[ADC_CHANNEL_COUNT]  = {0};
 static float   s_prev_volt[ADC_CHANNEL_COUNT]   = {0};
 
 static const uint32_t adcChannels[ADC_CHANNEL_COUNT] = {
@@ -84,9 +114,6 @@ static const uint32_t adcChannels[ADC_CHANNEL_COUNT] = {
     ADC_CHANNEL_4,
     ADC_CHANNEL_5
 };
-
-#define ADC_CHANNEL_AC_VOLTAGE  ADC_CHANNEL_6
-#define ADC_CHANNEL_AC_CURRENT  ADC_CHANNEL_7
 
 static char dataPacketTx[16];
 
@@ -118,48 +145,96 @@ void ADC_Init(ADC_HandleTypeDef *hadc)
         Error_Handler();
 }
 
-/* ── Inject wireless level into tank-probe channels (CH0–CH3) ────────
+/* ── inject_wireless_level ──────────────────────────────────────────
  *
- * Called inside ADC_ReadAllChannels() when valid LoRa data exists.
- * Overwrites data->voltages[0..3] and s_filtered[0..3] so the EMA
- * state stays consistent with what model_handle.c will read.
+ *  Called from ADC_ReadAllChannels() when LoRa_IsWirelessDataValid()
+ *  returns true.  Overwrites:
+ *    data->voltages[0..3]  — synthesised from lvlPct (tank level)
+ *    data->voltages[5]     — synthesised from wellDry (WD flag)
+ *
+ *  CH4 (ground water) is left unchanged (read from local ADC above).
+ *
+ *  s_filtered[] is also updated for CH0–CH3 and CH5 so that the EMA
+ *  state does not snap back to stale physical values if the LoRa link
+ *  momentarily drops and then recovers.
+ *
+ *  Parameters
+ *    lvlPct   : wireless tank level  0–100 %
+ *    wellDry  : 0 = well has water  |  1 = well DRY alarm from TX
  * ──────────────────────────────────────────────────────────────────── */
-static void inject_wireless_level(ADC_Data *data, uint8_t lvlPct)
+static void inject_wireless_level(ADC_Data *data,
+                                   uint8_t   lvlPct,
+                                   uint8_t   wellDry)
 {
-    /* Clamp to multiples of 20 that the transmitter can send */
+    /* Clamp to valid range */
     if (lvlPct > 100) lvlPct = 100;
 
-    /* Synthesise probe voltages based on level thresholds */
-    float v0 = (lvlPct >= 100) ? PROBE_SUBMERGED : PROBE_DRY;   /* 100 % */
-    float v1 = (lvlPct >=  75) ? PROBE_SUBMERGED : PROBE_DRY;   /*  75 % */
-    float v2 = (lvlPct >=  50) ? PROBE_SUBMERGED : PROBE_DRY;   /*  50 % */
-    float v3 = (lvlPct >=  25) ? PROBE_SUBMERGED : PROBE_DRY;   /*  25 % */
+    /* ── CH0–CH3: Tank level probe synthesis ─────────────────────
+     *  Each probe is submerged once the water level reaches or
+     *  exceeds its percentage threshold:
+     *    voltages[0] = 100 % probe
+     *    voltages[1] =  75 % probe
+     *    voltages[2] =  50 % probe
+     *    voltages[3] =  25 % probe
+     * ─────────────────────────────────────────────────────────── */
+    float v0 = (lvlPct >= 100) ? PROBE_SUBMERGED : PROBE_DRY;
+    float v1 = (lvlPct >=  75) ? PROBE_SUBMERGED : PROBE_DRY;
+    float v2 = (lvlPct >=  50) ? PROBE_SUBMERGED : PROBE_DRY;
+    float v3 = (lvlPct >=  25) ? PROBE_SUBMERGED : PROBE_DRY;
 
     data->voltages[0] = v0;
     data->voltages[1] = v1;
     data->voltages[2] = v2;
     data->voltages[3] = v3;
 
-    /* Keep EMA state in sync so the next local-ADC cycle doesn't
-     * slam the filter back to a stale physical reading               */
+    /* Sync EMA state so fallback re-entry is smooth */
     s_filtered[0] = v0;
     s_filtered[1] = v1;
     s_filtered[2] = v2;
     s_filtered[3] = v3;
 
-    /* Update rawValues for any diagnostic code that uses them */
+    /* Update raw values for diagnostic code */
     for (int i = 0; i < 4; i++)
         data->rawValues[i] = (uint16_t)((data->voltages[i] * ADC_RES) / VREF);
+
+    /* ── CH5: Dry-run sensor synthesis from WD flag ──────────────
+     *
+     *  model_handle.c: senseDryRun = (voltages[5] < 0.30 V)
+     *
+     *  WD=0 (well has water) → SENSOR_WATER (1.0 V) → senseDryRun=false
+     *  WD=1 (well DRY)       → SENSOR_DRY   (0.0 V) → senseDryRun=true
+     *                          → dry-run FSM will fire → motor stops
+     * ─────────────────────────────────────────────────────────── */
+    float v5 = (wellDry != 0) ? SENSOR_DRY : SENSOR_WATER;
+
+    data->voltages[5]  = v5;
+    s_filtered[5]      = v5;   /* keep EMA in sync */
+    data->rawValues[5] = (uint16_t)((v5 * ADC_RES) / VREF);
+
+    /* CH4 (ground water) is intentionally NOT touched here —
+     * it is always read from the local ADC on the receiver side    */
 }
 
-/* ── Read all channels ──────────────────────────────────────────────── */
+/* ── ADC_ReadAllChannels ────────────────────────────────────────────
+ *
+ *  Step 1: Read all 6 physical ADC channels through EMA filter.
+ *          This always runs so s_filtered[] stays current regardless
+ *          of LoRa state.
+ *
+ *  Step 2: If LoRa wireless data is valid, overwrite CH0–CH3 and
+ *          CH5 with synthesised values from the last received packet.
+ *          CH4 (ground water) is always kept from local ADC.
+ *
+ *  Step 3: CH0–CH3 / CH4 / CH5 level-flag events are evaluated on
+ *          the FINAL voltages (after any wireless injection), which
+ *          keeps event detection consistent regardless of source.
+ * ──────────────────────────────────────────────────────────────────── */
 void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
 {
-    bool changed = false;
     char loraPacket[32];
     loraPacket[0] = '\0';
 
-    /* ── Step 1: Read all 6 local ADC channels (EMA filtered) ─────── */
+    /* ── Step 1: Sample and EMA-filter every local channel ─────── */
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
     {
         float v = readChannelVoltage(hadc, adcChannels[i]);
@@ -176,12 +251,40 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
         g_adcVoltages[i]    = v;
 
         if (fabsf(v - s_prev_volt[i]) > PRINT_DELTA)
-        {
-            changed = true;
             s_prev_volt[i] = v;
-        }
+    }
 
-        /* --- Level flags (CH0–CH3) for LoRa / debug events --- */
+    /* ── Step 2: Wireless override ──────────────────────────────
+     *
+     *  When the LoRa link is healthy, synthesise CH0–CH3 (tank level)
+     *  and CH5 (dry-run) from the last received packet.
+     *
+     *  CH4 is NEVER overridden — ground-water detection is a local
+     *  physical sensor permanently wired to the motor-controller PCB.
+     *
+     *  If the link has timed out (>60 s silent) or was never established,
+     *  LoRa_IsWirelessDataValid() returns false and the local ADC values
+     *  from Step 1 are used unchanged — safe bench / wired test mode.
+     * ─────────────────────────────────────────────────────────── */
+    if (LoRa_IsWirelessDataValid())
+    {
+        uint8_t wirelessLevel  = LoRa_GetWirelessTankLevel();
+        uint8_t wirelessWellDry = LoRa_GetWirelessWellDry();
+        inject_wireless_level(data, wirelessLevel, wirelessWellDry);
+    }
+    /* else: local ADC values for all channels — fallback / offline mode */
+
+    /* ── Step 3: Level-flag events on final voltages ────────────
+     *
+     *  These flags drive LoRa event packets on the transmitter side
+     *  but are kept here for debug / UART diagnostic symmetry.
+     *  Evaluated AFTER wireless injection so they reflect the true
+     *  state seen by model_handle.c.
+     * ─────────────────────────────────────────────────────────── */
+    for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
+    {
+        float v = data->voltages[i];
+
         if (i <= 3)
         {
             if (!s_level_flags[i] && v >= THR)
@@ -210,8 +313,7 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
             continue;
         }
 
-        /* --- Ground water (CH4) --- */
-        if (i == 4)
+        if (i == 4)   /* Ground water — always local ADC */
         {
             if (!s_level_flags[i] && v >= GROUND_THRESHOLD)
             {
@@ -229,8 +331,7 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
             continue;
         }
 
-        /* --- Dry run sensor (CH5) — stays local at motor side --- */
-        if (i == 5)
+        if (i == 5)   /* Dry-run sensor — local when offline, injected when online */
         {
             if (!s_level_flags[i] && v >= DRY_VOLTAGE_THRESHOLD)
             {
@@ -248,22 +349,6 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
             continue;
         }
     }
-
-    /* ── Step 2: Wireless override for tank-level probes (CH0–CH3) ──
-     *
-     * If the LoRa receiver has a valid, non-expired reading from the
-     * transmitter at the tank, synthesise probe voltages from it.
-     *
-     * CH4 (ground water) and CH5 (dry run) are ALWAYS taken from the
-     * local ADC because those sensors are physically at the motor site.
-     * ──────────────────────────────────────────────────────────────── */
-    if (LoRa_IsWirelessDataValid())
-    {
-        uint8_t wirelessLevel = LoRa_GetWirelessTankLevel();
-        inject_wireless_level(data, wirelessLevel);
-    }
-    /* If wireless data is not valid, local ADC voltages[0-3] are used
-     * unchanged — this is the safe fall-back for wired bench testing  */
 }
 
 /* ── Threshold check (unchanged) ───────────────────────────────────── */

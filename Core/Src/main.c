@@ -1,11 +1,37 @@
 /* ====================================================================
  * main.c  —  RECEIVER (motor-controller node)
  *
- * What changed vs the old version:
- *   LoRa_Task() uncommented in the main loop.  It must be called
- *   every iteration (every ~10 ms) so DIO0 is sampled promptly when
- *   the transmitter sends a packet.  The function itself is non-
- *   blocking; it returns immediately when no packet has arrived.
+ * NODE TYPE: LORA_RECEIVER_NODE
+ *
+ * What changed vs the previous version:
+ *
+ *  1. g_loraNewPacketFlag checked every main-loop iteration.
+ *     When lora.c sets the flag after a valid data packet, main.c
+ *     clears it and sets g_screenUpdatePending = true so the LCD
+ *     refreshes immediately (instead of waiting up to 400 ms for
+ *     the DRY_BLINK timer inside Screen_Update to fire).
+ *
+ *  2. ACS712_Update() kept before ADC_ReadAllChannels() so the AC
+ *     current/voltage globals are fresh when model_handle.c reads
+ *     them during ModelHandle_Process().
+ *
+ * ── Main-loop iteration order (10 ms cycle) ─────────────────────────
+ *
+ *   LoRa_Task()                   — poll DIO0, RX packet, send ACK,
+ *                                   update g_wirelessTankLevel /
+ *                                   g_wirelessWellDry, set newPacketFlag
+ *   [new-packet flag check]       — sets g_screenUpdatePending
+ *   ACS712_Update()               — update g_currentA / g_voltageV
+ *   ADC_ReadAllChannels()         — Step1: local ADC; Step2: wireless
+ *                                   override (CH0–CH3, CH5) if valid
+ *   RTC_GetTimeDate()             — refresh time struct for screen/timer
+ *   UART_GetReceivedPacket()      — handle remote commands
+ *   ModelHandle_CheckAutoTimerActivation()
+ *   ModelHandle_Process()         — FSM: motor, dry-run, auto, etc.
+ *   Screen_HandleSwitches()       — decode button events
+ *   Screen_Update()               — refresh LCD (rate-limited internally)
+ *   LED_Task()                    — update RGB LED from intents
+ *   HAL_Delay(10)
  * ==================================================================== */
 
 /* USER CODE BEGIN Header */
@@ -122,31 +148,56 @@ int main(void)
 
     while (1)
     {
-        /* ── LoRa receive (non-blocking, polls DIO0) ─────────────────
+        /* ── 1. LoRa receive (non-blocking, polls DIO0) ─────────────
+         *
          * Must run every loop so packets are captured promptly.
-         * When a valid @TL:<percent># packet arrives, LoRa_Task()
-         * updates the wireless level that ADC_ReadAllChannels() will
-         * inject into adcData.voltages[0-3] on the next iteration.
+         * When a valid @TL:<pct>,WD:<wd>,SN:<sn># packet arrives,
+         * LoRa_Task() updates:
+         *   g_wirelessTankLevel  — 0–100 %
+         *   g_wirelessWellDry    — 0=OK  1=DRY alarm
+         *   g_wirelessDataValid  — true
+         *   g_loraConnected      — 1
+         *   g_loraNewPacketFlag  — true  (cleared below)
          * ──────────────────────────────────────────────────────────── */
         LoRa_Task();
 
-        /* ── Sensors & model ─────────────────────────────────────────
-         * ADC_ReadAllChannels reads local CH4 (ground water) and
-         * CH5 (dry run) from physical ADC.  CH0–CH3 (tank level) are
-         * overridden with wireless data when a valid packet is held.
+        /* ── 2. Immediate screen refresh on new LoRa packet ────────
+         *
+         * g_loraNewPacketFlag is set by lora.c each time a valid data
+         * packet is parsed.  We clear it here and request a screen
+         * refresh so the LCD shows the new tank level / dry state
+         * without waiting for the 400 ms blink timer inside
+         * Screen_Update().
+         * ──────────────────────────────────────────────────────────── */
+        if (g_loraNewPacketFlag)
+        {
+            g_loraNewPacketFlag    = false;
+            g_screenUpdatePending  = true;
+        }
+
+        /* ── 3. Sensors & model ──────────────────────────────────────
+         *
+         * ADC_ReadAllChannels (Step 1) reads local CH4 (ground water).
+         * If LoRa wireless data is valid (Step 2 inside adc.c) it
+         * synthesises CH0–CH3 from TL and CH5 from WD.
+         * If LoRa is offline every channel comes from local ADC.
          * ──────────────────────────────────────────────────────────── */
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
         RTC_GetTimeDate();
 
+        /* ── 4. UART remote commands ────────────────────────────────── */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
 
+        /* ── 5. Model / FSM ─────────────────────────────────────────── */
         ModelHandle_CheckAutoTimerActivation();
         ModelHandle_Process();
+
+        /* ── 6. UI ───────────────────────────────────────────────────── */
         Screen_HandleSwitches();
         Screen_Update();
         LED_Task();
@@ -155,7 +206,7 @@ int main(void)
     }
 }
 
-/* ── Clock configuration (unchanged) ───────────────────────────────── */
+/* ── Clock configuration ────────────────────────────────────────────── */
 void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};

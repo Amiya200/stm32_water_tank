@@ -1,27 +1,49 @@
 /* ====================================================================
  * lora.h  —  RECEIVER project copy  (motor-controller node)
  *
+ * NODE TYPE: LORA_RECEIVER_NODE
+ *
  * Each STM32CubeIDE project has its OWN copy of this file in its
  * Core/Inc/ folder.  The node type is fixed right here so no
  * project-level preprocessor symbol is needed.
  *
- * Protocol packet contract (both nodes must match):
+ * ── Protocol packet contract (both nodes must match exactly) ─────────
  *
- *   TX  →  RX   hello :  @HI#
- *   RX  →  TX   hello :  @OK#
- *   TX  →  RX   data  :  @TL:<3d>,SN:<5d>#   e.g. @TL:080,SN:00003#
- *   RX  →  TX   ack   :  @ACK:<5d>#           e.g. @ACK:00003#
+ *   TX  → RX   hello  :  @HI#
+ *   RX  → TX   hello  :  @OK#
+ *   TX  → RX   data   :  @TL:<3d>,WD:<1d>,SN:<5d>#
+ *                         e.g.  @TL:080,WD:0,SN:00003#
+ *                           TL = tank level  0 / 20 / 40 / 60 / 80 / 100
+ *                           WD = well-dry flag  0=OK  1=DRY ALARM
+ *                           SN = 5-digit sequence number
+ *   RX  → TX   ack    :  @ACK:<5d>#
+ *                         e.g.  @ACK:00003#
  *
- * g_loraConnected is 1 on BOTH nodes when the link is healthy.
+ * ── g_loraConnected truth table ─────────────────────────────────────
+ *
+ *   RX side : set 1 when a valid data packet arrives; cleared to 0
+ *             when WIRELESS_TIMEOUT_MS passes with no new packet.
+ *   TX side : set 1 when last data packet was ACKed; cleared to 0
+ *             after CONN_FAIL_THRESHOLD consecutive un-ACKed packets.
+ *
+ * ── Offline fallback (RX side) ──────────────────────────────────────
+ *
+ *   When g_loraConnected == 0 / LoRa_IsWirelessDataValid() == false :
+ *     • CH0–CH3 (tank level probes) ← local physical ADC
+ *     • CH5     (dry-run sensor)    ← local physical ADC
+ *   When g_loraConnected == 1 / LoRa_IsWirelessDataValid() == true  :
+ *     • CH0–CH3 ← synthesised from wireless TL value
+ *     • CH5     ← synthesised from wireless WD flag
+ *     • CH4 (ground-water) is ALWAYS read from local ADC on RX side
  * ==================================================================== */
 
 #ifndef LORA_H
 #define LORA_H
 
 /* ── Fix the node type for THIS project right here ──────────────────── */
-/* Receiver (motor-controller) project: LORA_RECEIVER_NODE              */
-/* Transmitter (water-tank)    project: LORA_TRANSMITTER_NODE           */
-/* Only one must be defined per project.                                 */
+/* Receiver (motor-controller) project : LORA_RECEIVER_NODE             */
+/* Transmitter (water-tank)    project : LORA_TRANSMITTER_NODE          */
+/* Only ONE must be defined per project.                                 */
 #define LORA_RECEIVER_NODE
 
 #include <stdint.h>
@@ -50,14 +72,21 @@ extern uint8_t loraMode;
 /* ══════════════════════════════════════════════════════════════════════
  *  SHARED CONNECTION STATE
  *
- *  g_loraConnected is 1 on BOTH nodes when the link is healthy.
- *    RX side → a valid data packet arrived within WIRELESS_TIMEOUT_MS
- *    TX side → last data packet was ACKed by the receiver
+ *  g_loraConnected  —  1 = link healthy  |  0 = link down
  *
- *  Your application code (main.c, adc.c, screen.c …) only needs to
- *  read this single flag to know whether the wireless link is live.
+ *  Safe to poll from any module (model_handle.c, screen.c, adc.c …).
+ *  Do NOT write to it directly; it is managed by lora.c only.
  * ════════════════════════════════════════════════════════════════════ */
 extern uint8_t g_loraConnected;    /* 0 = disconnected  |  1 = connected */
+
+/* ── New-packet notification flag ───────────────────────────────────── */
+/*
+ * Set to true by LoRa_Task() each time a valid data packet is parsed.
+ * Cleared by main.c after it triggers g_screenUpdatePending.
+ * Allows the main loop to force an immediate LCD refresh without
+ * waiting for the 400 ms dash blink timer to fire.
+ */
+extern bool g_loraNewPacketFlag;
 
 /* ── TX result enum (used by transmitter; kept here so lora.c         ── */
 /* ── compiles cleanly even when included from adc.c on RX side)       ── */
@@ -69,7 +98,7 @@ typedef enum
 } LoRa_TxResult;
 
 /* ── TX statistics externs (defined in transmitter lora.c only)       ── */
-/* ── Declared here so any file that includes lora.h won't get errors) ── */
+/* ── Declared here so any file that includes lora.h won't get errors  ── */
 extern uint32_t g_lora_tx_ok;
 extern uint32_t g_lora_tx_retry;
 extern uint32_t g_lora_tx_fail;
@@ -83,9 +112,8 @@ void    LoRa_WriteReg   (uint8_t addr, uint8_t data);
 uint8_t LoRa_ReadReg    (uint8_t addr);
 void    LoRa_WriteBuffer(uint8_t addr, const uint8_t *buffer, uint8_t size);
 void    LoRa_ReadBuffer (uint8_t addr,       uint8_t *buffer, uint8_t size);
-/* LoRa_Reset() is static inside lora.c — not part of the public API.   */
 
-/* ── Init (same name on both nodes) ────────────────────────────────── */
+/* ── Init (same function name on both nodes) ────────────────────────── */
 void LoRa_Init(void);
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -93,10 +121,30 @@ void LoRa_Init(void);
  * ════════════════════════════════════════════════════════════════════ */
 #if defined(LORA_RECEIVER_NODE)
 
-/* RX node: LoRa_Task is void, called every ~10 ms in main loop */
+/*
+ * LoRa_Task()
+ *   Non-blocking.  Must be called every main-loop iteration (~10 ms).
+ *   Polls DIO0, receives packet, sends ACK, updates wireless state.
+ *
+ * LoRa_GetWirelessTankLevel()
+ *   Returns the last received tank level (0–100 %).
+ *   Valid only while LoRa_IsWirelessDataValid() == true.
+ *
+ * LoRa_GetWirelessWellDry()
+ *   Returns the last received well-dry flag from the transmitter.
+ *     0 = source water OK  (motor may run)
+ *     1 = well DRY ALARM   (motor should stop — dry-run protection)
+ *   Valid only while LoRa_IsWirelessDataValid() == true.
+ *
+ * LoRa_IsWirelessDataValid()
+ *   Returns true while valid data has arrived within
+ *   WIRELESS_TIMEOUT_MS (60 000 ms).
+ *   Clears g_loraConnected and starts RED-BLINK LED on timeout.
+ */
 void    LoRa_Task                (void);
-uint8_t LoRa_GetWirelessTankLevel(void);   /* returns 0–100 % */
-bool    LoRa_IsWirelessDataValid (void);   /* false when > 60 s silent */
+uint8_t LoRa_GetWirelessTankLevel(void);
+uint8_t LoRa_GetWirelessWellDry  (void);  /* NEW — WD field from TX  */
+bool    LoRa_IsWirelessDataValid (void);
 
 #elif defined(LORA_TRANSMITTER_NODE)
 
@@ -105,7 +153,7 @@ LoRa_TxResult LoRa_SendPacket(const uint8_t *buffer, uint8_t size);
 LoRa_TxResult LoRa_Task      (void);
 
 #else
-#error "lora.h: set #define LORA_RECEIVER_NODE or LORA_TRANSMITTER_NODE at the top of this file."
+#error "lora.h: set #define LORA_RECEIVER_NODE or LORA_TRANSMITTER_NODE at the top."
 #endif
 
 #endif /* LORA_H */
