@@ -52,7 +52,7 @@ static uint16_t Timer_CRC16(const uint8_t *data, uint16_t len)
     return crc;
 }
 
-#define MOTOR_START_DELAY_MS   5000UL
+#define MOTOR_START_DELAY_MS   10000UL
 #define TANK_FULL_DELAY_MS     10000UL
 
 static uint32_t bootStartBlockUntil = 0;
