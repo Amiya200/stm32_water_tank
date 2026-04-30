@@ -1,4 +1,4 @@
-Core/Src/adc.o: ../Core/Src/adc.c ../Core/Inc/adc.h \
+Core/Src/device_id.o: ../Core/Src/device_id.c ../Core/Inc/device_id.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h \
  ../Core/Inc/stm32f1xx_hal_conf.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_rcc.h \
@@ -29,12 +29,8 @@ Core/Src/adc.o: ../Core/Src/adc.c ../Core/Inc/adc.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_spi.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h \
- ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h \
- ../Core/Inc/lora.h ../Core/Inc/main.h ../Core/Inc/device_id.h \
- ../Core/Inc/main.h ../Core/Inc/uart.h ../Core/Inc/global.h \
- ../Core/Inc/led.h ../Core/Inc/model_handle.h ../Core/Inc/adc.h \
- ../Core/Inc/eeprom_i2c.h
-../Core/Inc/adc.h:
+ ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h
+../Core/Inc/device_id.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h:
 ../Core/Inc/stm32f1xx_hal_conf.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_rcc.h:
@@ -66,13 +62,3 @@ Core/Src/adc.o: ../Core/Src/adc.c ../Core/Inc/adc.h \
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h:
-../Core/Inc/lora.h:
-../Core/Inc/main.h:
-../Core/Inc/device_id.h:
-../Core/Inc/main.h:
-../Core/Inc/uart.h:
-../Core/Inc/global.h:
-../Core/Inc/led.h:
-../Core/Inc/model_handle.h:
-../Core/Inc/adc.h:
-../Core/Inc/eeprom_i2c.h:
