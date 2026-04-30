@@ -568,15 +568,20 @@ static bool isTankFull(void)
 void ModelHandle_StartRestart(void)
 {
     if (isTankFull()) return;
+
     backup_current_mode();
     clear_all_modes();
-    restartActive   = true;
-    restartState    = RESTART_RUN_CONTINUOUS;
-    restartDeadline = 0;
-    motorOwner      = MOTOR_OWNER_RESTART;
-    senseMaxRunReached = false;
-    dryState = DRY_IDLE;
+
+    restartActive       = true;
+    restartState        = RESTART_RUN_CONTINUOUS;
+    restartDeadline     = 0;
+    motorOwner          = MOTOR_OWNER_RESTART;
+    senseMaxRunReached  = false;
+    dryState            = DRY_IDLE;
+    bootStartBlockUntil = HAL_GetTick();
+
     start_motor();
+    ModelHandle_SaveModeState();
 }
 
 void ModelHandle_TimerRecalculateNow(void)

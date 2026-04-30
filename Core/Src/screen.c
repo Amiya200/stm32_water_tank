@@ -85,7 +85,7 @@ extern void ModelHandle_FactoryReset(void);
 #define WELCOME_MS          2500
 #define CURSOR_BLINK_MS     400
 #define AUTO_BACK_MS        60000
-#define LONG_PRESS_MS       3000
+#define LONG_PRESS_MS       2000
 #define CONTINUOUS_STEP_MS  250
 #define DASH_PAGE0_TIME     4500UL
 #define DASH_PAGE1_TIME     2500UL
@@ -198,9 +198,9 @@ static const char* const devset_menu_items[] = {
 };
 #define DEVSET_MENU_COUNT  (sizeof(devset_menu_items)/sizeof(devset_menu_items[0]))
 
-#define DEBOUNCE_MS        50
-#define REPEAT_START_MS    500
-#define REPEAT_INTERVAL_MS 150
+#define DEBOUNCE_MS        15
+#define REPEAT_START_MS    600
+#define REPEAT_INTERVAL_MS 100
 
 static uint8_t devset_idx      = 0;
 static uint8_t devset_view_top = 0;
@@ -1171,52 +1171,48 @@ static UiButton decode_button_press(void)
     static BtnState btn[BTN_COUNT] = {0};
 
     uint32_t now = HAL_GetTick();
-    UiButton event = BTN_NONE;
 
     for (int i = 0; i < BTN_COUNT; i++)
     {
         bool raw = Switch_IsPressed(i);
 
-        // 🔹 Detect change
         if (raw != btn[i].raw)
         {
             btn[i].raw = raw;
             btn[i].lastChange = now;
         }
 
-        // 🔹 Debounce
-        if ((now - btn[i].lastChange) > 40) // smoother (40ms)
-        {
-            if (btn[i].stable != raw)
-            {
-                btn[i].stable = raw;
+        if ((now - btn[i].lastChange) < DEBOUNCE_MS)
+            continue;
 
-                if (raw) // 🔘 Pressed
+        if (btn[i].stable != raw)
+        {
+            btn[i].stable = raw;
+
+            if (raw)
+            {
+                btn[i].pressTime  = now;
+                btn[i].lastRepeat = now;
+                btn[i].longSent   = false;
+            }
+            else
+            {
+                if (!btn[i].longSent)
                 {
-                    btn[i].pressTime = now;
-                    btn[i].longSent = false;
-                    btn[i].lastRepeat = now;
-                }
-                else // 🔘 Released
-                {
-                    if (!btn[i].longSent)
+                    switch (i)
                     {
-                        switch (i)
-                        {
-                            case 0: return BTN_RESET;
-                            case 1: return BTN_SELECT;
-                            case 2: return BTN_UP;
-                            case 3: return BTN_DOWN;
-                        }
+                        case 0: return BTN_RESET;
+                        case 1: return BTN_SELECT;
+                        case 2: return BTN_UP;
+                        case 3: return BTN_DOWN;
                     }
                 }
             }
         }
 
-        // 🔹 Long Press
         if (btn[i].stable && !btn[i].longSent)
         {
-            if ((now - btn[i].pressTime) > 800) // faster long press
+            if ((now - btn[i].pressTime) >= LONG_PRESS_MS)
             {
                 btn[i].longSent = true;
 
@@ -1230,23 +1226,22 @@ static UiButton decode_button_press(void)
             }
         }
 
-        // 🔹 Hold Repeat (Smooth scrolling)
-        if (btn[i].stable && btn[i].longSent)
+        /*
+         * Auto-repeat only for UP/DOWN.
+         * RESET and SELECT should not repeat, otherwise refill/menu actions feel unstable.
+         */
+        if ((i == 2 || i == 3) && btn[i].stable)
         {
-            if ((now - btn[i].lastRepeat) > 120) // smoother repeat
+            if ((now - btn[i].pressTime) >= REPEAT_START_MS &&
+                (now - btn[i].lastRepeat) >= REPEAT_INTERVAL_MS)
             {
                 btn[i].lastRepeat = now;
-
-                switch (i)
-                {
-                    case 2: return BTN_UP;
-                    case 3: return BTN_DOWN;
-                }
+                return (i == 2) ? BTN_UP : BTN_DOWN;
             }
         }
     }
 
-    return event;
+    return BTN_NONE;
 }
 void Screen_HandleSwitches(void)
 {
@@ -1310,6 +1305,11 @@ void Screen_HandleSwitches(void)
                 ModelHandle_StartRestart();
             else
                 ModelHandle_StopRestart();
+
+            dash_page = 0;
+            dash_cycle_start = HAL_GetTick();
+            screenNeedsRefresh = true;
+            return;
         }
         else
         {
