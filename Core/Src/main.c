@@ -1,49 +1,11 @@
 /* ====================================================================
- * main.c  —  RECEIVER (motor-controller node)
+ * main.c  —  RECEIVER (motor-controller node) — ENHANCED
  *
- * NODE TYPE: LORA_RECEIVER_NODE
- *
- * What changed vs the previous version:
- *
- *  1. g_loraNewPacketFlag checked every main-loop iteration.
- *     When lora.c sets the flag after a valid data packet, main.c
- *     clears it and sets g_screenUpdatePending = true so the LCD
- *     refreshes immediately (instead of waiting up to 400 ms for
- *     the DRY_BLINK timer inside Screen_Update to fire).
- *
- *  2. ACS712_Update() kept before ADC_ReadAllChannels() so the AC
- *     current/voltage globals are fresh when model_handle.c reads
- *     them during ModelHandle_Process().
- *
- * ── Main-loop iteration order (10 ms cycle) ─────────────────────────
- *
- *   LoRa_Task()                   — poll DIO0, RX packet, send ACK,
- *                                   update g_wirelessTankLevel /
- *                                   g_wirelessWellDry, set newPacketFlag
- *   [new-packet flag check]       — sets g_screenUpdatePending
- *   ACS712_Update()               — update g_currentA / g_voltageV
- *   ADC_ReadAllChannels()         — Step1: local ADC; Step2: wireless
- *                                   override (CH0–CH3, CH5) if valid
- *   RTC_GetTimeDate()             — refresh time struct for screen/timer
- *   UART_GetReceivedPacket()      — handle remote commands
- *   ModelHandle_CheckAutoTimerActivation()
- *   ModelHandle_Process()         — FSM: motor, dry-run, auto, etc.
- *   Screen_HandleSwitches()       — decode button events
- *   Screen_Update()               — refresh LCD (rate-limited internally)
- *   LED_Task()                    — update RGB LED from intents
- *   HAL_Delay(10)
+ * IMPROVEMENTS:
+ *  • Startup banner with device ID
+ *  • Periodic connection status updates
+ *  • Better debugging output
  * ==================================================================== */
-
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  * @developer      : Amiya Krishna Gupta
-  * @start_date     : 11 August 2025
-  ******************************************************************************
-  */
-/* USER CODE END Header */
 
 #include "main.h"
 #include "lcd_i2c.h"
@@ -61,6 +23,7 @@
 #include "rf.h"
 #include "stdio.h"
 #include "acs712.h"
+#include "device_id.h"
 
 /* ── Private defines ────────────────────────────────────────────────── */
 #define ADC_CHANNEL_COUNT 6
@@ -86,6 +49,13 @@ int ak = 0;
 bool g_screenUpdatePending = false;
 extern uint8_t loraMode;
 
+/* Status update timer */
+static uint32_t lastStatusUpdate = 0;
+#define STATUS_UPDATE_INTERVAL 15000  /* 15 seconds */
+
+/* External function declarations */
+extern bool Motor_GetStatus(void);
+
 /* ── Private function prototypes ────────────────────────────────────── */
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -99,6 +69,12 @@ char dbg[64];
 void Debug_Print(char *msg)
 {
     UART_TransmitString(&huart1, msg);
+}
+
+void UART_PrintLn(const char *s)
+{
+    HAL_UART_Transmit(&huart1, (uint8_t*)s, strlen(s), 1000);
+    HAL_UART_Transmit(&huart1, (uint8_t*)"\r\n", 2, 1000);
 }
 
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
@@ -119,10 +95,22 @@ int main(void)
     MX_I2C2_Init();
     MX_TIM3_Init();
 
+    /* Startup banner */
+    HAL_Delay(100);
+    UART_PrintLn("\r\n\r\n");
+    UART_PrintLn("=========================================");
+    UART_PrintLn("  HELONIX - RECEIVER (MOTOR CONTROLLER)");
+    UART_PrintLn("  Firmware: v3.2 - LoRa Water Tank RX");
+    UART_PrintLn("  UART: 115200 8N1");
+    UART_PrintLn("=========================================");
+
     RTC_Init();
     lcd_init();
     ADC_Init(&hadc1);
-    LoRa_Init();           /* initialises in RX-continuous mode         */
+
+    /* LoRa init with device ID display */
+    LoRa_Init();  /* This prints its own banner */
+
     Screen_Init();
     UART_Init();
     Switches_Init();
@@ -146,12 +134,17 @@ int main(void)
     /* Receiver always starts in RX mode */
     loraMode = LORA_MODE_RECEIVER;
 
+    UART_PrintLn("\r\n[MAIN] All systems initialized");
+    UART_PrintLn("[MAIN] Entering main loop...\r\n");
+
     while (1)
     {
+        uint32_t now = HAL_GetTick();
+
         /* ── 1. LoRa receive (non-blocking, polls DIO0) ─────────────
          *
          * Must run every loop so packets are captured promptly.
-         * When a valid @TL:<pct>,WD:<wd>,SN:<sn># packet arrives,
+         * When a valid @TL:<pct>,WD:<wd>,DID:<did># packet arrives,
          * LoRa_Task() updates:
          *   g_wirelessTankLevel  — 0–100 %
          *   g_wirelessWellDry    — 0=OK  1=DRY alarm
@@ -201,6 +194,23 @@ int main(void)
         Screen_HandleSwitches();
         Screen_Update();
         LED_Task();
+
+        /* ── 7. Periodic status update ──────────────────────────────── */
+        if ((now - lastStatusUpdate) >= STATUS_UPDATE_INTERVAL)
+        {
+            lastStatusUpdate = now;
+
+            char status[120];
+            extern uint8_t g_loraConnected;
+
+            snprintf(status, sizeof(status),
+                     "[STATUS] LoRa: %s | Data: %s | TL: %u%% | Motor: %s",
+                     g_loraConnected ? "CONNECTED" : "DISCONNECTED",
+                     (LoRa_IsWirelessDataValid() ? "VALID" : "OFFLINE"),
+                     LoRa_GetWirelessTankLevel(),
+                     Motor_GetStatus() ? "ON" : "OFF");
+            UART_PrintLn(status);
+        }
 
         HAL_Delay(10);
     }
@@ -365,6 +375,7 @@ static void MX_GPIO_Init(void)
 
 void Error_Handler(void)
 {
+    UART_PrintLn("[ERROR] Error_Handler called - system halted!");
     __disable_irq();
     while (1) { }
 }
