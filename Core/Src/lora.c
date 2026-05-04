@@ -1,5 +1,5 @@
 /* ====================================================================
- * lora.c  —  RECEIVER LoRa driver — ENHANCED WITH DEBUGGING
+ * lora.c  —  RECEIVER LoRa driver — WITH SEQUENCE NUMBER SUPPORT
  *
  * IMPROVEMENTS:
  *  • UART debugging for every packet received
@@ -7,6 +7,7 @@
  *  • Auto-reconnection logic
  *  • Better pairing flow
  *  • Packet statistics
+ *  • NEW: Sequence number tracking and validation
  * ==================================================================== */
 
 #include "lora.h"
@@ -50,6 +51,13 @@ static uint8_t  g_wirelessTankLevel  = 0;
 static uint8_t  g_wirelessWellDry    = 0;
 static uint32_t g_wirelessLastRxTick = 0;
 static bool     g_wirelessDataValid  = false;
+
+/* NEW: Sequence number tracking */
+static uint32_t g_lastSequenceNum     = 0;
+static bool     g_sequenceInitialized = false;
+static uint32_t g_packetsLost         = 0;
+static uint32_t g_duplicatePackets    = 0;
+static uint32_t g_outOfOrderPackets   = 0;
 
 /* Pairing state */
 static bool     s_pairingMode     = false;
@@ -247,23 +255,40 @@ static bool parse_hello_packet(const char *pkt, uint32_t *did_out)
     return true;
 }
 
+/**
+ * @brief Parse data packet with sequence number
+ *
+ * NEW FORMAT: @TL:060,WD:0,SQ:00001234,DID:A1B2C3D4#
+ *
+ * @param pkt       Input packet string
+ * @param level_out Output: tank level 0-100%
+ * @param wd_out    Output: well dry flag
+ * @param seq_out   Output: sequence number
+ * @param did_out   Output: device ID
+ * @return true if parsing successful
+ */
 static bool parse_data_packet(const char *pkt,
                               uint8_t *level_out,
                               uint8_t *wd_out,
+                              uint32_t *seq_out,
                               uint32_t *did_out)
 {
     const char *p;
     uint16_t level = 0;
     uint8_t wd = 0;
+    uint32_t seq = 0;
     uint32_t did = 0;
 
-    if (pkt == NULL || level_out == NULL || wd_out == NULL || did_out == NULL)
+    if (pkt == NULL || level_out == NULL || wd_out == NULL ||
+        seq_out == NULL || did_out == NULL)
         return false;
 
     *level_out = 0;
     *wd_out = 0;
+    *seq_out = 0;
     *did_out = 0;
 
+    /* Parse @TL: */
     if (strncmp(pkt, "@TL:", 4) != 0)
         return false;
 
@@ -282,6 +307,7 @@ static bool parse_data_packet(const char *pkt,
         p++;
     }
 
+    /* Parse ,WD: */
     if (strncmp(p, ",WD:", 4) != 0)
         return false;
 
@@ -293,6 +319,18 @@ static bool parse_data_packet(const char *pkt,
     wd = (uint8_t)(*p - '0');
     p++;
 
+    /* NEW: Parse ,SQ: */
+    if (strncmp(p, ",SQ:", 4) != 0)
+        return false;
+
+    p += 4;
+
+    if (!parse_hex8(p, &seq))
+        return false;
+
+    p += 8;
+
+    /* Parse ,DID: */
     if (strncmp(p, ",DID:", 5) != 0)
         return false;
 
@@ -309,8 +347,74 @@ static bool parse_data_packet(const char *pkt,
 
     *level_out = (uint8_t)level;
     *wd_out = wd;
+    *seq_out = seq;
     *did_out = did;
 
+    return true;
+}
+
+/**
+ * @brief Validate and update sequence number
+ *
+ * Detects:
+ *  - Packet loss (gaps in sequence)
+ *  - Duplicate packets (same sequence received twice)
+ *  - Out-of-order packets (sequence older than last received)
+ *
+ * @param newSeq New sequence number from received packet
+ * @return true if sequence is valid (new and in order)
+ */
+static bool validate_sequence(uint32_t newSeq)
+{
+    char dbg[120];
+
+    /* First packet - initialize */
+    if (!g_sequenceInitialized)
+    {
+        g_lastSequenceNum = newSeq;
+        g_sequenceInitialized = true;
+        UART_Debug("[LORA RX] Sequence initialized");
+        return true;
+    }
+
+    /* Check for duplicate */
+    if (newSeq == g_lastSequenceNum)
+    {
+        g_duplicatePackets++;
+        snprintf(dbg, sizeof(dbg),
+                 "[LORA RX] !!! DUPLICATE packet - SEQ:%08lX (total duplicates: %lu)",
+                 (unsigned long)newSeq, (unsigned long)g_duplicatePackets);
+        UART_Debug(dbg);
+        return false;  /* Reject duplicate */
+    }
+
+    /* Check for out-of-order (older packet) */
+    if (newSeq < g_lastSequenceNum)
+    {
+        g_outOfOrderPackets++;
+        snprintf(dbg, sizeof(dbg),
+                 "[LORA RX] !!! OUT-OF-ORDER packet - SEQ:%08lX < Last:%08lX (total OOO: %lu)",
+                 (unsigned long)newSeq, (unsigned long)g_lastSequenceNum,
+                 (unsigned long)g_outOfOrderPackets);
+        UART_Debug(dbg);
+        return false;  /* Reject old packet */
+    }
+
+    /* Check for packet loss */
+    uint32_t expected = g_lastSequenceNum + 1;
+    if (newSeq > expected)
+    {
+        uint32_t lost = newSeq - expected;
+        g_packetsLost += lost;
+        snprintf(dbg, sizeof(dbg),
+                 "[LORA RX] !!! PACKET LOSS detected - Gap: %lu packets (total lost: %lu)",
+                 (unsigned long)lost, (unsigned long)g_packetsLost);
+        UART_Debug(dbg);
+        /* Still accept the packet, just note the loss */
+    }
+
+    /* Update last sequence */
+    g_lastSequenceNum = newSeq;
     return true;
 }
 
@@ -341,6 +445,10 @@ static void pair_device_from_did(uint32_t did)
     s_lastPairedDID = did;
     s_pairingDone   = true;
     s_pairingMode   = false;
+
+    /* NEW: Reset sequence tracking on new pairing */
+    g_sequenceInitialized = false;
+    g_lastSequenceNum = 0;
 
     snprintf(dbg, sizeof(dbg), "[LORA RX] *** PAIRING COMPLETE *** DID:%08lX", (unsigned long)did);
     UART_Debug(dbg);
@@ -396,6 +504,22 @@ uint8_t LoRa_GetWirelessWellDry(void)
     return g_wirelessWellDry;
 }
 
+/**
+ * @brief Get last received sequence number
+ */
+uint32_t LoRa_GetLastSequence(void)
+{
+    return g_lastSequenceNum;
+}
+
+/**
+ * @brief Get packet loss statistics
+ */
+uint32_t LoRa_GetPacketsLost(void)
+{
+    return g_packetsLost;
+}
+
 bool LoRa_IsWirelessDataValid(void)
 {
     if (!g_wirelessDataValid)
@@ -411,6 +535,9 @@ bool LoRa_IsWirelessDataValid(void)
             g_loraConnected = 0;
             UART_Debug("[LORA RX] !!! CONNECTION LOST - TIMEOUT !!!");
             LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 500);
+
+            /* Reset sequence tracking on disconnect */
+            g_sequenceInitialized = false;
         }
 
         return false;
@@ -479,7 +606,15 @@ void LoRa_Init(void)
 
     LoRa_EnterRxContinuous();
 
+    /* NEW: Initialize sequence tracking */
+    g_sequenceInitialized = false;
+    g_lastSequenceNum = 0;
+    g_packetsLost = 0;
+    g_duplicatePackets = 0;
+    g_outOfOrderPackets = 0;
+
     UART_Debug("[LORA RX] Hardware initialized - RX CONTINUOUS mode");
+    UART_Debug("[LORA RX] Sequence tracking enabled");
     UART_Debug("[LORA RX] Waiting for packets...\r\n");
 
     LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_STEADY, 1);
@@ -507,14 +642,21 @@ void LoRa_Task(void)
     if ((now - s_lastStatsReport) >= 30000)  /* Every 30 seconds */
     {
         s_lastStatsReport = now;
-        char dbg[120];
+        char dbg[160];
         snprintf(dbg, sizeof(dbg),
-                 "[LORA RX] Stats: Total=%lu Valid=%lu Invalid=%lu Rejected=%lu Connected=%s",
+                 "[LORA RX] Stats: Total=%lu Valid=%lu Invalid=%lu Rejected=%lu",
                  (unsigned long)s_totalPacketsRx,
                  (unsigned long)s_validDataPackets,
                  (unsigned long)s_invalidPackets,
-                 (unsigned long)s_rejectedPackets,
-                 g_loraConnected ? "YES" : "NO");
+                 (unsigned long)s_rejectedPackets);
+        UART_Debug(dbg);
+
+        snprintf(dbg, sizeof(dbg),
+                 "[LORA RX]        Lost=%lu Duplicate=%lu OutOfOrder=%lu LastSeq=%08lX",
+                 (unsigned long)g_packetsLost,
+                 (unsigned long)g_duplicatePackets,
+                 (unsigned long)g_outOfOrderPackets,
+                 (unsigned long)g_lastSequenceNum);
         UART_Debug(dbg);
     }
 
@@ -566,12 +708,13 @@ void LoRa_Task(void)
         return;
     }
 
-    /* Try DATA packet */
+    /* Try DATA packet with sequence number */
     uint8_t level = 0;
     uint8_t wd    = 0;
+    uint32_t seq  = 0;
     uint32_t did  = 0;
 
-    if (!parse_data_packet((char *)rxBuffer_l, &level, &wd, &did))
+    if (!parse_data_packet((char *)rxBuffer_l, &level, &wd, &seq, &did))
     {
         snprintf(dbg, sizeof(dbg), "[LORA RX] !!! PARSE FAILED - Invalid packet format !!!");
         UART_Debug(dbg);
@@ -579,8 +722,8 @@ void LoRa_Task(void)
         return;
     }
 
-    snprintf(dbg, sizeof(dbg), "[LORA RX] DATA: TL=%u%% WD=%u DID:%08lX",
-             level, wd, (unsigned long)did);
+    snprintf(dbg, sizeof(dbg), "[LORA RX] DATA: TL=%u%% WD=%u SEQ:%08lX DID:%08lX",
+             level, wd, (unsigned long)seq, (unsigned long)did);
     UART_Debug(dbg);
 
     /* Pairing mode - accept any device */
@@ -588,6 +731,10 @@ void LoRa_Task(void)
     {
         UART_Debug("[LORA RX] *** PAIRING MODE - Accepting DATA packet ***");
         pair_device_from_did(did);
+
+        /* Validate sequence (will auto-initialize on first packet) */
+        (void)validate_sequence(seq);
+
         accept_wireless_data(level, wd);
         LoRa_SendACK(did);
         LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 120);
@@ -602,6 +749,16 @@ void LoRa_Task(void)
         UART_Debug(dbg);
         LoRa_SendReply("@REJECT#");
         s_rejectedPackets++;
+        return;
+    }
+
+    /* Validate sequence number */
+    if (!validate_sequence(seq))
+    {
+        /* Duplicate or out-of-order - still send ACK but don't update data */
+        UART_Debug("[LORA RX] Sending ACK for duplicate/OOO packet (not updating data)");
+        LoRa_SendACK(did);
+        s_invalidPackets++;
         return;
     }
 
