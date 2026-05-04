@@ -34,7 +34,7 @@ Core/Src/screen.o: ../Core/Src/screen.c ../Core/Inc/screen.h \
  ../Core/Inc/adc.h ../Core/Inc/model_handle.h ../Core/Inc/eeprom_i2c.h \
  ../Core/Inc/lcd_i2c.h ../Core/Inc/switches.h ../Core/Inc/model_handle.h \
  ../Core/Inc/adc.h ../Core/Inc/rtc_i2c.h ../Core/Inc/acs712.h \
- ../Core/Inc/lora.h ../Core/Inc/device_id.h ../Core/Inc/device_id.h
+ ../Core/Inc/lora.h ../Core/Inc/lora_protocol.h ../Core/Inc/device_id.h
 ../Core/Inc/screen.h:
 ../Core/Inc/lcd_i2c.h:
 ../Core/Inc/main.h:
@@ -79,5 +79,5 @@ Core/Src/screen.o: ../Core/Src/screen.c ../Core/Inc/screen.h \
 ../Core/Inc/rtc_i2c.h:
 ../Core/Inc/acs712.h:
 ../Core/Inc/lora.h:
-../Core/Inc/device_id.h:
+../Core/Inc/lora_protocol.h:
 ../Core/Inc/device_id.h:

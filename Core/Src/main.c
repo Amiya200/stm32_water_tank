@@ -140,62 +140,27 @@ int main(void)
     while (1)
     {
         uint32_t now = HAL_GetTick();
-
-        /* ── 1. LoRa receive (non-blocking, polls DIO0) ─────────────
-         *
-         * Must run every loop so packets are captured promptly.
-         * When a valid @TL:<pct>,WD:<wd>,DID:<did># packet arrives,
-         * LoRa_Task() updates:
-         *   g_wirelessTankLevel  — 0–100 %
-         *   g_wirelessWellDry    — 0=OK  1=DRY alarm
-         *   g_wirelessDataValid  — true
-         *   g_loraConnected      — 1
-         *   g_loraNewPacketFlag  — true  (cleared below)
-         * ──────────────────────────────────────────────────────────── */
         LoRa_Task();
-
-        /* ── 2. Immediate screen refresh on new LoRa packet ────────
-         *
-         * g_loraNewPacketFlag is set by lora.c each time a valid data
-         * packet is parsed.  We clear it here and request a screen
-         * refresh so the LCD shows the new tank level / dry state
-         * without waiting for the 400 ms blink timer inside
-         * Screen_Update().
-         * ──────────────────────────────────────────────────────────── */
         if (g_loraNewPacketFlag)
         {
             g_loraNewPacketFlag    = false;
             g_screenUpdatePending  = true;
         }
-
-        /* ── 3. Sensors & model ──────────────────────────────────────
-         *
-         * ADC_ReadAllChannels (Step 1) reads local CH4 (ground water).
-         * If LoRa wireless data is valid (Step 2 inside adc.c) it
-         * synthesises CH0–CH3 from TL and CH5 from WD.
-         * If LoRa is offline every channel comes from local ADC.
-         * ──────────────────────────────────────────────────────────── */
         ACS712_Update();
         ADC_ReadAllChannels(&hadc1, &adcData);
         RTC_GetTimeDate();
-
-        /* ── 4. UART remote commands ────────────────────────────────── */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
-
-        /* ── 5. Model / FSM ─────────────────────────────────────────── */
         ModelHandle_CheckAutoTimerActivation();
         ModelHandle_Process();
 
-        /* ── 6. UI ───────────────────────────────────────────────────── */
         Screen_HandleSwitches();
         Screen_Update();
         LED_Task();
 
-        /* ── 7. Periodic status update ──────────────────────────────── */
         if ((now - lastStatusUpdate) >= STATUS_UPDATE_INTERVAL)
         {
             lastStatusUpdate = now;

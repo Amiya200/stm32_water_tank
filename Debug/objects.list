@@ -6,6 +6,7 @@
 "./Core/Src/lcd_i2c.o"
 "./Core/Src/led.o"
 "./Core/Src/lora.o"
+"./Core/Src/lora_parser.o"
 "./Core/Src/main.o"
 "./Core/Src/model_handle.o"
 "./Core/Src/relay.o"
