@@ -8,5 +8,5 @@
 ../Core/Src/main.c:254:13:MX_SPI1_Init	8	static
 ../Core/Src/main.c:271:13:MX_TIM3_Init	32	static
 ../Core/Src/main.c:292:13:MX_USART1_UART_Init	8	static
-../Core/Src/main.c:305:13:MX_GPIO_Init	40	static
-../Core/Src/main.c:341:6:Error_Handler	8	static,ignoring_inline_asm
+../Core/Src/main.c:305:13:MX_GPIO_Init	48	static
+../Core/Src/main.c:369:6:Error_Handler	8	static,ignoring_inline_asm

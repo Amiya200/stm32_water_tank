@@ -96,7 +96,8 @@ static bool     s_seqInitialized     = false;
 static uint32_t s_packetsLost        = 0;
 static uint32_t s_duplicatePackets   = 0;
 static uint32_t s_outOfOrderPackets  = 0;
-
+#define LORA_CLEAR_PAIRING_ONCE  0   /* Set 1 once, flash, then set 0 */
+#define LORA_DIO_DEBUG_ENABLE    1
 static bool     s_pairingMode        = false;
 static uint32_t s_pairingDeadline    = 0;
 static bool     s_pairingDone        = false;
@@ -125,25 +126,38 @@ static uint32_t s_lastPeerTick       = 0;
 
 void LoRa_WriteReg(uint8_t addr, uint8_t data)
 {
-    uint8_t buf[2] = { (uint8_t)(addr | 0x80u), data };
+    uint8_t tx[2];
+
+    tx[0] = addr | 0x80u;
+    tx[1] = data;
+
     NSS_LOW();
-    HAL_SPI_Transmit(&hspi1, buf, 2, HAL_MAX_DELAY);
+    HAL_SPI_Transmit(&hspi1, tx, 2, HAL_MAX_DELAY);
     NSS_HIGH();
 }
 
 uint8_t LoRa_ReadReg(uint8_t addr)
 {
-    uint8_t tx = (uint8_t)(addr & 0x7Fu), rx = 0;
+    uint8_t tx[2];
+    uint8_t rx[2];
+
+    tx[0] = addr & 0x7Fu;
+    tx[1] = 0x00u;
+
+    rx[0] = 0x00u;
+    rx[1] = 0x00u;
+
     NSS_LOW();
-    HAL_SPI_Transmit(&hspi1, &tx, 1, HAL_MAX_DELAY);
-    HAL_SPI_Receive(&hspi1, &rx, 1, HAL_MAX_DELAY);
+    HAL_SPI_TransmitReceive(&hspi1, tx, rx, 2, HAL_MAX_DELAY);
     NSS_HIGH();
-    return rx;
+
+    return rx[1];
 }
 
 static void LoRa_WriteBuffer(uint8_t addr, const uint8_t *buf, uint8_t size)
 {
-    uint8_t a = (uint8_t)(addr | 0x80u);
+    uint8_t a = addr | 0x80u;
+
     NSS_LOW();
     HAL_SPI_Transmit(&hspi1, &a, 1, HAL_MAX_DELAY);
     HAL_SPI_Transmit(&hspi1, (uint8_t *)buf, size, HAL_MAX_DELAY);
@@ -152,50 +166,92 @@ static void LoRa_WriteBuffer(uint8_t addr, const uint8_t *buf, uint8_t size)
 
 static void LoRa_ReadBuffer(uint8_t addr, uint8_t *buf, uint8_t size)
 {
-    uint8_t a = (uint8_t)(addr & 0x7Fu);
+    uint8_t a = addr & 0x7Fu;
+
     NSS_LOW();
     HAL_SPI_Transmit(&hspi1, &a, 1, HAL_MAX_DELAY);
     HAL_SPI_Receive(&hspi1, buf, size, HAL_MAX_DELAY);
     NSS_HIGH();
 }
-
 /* ── Mode helpers ───────────────────────────────────────────────────── */
 static void LoRa_Reset(void)
 {
-    HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_RESET);
-    HAL_Delay(5);
+    /*
+     * SX127x reset:
+     * Pull RESET low, then release high.
+     */
     HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_SET);
     HAL_Delay(10);
-}
 
+    HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_RESET);
+    HAL_Delay(10);
+
+    HAL_GPIO_WritePin(LORA_RESET_PORT, LORA_RESET_PIN, GPIO_PIN_SET);
+    HAL_Delay(20);
+}
 static void LoRa_EnterRxContinuous(void)
 {
-    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);   /* clear all IRQ flags */
-    LoRa_WriteReg(REG_OPMODE,    0x85);   /* LoRa + RX continuous */
+    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+    LoRa_WriteReg(REG_FIFO_ADDR_PTR, 0x00);
+
+    for (uint8_t i = 0; i < 5; i++)
+    {
+        LoRa_WriteReg(REG_OPMODE, 0x85);
+        HAL_Delay(2);
+
+        if (LoRa_ReadReg(REG_OPMODE) == 0x85)
+        {
+            return;
+        }
+    }
+
+    uart_print_now("[LORA RX] ERROR: failed to enter RX continuous 0x85");
 }
 
 /* ── Non-blocking poll of DIO0 ──────────────────────────────────────── */
 static uint8_t LoRa_PollPacket(uint8_t *buffer, int16_t *rssi_out)
 {
-    if (HAL_GPIO_ReadPin(LORA_DIO0_PORT, LORA_DIO0_PIN) == GPIO_PIN_RESET)
-        return 0;
-
     uint8_t irq = LoRa_ReadReg(REG_IRQ_FLAGS);
-    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
 
-    if (irq & 0x20u) return 0;            /* CRC error  */
-    if ((irq & 0x40u) == 0u) return 0;    /* not RxDone */
+    /*
+     * Do not depend on DIO0 only.
+     * Some boards show DIO0 stuck HIGH/LOW, so IRQ register is more reliable.
+     */
+    if ((irq & 0x40u) == 0u)   /* RxDone not set */
+    {
+        if (irq & 0x20u)       /* CRC error */
+        {
+            LoRa_WriteReg(REG_IRQ_FLAGS, 0x20u);
+        }
+        return 0;
+    }
+
+    if (irq & 0x20u)
+    {
+        LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+        return 0;
+    }
 
     uint8_t len = LoRa_ReadReg(REG_RX_NB_BYTES);
-    if (len == 0u || len >= (LORA_BUF_SIZE - 1u)) return 0;
+
+    if (len == 0u || len >= (LORA_BUF_SIZE - 1u))
+    {
+        LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+        return 0;
+    }
 
     uint8_t fifoAddr = LoRa_ReadReg(REG_FIFO_RX_CURRENT);
     LoRa_WriteReg(REG_FIFO_ADDR_PTR, fifoAddr);
+
     LoRa_ReadBuffer(REG_FIFO, buffer, len);
     buffer[len] = '\0';
 
+    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+
     if (rssi_out != NULL)
+    {
         *rssi_out = (int16_t)(-157 + (int16_t)LoRa_ReadReg(REG_PKT_RSSI_VALUE));
+    }
 
     return len;
 }
@@ -421,12 +477,9 @@ static void accept_data(uint8_t lvl, uint8_t wd, uint32_t did)
         set_state(LORA_STATE_CONNECTED);
 }
 
-/* ====================================================================
- *  L o R a _ I n i t   —   includes ALL the radio-config fixes
- * ==================================================================== */
 void LoRa_Init(void)
 {
-    char dbg[120];
+    char dbg[160];
 
     uart_print_now("");
     uart_print_now("=========================================");
@@ -436,127 +489,173 @@ void LoRa_Init(void)
     DeviceID_Init();
     PairedDev_Init();
 
+#if LORA_CLEAR_PAIRING_ONCE
+    /*
+     * TEMPORARY:
+     * Your EEPROM currently has receiver's own DID as paired DID.
+     * Clear it once so RX can auto-pair with transmitter.
+     *
+     * After one successful boot, set LORA_CLEAR_PAIRING_ONCE to 0
+     * and flash again.
+     */
+    uart_print_now("[LORA RX] TEMP: clearing paired device EEPROM...");
+    PairedDev_Clear();
+    HAL_Delay(20);
+    PairedDev_Init();
+#endif
+
     char myDIDstr[9];
     DeviceID_GetHex(myDIDstr);
+
     snprintf(dbg, sizeof(dbg), "[LORA RX] My DID : %s", myDIDstr);
     uart_print_now(dbg);
 
-    snprintf(dbg, sizeof(dbg), "[LORA RX] Paired : %u device(s) in EEPROM",
+    snprintf(dbg, sizeof(dbg),
+             "[LORA RX] Paired : %u device(s) in EEPROM",
              (unsigned)PairedDev_Count());
     uart_print_now(dbg);
 
     if (PairedDev_Count() == 0u)
     {
-        uart_print_now("[LORA RX] List empty — AUTO-PAIR first valid HELLO");
+        uart_print_now("[LORA RX] List empty — AUTO-PAIR first valid HELLO/TL");
     }
     else
     {
         for (uint8_t i = 0; i < PairedDev_Count(); i++)
         {
-            snprintf(dbg, sizeof(dbg), "[LORA RX]   [%u] DID %08lX",
-                     i, (unsigned long)PairedDev_Get(i));
+            snprintf(dbg, sizeof(dbg),
+                     "[LORA RX]   [%u] DID %08lX",
+                     i,
+                     (unsigned long)PairedDev_Get(i));
             uart_print_now(dbg);
         }
     }
 
-    /* ── HW reset & SPI link diagnostic ─────────────────────────────── */
-    NSS_HIGH();          /* deselect chip first                          */
-    LoRa_Reset();
+    /* Hardware reset and SPI diagnostic */
+    NSS_HIGH();
+    HAL_Delay(20);
 
-    /* Read RegVersion (0x42) — should be 0x12 for SX1276/77/78/79.
-     * If you see 0x00 or 0xFF the SPI link is broken: wrong NSS pin,
-     * bad solder, module unpowered, or wrong SPI mode.  Stop here and
-     * fix that BEFORE touching anything else.                        */
-    uint8_t ver = LoRa_ReadReg(REG_VERSION);
+    LoRa_Reset();
+    HAL_Delay(20);
+
+    uint8_t ver1 = LoRa_ReadReg(REG_VERSION);
+    HAL_Delay(2);
+    uint8_t ver2 = LoRa_ReadReg(REG_VERSION);
+    HAL_Delay(2);
+    uint8_t ver3 = LoRa_ReadReg(REG_VERSION);
+
+    uint8_t ver = ver3;
+
     snprintf(dbg, sizeof(dbg),
-             "[LORA RX] RegVersion(0x42)=0x%02X  (expected 0x12)", ver);
+             "[LORA RX] RegVersion reads: 0x%02X 0x%02X 0x%02X",
+             ver1, ver2, ver3);
     uart_print_now(dbg);
+
+    snprintf(dbg, sizeof(dbg),
+             "[LORA RX] RegVersion(0x42)=0x%02X  (expected 0x12)",
+             ver);
+    uart_print_now(dbg);
+
     if (ver != 0x12)
     {
         uart_print_now("[LORA RX] *** SPI LINK BROKEN — radio cannot be reached ***");
-        uart_print_now("[LORA RX] Check: NSS pin, RESET pin, SPI MOSI/MISO/SCK,");
-        uart_print_now("[LORA RX]        module power (3.3 V) and ground.");
+        uart_print_now("[LORA RX] Meaning:");
+        uart_print_now("[LORA RX]   0xFF = NSS/MISO floating or chip not selected");
+        uart_print_now("[LORA RX]   0x00 = MISO low, reset/power/wiring issue");
+        uart_print_now("[LORA RX] Check: NSS PA15, SCK PB3, MISO PB4, MOSI PB5, RESET PB6");
+        uart_print_now("[LORA RX]        module power 3.3V, GND, soldering, Ra-02 orientation.");
     }
 
-    /* ── Mode transition: FSK Standby → FSK Sleep → LoRa Sleep ──────── *
-     * LongRangeMode bit can ONLY be changed while in Sleep mode, so
-     * we must enter FSK sleep first.  After power-on the chip is in
-     * FSK Standby (0x01), not Sleep — the previous code skipped the
-     * FSK-Sleep step which works on most chips but not all.           */
-    LoRa_WriteReg(REG_OPMODE, 0x00);   /* FSK  Sleep   */
+    /*
+     * SX127x mode transition:
+     * FSK sleep -> LoRa sleep.
+     */
+    LoRa_WriteReg(REG_OPMODE, 0x00);
     HAL_Delay(2);
-    LoRa_WriteReg(REG_OPMODE, 0x80);   /* LoRa Sleep   */
+
+    LoRa_WriteReg(REG_OPMODE, 0x80);
     HAL_Delay(10);
 
-    /* ── 433 MHz frequency ──────────────────────────────────────────── */
+    /* Frequency: 433 MHz */
     uint64_t frf = ((uint64_t)433000000ULL << 19) / 32000000ULL;
     LoRa_WriteReg(0x06, (uint8_t)(frf >> 16));
-    LoRa_WriteReg(0x07, (uint8_t)(frf >>  8));
+    LoRa_WriteReg(0x07, (uint8_t)(frf >> 8));
     LoRa_WriteReg(0x08, (uint8_t)(frf));
 
-    /* ── Preamble length (12 symbols) ───────────────────────────────── */
+    /* Preamble */
     LoRa_WriteReg(0x20, LORA_PREAMBLE_MSB);
     LoRa_WriteReg(0x21, LORA_PREAMBLE_LSB);
 
-    /* ── PA: +20 dBm via PA_BOOST (so ACKs reach the TX node) ───────── */
+    /* PA config */
     LoRa_WriteReg(0x09, LORA_REG_PA_CONFIG);
     LoRa_WriteReg(0x0B, LORA_REG_OCP);
     LoRa_WriteReg(0x4D, LORA_REG_PA_DAC);
 
-    /* ── Modem config ─────────────────────────────────────────────── */
-    LoRa_WriteReg(0x1D, LORA_REG_MODEM_CFG1);   /* BW125, CR4/5, explicit hdr */
-    LoRa_WriteReg(0x1E, LORA_REG_MODEM_CFG2);   /* SF10, CRC ON               */
-    LoRa_WriteReg(0x26, LORA_REG_DETECT_OPT);   /* LowDataRateOpt + AGC auto  */
-    LoRa_WriteReg(0x39, LORA_SYNC_WORD);        /* 0x12 — private network      */
+    /* Modem config */
+    LoRa_WriteReg(0x1D, LORA_REG_MODEM_CFG1);
+    LoRa_WriteReg(0x1E, LORA_REG_MODEM_CFG2);
+    LoRa_WriteReg(0x26, LORA_REG_DETECT_OPT);
+    LoRa_WriteReg(0x39, LORA_SYNC_WORD);
 
-    /* ─── THE FIX ──────────────────────────────────────────────────── *
-     *
-     *   Without these two writes the SX1276 modulator transmits from
-     *   FIFO[0x80..] (default value of FifoTxBaseAddr) instead of
-     *   FIFO[0..] where we actually write the payload bytes.  Result:
-     *   valid LoRa frames go on air but every byte is junk.
-     *
-     *   Setting both base addresses to 0 lets us use the full 256-byte
-     *   FIFO for whichever direction is active (we are half-duplex).
-     * ──────────────────────────────────────────────────────────────── */
+    /* FIFO base address fix */
     LoRa_WriteReg(REG_FIFO_TX_BASE_ADDR, 0x00);
     LoRa_WriteReg(REG_FIFO_RX_BASE_ADDR, 0x00);
+    LoRa_WriteReg(REG_FIFO_ADDR_PTR,     0x00);
 
-    /* ── Verify the writes actually took effect (catches silent SPI fails) */
+    /* Clear all IRQ flags */
+    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+
     uint8_t v_tx = LoRa_ReadReg(REG_FIFO_TX_BASE_ADDR);
     uint8_t v_rx = LoRa_ReadReg(REG_FIFO_RX_BASE_ADDR);
     uint8_t v_op = LoRa_ReadReg(REG_OPMODE);
+
     snprintf(dbg, sizeof(dbg),
              "[LORA RX] Verify: OpMode=0x%02X TxBase=0x%02X RxBase=0x%02X",
              v_op, v_tx, v_rx);
     uart_print_now(dbg);
 
-    /* ── Enter RX continuous ───────────────────────────────────────── */
+    /* Enter RX continuous */
     LoRa_EnterRxContinuous();
     HAL_Delay(5);
+
     uint8_t v_op2 = LoRa_ReadReg(REG_OPMODE);
+
     snprintf(dbg, sizeof(dbg),
              "[LORA RX] OpMode after EnterRxContinuous: 0x%02X (want 0x85)",
              v_op2);
     uart_print_now(dbg);
 
-    /* ── Reset connection state ────────────────────────────────────── */
+    /* Reset software state */
     s_state              = LORA_STATE_DISCONNECTED;
     g_loraConnected      = 0;
+    g_loraNewPacketFlag  = false;
+
+    s_rxPacketCount      = 0;
     s_seqInitialized     = false;
     s_lastSeq            = 0;
     s_packetsLost        = 0;
     s_duplicatePackets   = 0;
     s_outOfOrderPackets  = 0;
+
     s_wirelessDataValid  = false;
     s_wirelessLevel      = 0;
     s_wirelessWellDry    = 0;
+    s_wirelessLastRxTick = 0;
+
     s_pairingMode        = false;
+    s_pairingDone        = false;
+    s_lastPairedDID      = 0;
+
+    s_lastSyncReqTick    = 0;
+    s_lastStatsTick      = HAL_GetTick();
+    s_lastPeerTick       = 0;
+
+    memset((void *)g_lastRxPacket, 0, sizeof(g_lastRxPacket));
+    memset((void *)g_lastTxPacket, 0, sizeof(g_lastTxPacket));
 
     uart_print_now("[LORA RX] Init complete — listening for transmitter...");
     LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_STEADY, 1);
 }
-
 /* ── Periodic STALE handling ────────────────────────────────────────── */
 static void handle_stale_periodics(uint32_t now)
 {
@@ -590,17 +689,47 @@ static void maybe_print_stats(uint32_t now)
     uart_print_now(dbg);
 }
 
-/* ====================================================================
- * LoRa_Task  —  call every main-loop iteration (RX main.c → ~10 ms)
- * ==================================================================== */
 void LoRa_Task(void)
 {
-    if (loraMode != LORA_MODE_RECEIVER) return;
+    if (loraMode != LORA_MODE_RECEIVER)
+        return;
 
     uint32_t now = HAL_GetTick();
 
+#if LORA_DIO_DEBUG_ENABLE
+    static uint32_t lastDioDebugTick = 0;
+
+    if ((now - lastDioDebugTick) >= 2000UL)
+    {
+        lastDioDebugTick = now;
+
+        char d[120];
+
+        uint8_t dio0 = (uint8_t)HAL_GPIO_ReadPin(LORA_DIO0_PORT, LORA_DIO0_PIN);
+        uint8_t irq  = LoRa_ReadReg(REG_IRQ_FLAGS);
+        uint8_t op   = LoRa_ReadReg(REG_OPMODE);
+        uint8_t rssi = LoRa_ReadReg(REG_PKT_RSSI_VALUE);
+
+        snprintf(d, sizeof(d),
+                 "[LORA RX] DIO0=%u IRQ=0x%02X OP=0x%02X RSSI_REG=0x%02X",
+                 dio0, irq, op, rssi);
+        uart_print_now(d);
+
+        /*
+         * If OpMode accidentally changes, force back to RX continuous.
+         */
+        if (op != 0x85)
+        {
+            uart_print_now("[LORA RX] WARNING: OpMode not RX continuous — restoring 0x85");
+            LoRa_EnterRxContinuous();
+        }
+    }
+#endif
+
     if (s_wirelessDataValid)
+    {
         (void)LoRa_IsWirelessDataValid();
+    }
 
     if (s_pairingMode && (now >= s_pairingDeadline))
     {
@@ -611,11 +740,10 @@ void LoRa_Task(void)
     handle_stale_periodics(now);
     maybe_print_stats(now);
 
-    /* Try to read a packet                                              */
     int16_t rssi = 0;
-    uint8_t len  = LoRa_PollPacket(s_rxBuf, &rssi);
+    uint8_t len = LoRa_PollPacket(s_rxBuf, &rssi);
 
-    if (len == 0)
+    if (len == 0u)
     {
         log_flush();
         return;
@@ -625,14 +753,18 @@ void LoRa_Task(void)
     s_rxPacketCount++;
 
     if (len < MAX_PACKET_LEN)
+    {
         memcpy((void *)g_lastRxPacket, s_rxBuf, (size_t)(len + 1u));
+    }
 
     ParsedPacket_t p;
     bool ok = LoRa_ParsePacket((const char *)s_rxBuf, &p);
 
-    log_defer("[LORA RX] rx#%lu rssi=%d state=%s \"%s\"",
-              (unsigned long)s_rxPacketCount, (int)rssi,
-              LoRa_GetStateString(), (char *)s_rxBuf);
+    log_defer("[LORA RX] rx#%lu rssi=%d state=%s raw=\"%s\"",
+              (unsigned long)s_rxPacketCount,
+              (int)rssi,
+              LoRa_GetStateString(),
+              (char *)s_rxBuf);
 
     if (!ok)
     {
@@ -644,6 +776,7 @@ void LoRa_Task(void)
     switch (p.type)
     {
         case PKT_TYPE_HELLO:
+        {
             if (should_allow(p.did))
             {
                 pair_device(p.did);
@@ -652,70 +785,114 @@ void LoRa_Task(void)
                 s_lastPeerTick      = now;
                 s_wirelessDataValid = false;
                 s_seqInitialized    = false;
+
                 if (s_state != LORA_STATE_CONNECTED)
+                {
                     set_state(LORA_STATE_CONNECTED);
+                }
 
                 log_defer("[LORA RX] HELLO from %08lX -> ACK, CONNECTED",
                           (unsigned long)p.did);
+
                 LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 300);
             }
             else
             {
                 send_reject(p.did);
+
                 log_defer("[LORA RX] HELLO from unknown %08lX -> REJECT",
                           (unsigned long)p.did);
             }
-            break;
+        }
+        break;
 
         case PKT_TYPE_TANKLEVEL:
+        {
             if (!should_allow(p.did))
             {
                 send_reject(p.did);
-                log_defer("[LORA RX] TL from unpaired -> REJECT");
+
+                log_defer("[LORA RX] TL from unpaired DID %08lX -> REJECT",
+                          (unsigned long)p.did);
                 break;
             }
-            pair_device(p.did);
-            {
-                bool fresh = validate_sequence(p.seq);
-                send_ack(p.did);
 
-                if (fresh)
-                {
-                    accept_data(p.level, p.well_dry, p.did);
-                    LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 1);
-                    log_defer("[LORA RX] TL=%u%% WD=%u seq=%08lX -> ACCEPTED",
-                              (unsigned)p.level, (unsigned)p.well_dry,
-                              (unsigned long)p.seq);
-                }
-                else
-                {
-                    s_lastPeerTick = now;
-                    log_defer("[LORA RX] TL dup -> re-ACKed");
-                }
+            pair_device(p.did);
+
+            bool fresh = validate_sequence(p.seq);
+
+            /*
+             * ACK duplicate also. This helps transmitter stop retrying.
+             */
+            send_ack(p.did);
+
+            if (fresh)
+            {
+                accept_data(p.level, p.well_dry, p.did);
+
+                LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 1);
+
+                log_defer("[LORA RX] TL=%u%% WD=%u seq=%08lX DID=%08lX -> ACCEPTED",
+                          (unsigned)p.level,
+                          (unsigned)p.well_dry,
+                          (unsigned long)p.seq,
+                          (unsigned long)p.did);
             }
-            break;
+            else
+            {
+                s_lastPeerTick = now;
+
+                log_defer("[LORA RX] TL duplicate/out-of-order seq=%08lX -> re-ACKed",
+                          (unsigned long)p.seq);
+            }
+        }
+        break;
 
         case PKT_TYPE_PING:
-            if (!should_allow(p.did)) { send_reject(p.did); break; }
+        {
+            if (!should_allow(p.did))
+            {
+                send_reject(p.did);
+
+                log_defer("[LORA RX] PING from unpaired DID %08lX -> REJECT",
+                          (unsigned long)p.did);
+                break;
+            }
+
             send_pong(p.did, p.seq);
+
             s_lastPeerTick = now;
+
             if (s_state != LORA_STATE_CONNECTED)
+            {
                 set_state(LORA_STATE_CONNECTED);
-            log_defer("[LORA RX] PING -> PONG seq=%08lX",
+            }
+
+            log_defer("[LORA RX] PING from %08lX -> PONG seq=%08lX",
+                      (unsigned long)p.did,
                       (unsigned long)p.seq);
-            break;
+        }
+        break;
 
         case PKT_TYPE_BYE:
+        {
             log_defer("[LORA RX] BYE from %08lX -> STALE",
                       (unsigned long)p.did);
+
             s_wirelessDataValid = false;
             set_state(LORA_STATE_STALE);
+
             LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 500);
-            break;
+        }
+        break;
 
         default:
-            log_defer("[LORA RX] unexpected pkt type %d", (int)p.type);
-            break;
+        {
+            log_defer("[LORA RX] unexpected packet type %d from DID=%08lX",
+                      (int)p.type,
+                      (unsigned long)p.did);
+        }
+        break;
     }
 
     log_flush();

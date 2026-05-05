@@ -309,11 +309,32 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_AFIO_CLK_ENABLE();
 
-    HAL_GPIO_WritePin(GPIOB, Relay1_Pin | Relay2_Pin | Relay3_Pin |
-                      LORA_STATUS_Pin | LED4_Pin | LED5_Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOA, LED1_Pin | LED2_Pin | LED3_Pin | LORA_SELECT_Pin, GPIO_PIN_RESET);
+    /*
+     * PA15 is used as LORA_SELECT / NSS.
+     * Disable JTAG but keep SWD enabled.
+     */
+    __HAL_AFIO_REMAP_SWJ_NOJTAG();
 
+    /*
+     * Safe default states.
+     * Important: LoRa NSS/CS must stay HIGH when idle.
+     */
+    HAL_GPIO_WritePin(GPIOB,
+                      Relay1_Pin | Relay2_Pin | Relay3_Pin |
+                      LORA_STATUS_Pin | LED4_Pin | LED5_Pin,
+                      GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(GPIOA,
+                      LED1_Pin | LED2_Pin | LED3_Pin,
+                      GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port,
+                      LORA_SELECT_Pin,
+                      GPIO_PIN_SET);
+
+    /* Relay + LoRa RESET + LED4/LED5 */
     GPIO_InitStruct.Pin   = Relay1_Pin | Relay2_Pin | Relay3_Pin |
                             LORA_STATUS_Pin | LED4_Pin | LED5_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
@@ -321,23 +342,30 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+    /* Switches */
     GPIO_InitStruct.Pin  = SWITCH1_Pin | SWITCH2_Pin | SWITCH3_Pin | SWITCH4_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+    /* LEDs + LoRa NSS / CS */
     GPIO_InitStruct.Pin   = LED1_Pin | LED2_Pin | LED3_Pin | LORA_SELECT_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    /* Keep NSS HIGH after GPIO mode is applied */
+    HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port,
+                      LORA_SELECT_Pin,
+                      GPIO_PIN_SET);
+
+    /* LoRa DIO0 / RF_DATA */
     GPIO_InitStruct.Pin  = RF_DATA_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(RF_DATA_GPIO_Port, &GPIO_InitStruct);
 }
-
 void Error_Handler(void)
 {
     UART_PrintLn("[ERROR] Error_Handler called - system halted!");
