@@ -4,7 +4,7 @@
  * v3.3 — FIFO base-address bug fix
  *
  *  The previous version configured every modem register but never wrote
- *  RegFifoTxBaseAddr (0x0E) / RegFifoRxBaseAddr (0x0F).  After SX1276
+ *  RegFifoTxBaseAddr (0x0E) / RegFifoRxBaseAddr (0x0F).  After SX1278
  *  reset these default to 0x80 / 0x00, so the *modulator* read from
  *  FIFO[0x80..] when transmitting ACKs — even though we wrote the ACK
  *  payload at FIFO[0..len-1].  The radio sent valid LoRa frames with
@@ -382,11 +382,21 @@ static void pair_device(uint32_t did)
 /* ── Pairing API ────────────────────────────────────────────────────── */
 void LoRa_EnterPairingMode(void)
 {
-    s_pairingMode     = true;
-    s_pairingDone     = false;
-    s_lastPairedDID   = 0;
-    s_pairingDeadline = HAL_GetTick() + RX_PAIRING_TIMEOUT_MS;
-    uart_print_now("[LORA RX] *** MANUAL PAIRING MODE (30 s) ***");
+    s_pairingMode      = true;
+    s_pairingDone      = false;
+    s_lastPairedDID    = 0;
+    s_pairingDeadline  = HAL_GetTick() + RX_PAIRING_TIMEOUT_MS;
+
+    s_wirelessDataValid = false;
+    s_seqInitialized    = false;
+    s_lastSeq           = 0;
+
+    set_state(LORA_STATE_DISCONNECTED);
+
+    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+    LoRa_EnterRxContinuous();
+
+    uart_print_now("[LORA RX] *** MANUAL PAIRING MODE ACTIVE — RX CONTINUOUS ***");
     LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 200);
 }
 
@@ -734,7 +744,10 @@ void LoRa_Task(void)
     if (s_pairingMode && (now >= s_pairingDeadline))
     {
         s_pairingMode = false;
-        uart_print_now("[LORA RX] pairing window expired");
+        uart_print_now("[LORA RX] pairing window expired — returning RX continuous");
+
+        LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+        LoRa_EnterRxContinuous();
     }
 
     handle_stale_periodics(now);
@@ -775,36 +788,35 @@ void LoRa_Task(void)
 
     switch (p.type)
     {
-        case PKT_TYPE_HELLO:
+    case PKT_TYPE_HELLO:
+    {
+        if (should_allow(p.did))
         {
-            if (should_allow(p.did))
-            {
-                pair_device(p.did);
-                send_ack(p.did);
+            pair_device(p.did);
 
-                s_lastPeerTick      = now;
-                s_wirelessDataValid = false;
-                s_seqInitialized    = false;
+            s_lastPeerTick       = now;
+            s_wirelessDataValid  = false;
+            s_seqInitialized     = false;
+            s_lastSeq            = 0;
 
-                if (s_state != LORA_STATE_CONNECTED)
-                {
-                    set_state(LORA_STATE_CONNECTED);
-                }
+            send_ack(p.did);
 
-                log_defer("[LORA RX] HELLO from %08lX -> ACK, CONNECTED",
-                          (unsigned long)p.did);
+            set_state(LORA_STATE_CONNECTED);
 
-                LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 300);
-            }
-            else
-            {
-                send_reject(p.did);
+            log_defer("[LORA RX] HELLO from %08lX -> ACK, CONNECTED",
+                      (unsigned long)p.did);
 
-                log_defer("[LORA RX] HELLO from unknown %08lX -> REJECT",
-                          (unsigned long)p.did);
-            }
+            LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 300);
         }
-        break;
+        else
+        {
+            send_reject(p.did);
+
+            log_defer("[LORA RX] HELLO from unknown %08lX -> REJECT",
+                      (unsigned long)p.did);
+        }
+    }
+    break;
 
         case PKT_TYPE_TANKLEVEL:
         {
