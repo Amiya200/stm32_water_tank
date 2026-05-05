@@ -1320,14 +1320,16 @@ void Screen_HandleSwitches(void)
         {
             if (cnt > 0)
             {
-                uint32_t removedDid = PairedDev_Get(addDevTypeIndex % cnt);
-                PairedDev_Remove(removedDid);
+            	uint32_t removedDid = PairedDev_Get(addDevTypeIndex % cnt);
 
-                LoRa_ClearWirelessData();
+            	PairedDev_Remove(removedDid);
 
-                addDevTypeIndex     = 0;
-                pairingDoneDispTime = HAL_GetTick();
-                ui = UI_ADD_DEVICE_REMOVE_DONE;
+            	/* Important: immediately stop using old wireless ADC data */
+            	LoRa_OnPairingListChanged();
+
+            	addDevTypeIndex     = 0;
+            	pairingDoneDispTime = HAL_GetTick();
+            	ui = UI_ADD_DEVICE_REMOVE_DONE;
             }
             else
             {

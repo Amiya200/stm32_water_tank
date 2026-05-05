@@ -53,4 +53,4 @@
 ../Core/Src/screen.c:847:6:decrease_edit_value	38
 ../Core/Src/screen.c:891:17:decode_button_press	24
 ../Core/Src/screen.c:928:6:Screen_HandleSwitches	103
-../Core/Src/screen.c:1372:6:Screen_Update	71
+../Core/Src/screen.c:1374:6:Screen_Update	71

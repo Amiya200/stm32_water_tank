@@ -544,12 +544,21 @@ uint32_t LoRa_GetPacketsLost      (void) { return s_packetsLost;     }
 
 bool LoRa_IsWirelessDataValid(void)
 {
-    if (!s_wirelessDataValid) return false;
+    if (!s_wirelessDataValid)
+        return false;
+
+    /* If no transmitter is paired, wireless data must never drive ADC */
+    if (PairedDev_Count() == 0u)
+    {
+        LoRa_ClearWirelessData();
+        return false;
+    }
 
     if ((HAL_GetTick() - s_wirelessLastRxTick) > RX_PEER_TIMEOUT_MS)
     {
         s_wirelessDataValid = false;
         s_wirelessWellDry   = 0;
+
         if (s_state == LORA_STATE_CONNECTED)
         {
             set_state(LORA_STATE_STALE);
@@ -557,9 +566,44 @@ bool LoRa_IsWirelessDataValid(void)
             LED_SetIntent(LED_COLOR_RED, LED_MODE_BLINK, 500);
             s_seqInitialized = false;
         }
+
         return false;
     }
+
     return true;
+}
+
+
+void LoRa_OnPairingListChanged(void)
+{
+    /*
+     * Called after user removes any paired transmitter.
+     * This guarantees removed TX data cannot keep updating receiver ADC.
+     */
+
+    LoRa_ClearWirelessData();
+
+    s_pairingMode      = false;
+    s_pairingDone      = false;
+    s_lastPairedDID    = 0;
+    s_lastPeerTick     = 0;
+    s_lastSyncReqTick  = 0;
+
+    LoRa_ClearDiscoveredDevices();
+
+    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+    LoRa_EnterRxContinuous();
+
+    if (PairedDev_Count() == 0u)
+    {
+        uart_print_now("[LORA RX] No TX paired — using LOCAL ADC only");
+        LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_STEADY, 1);
+    }
+    else
+    {
+        uart_print_now("[LORA RX] Pairing list changed — waiting only for saved TX");
+        LED_SetIntent(LED_COLOR_PURPLE, LED_MODE_STEADY, 1);
+    }
 }
 
 /* ── Sequence validation ────────────────────────────────────────────── */
@@ -603,16 +647,28 @@ static bool validate_sequence(uint32_t newSeq)
     return true;
 }
 
-/* ── Accept fresh data into model ───────────────────────────────────── */
 static void accept_data(uint8_t lvl, uint8_t wd, uint32_t did)
 {
+    /*
+     * Hard gate:
+     * Only saved paired transmitter can update wireless ADC source.
+     * Removed / unknown / unpaired transmitter packets are ignored.
+     */
+    if (PairedDev_Count() == 0u || !PairedDev_IsAllowed(did))
+    {
+        LoRa_ClearWirelessData();
+
+        log_defer("[LORA RX] blocked data from unpaired/removed DID=%08lX",
+                  (unsigned long)did);
+        return;
+    }
+
     s_wirelessLevel      = lvl;
     s_wirelessWellDry    = wd;
     s_wirelessLastRxTick = HAL_GetTick();
     s_wirelessDataValid  = true;
     s_lastPeerTick       = HAL_GetTick();
     g_loraNewPacketFlag  = true;
-    (void)did;
 
     if (s_state != LORA_STATE_CONNECTED)
         set_state(LORA_STATE_CONNECTED);

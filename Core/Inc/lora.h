@@ -114,7 +114,7 @@ uint8_t           LoRa_GetWirelessWellDry  (void);
 uint32_t          LoRa_GetLastSequence     (void);
 uint32_t          LoRa_GetPacketsLost      (void);
 bool              LoRa_IsWirelessDataValid (void);
-
+void LoRa_OnPairingListChanged(void);
 /* ── Pairing API ───────────────────────────────────────────────────── */
 void     LoRa_EnterPairingMode (void);
 void     LoRa_ExitPairingMode  (void);
