@@ -87,14 +87,27 @@ extern bool     g_loraNewPacketFlag;
 extern uint32_t g_lora_tx_ok;
 extern uint32_t g_lora_tx_retry;
 extern uint32_t g_lora_tx_fail;
-
+void LoRa_ClearWirelessData(void);
 /* ── Core API ──────────────────────────────────────────────────────── */
 void              LoRa_Init           (void);
 void              LoRa_Task           (void);
 
 LoRa_ConnState_t  LoRa_GetState       (void);
 const char *      LoRa_GetStateString (void);
+#define LORA_DISCOVERY_MAX 5
 
+typedef struct
+{
+    uint32_t did;
+    int16_t  rssi;
+    uint32_t lastSeen;
+    bool     valid;
+} LoRa_DiscoveredDevice_t;
+
+uint8_t  LoRa_GetDiscoveredCount(void);
+bool     LoRa_GetDiscoveredDevice(uint8_t index, LoRa_DiscoveredDevice_t *out);
+bool     LoRa_PairDiscoveredDevice(uint8_t index);
+void     LoRa_ClearDiscoveredDevices(void);
 /* ── Wireless data accessors ───────────────────────────────────────── */
 uint8_t           LoRa_GetWirelessTankLevel(void);
 uint8_t           LoRa_GetWirelessWellDry  (void);

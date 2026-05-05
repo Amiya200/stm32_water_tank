@@ -47,7 +47,8 @@ static void uart_print_now(const char *s)
 static char    s_deferLog[DEFER_LOG_LINES][DEFER_LOG_LEN];
 static uint8_t s_deferHead  = 0;
 static uint8_t s_deferCount = 0;
-
+static LoRa_DiscoveredDevice_t s_discovered[LORA_DISCOVERY_MAX];
+static uint8_t s_discoveredCount = 0;
 static void log_defer(const char *fmt, ...)
 {
     if (s_deferCount >= DEFER_LOG_LINES) return;
@@ -345,43 +346,156 @@ static void set_state(LoRa_ConnState_t ns)
 static bool already_in_list(uint32_t did)
 {
     uint8_t cnt = PairedDev_Count();
+
     for (uint8_t i = 0; i < cnt; i++)
-        if (PairedDev_Get(i) == did) return true;
+    {
+        if (PairedDev_Get(i) == did)
+            return true;
+    }
+
     return false;
 }
 
 static bool should_allow(uint32_t did)
 {
-    if (!LoRa_DID_IsValid(did))      return false;
-    if (s_pairingMode)               return true;
-    return PairedDev_IsAllowed(did);  /* covers in-list + open-mode */
+    if (!LoRa_DID_IsValid(did))
+        return false;
+
+    /*
+     * Pairing mode only means "allow for discovery".
+     * Actual storing happens only when user selects DID from LCD.
+     */
+    if (s_pairingMode)
+        return true;
+
+    /*
+     * Normal mode:
+     * only paired transmitter packet is allowed.
+     * Any other DID will be ignored/rejected.
+     */
+    return PairedDev_IsAllowed(did);
+}
+
+void LoRa_ClearDiscoveredDevices(void)
+{
+    memset(s_discovered, 0, sizeof(s_discovered));
+    s_discoveredCount = 0;
+}
+
+static void discovery_add_or_update(uint32_t did, int16_t rssi)
+{
+    if (!LoRa_DID_IsValid(did))
+        return;
+
+    /*
+     * Already paired device should not be shown again in available list.
+     */
+    if (already_in_list(did))
+        return;
+
+    uint32_t now = HAL_GetTick();
+
+    for (uint8_t i = 0; i < s_discoveredCount; i++)
+    {
+        if (s_discovered[i].valid && s_discovered[i].did == did)
+        {
+            s_discovered[i].rssi     = rssi;
+            s_discovered[i].lastSeen = now;
+            return;
+        }
+    }
+
+    if (s_discoveredCount < LORA_DISCOVERY_MAX)
+    {
+        s_discovered[s_discoveredCount].did      = did;
+        s_discovered[s_discoveredCount].rssi     = rssi;
+        s_discovered[s_discoveredCount].lastSeen = now;
+        s_discovered[s_discoveredCount].valid    = true;
+        s_discoveredCount++;
+    }
+}
+
+uint8_t LoRa_GetDiscoveredCount(void)
+{
+    return s_discoveredCount;
+}
+
+bool LoRa_GetDiscoveredDevice(uint8_t index, LoRa_DiscoveredDevice_t *out)
+{
+    if (out == NULL)
+        return false;
+
+    if (index >= s_discoveredCount)
+        return false;
+
+    if (!s_discovered[index].valid)
+        return false;
+
+    *out = s_discovered[index];
+    return true;
 }
 
 static void pair_device(uint32_t did)
 {
-    if (!LoRa_DID_IsValid(did)) return;
+    if (!LoRa_DID_IsValid(did))
+        return;
+
     s_lastPairedDID = did;
 
-    if (already_in_list(did)) return;     /* already known, nothing to do */
+    if (already_in_list(did))
+    {
+        s_pairingDone    = true;
+        s_pairingMode    = false;
+        s_seqInitialized = false;
+        s_lastSeq        = 0;
+        return;
+    }
 
     if (PairedDev_Add(did))
     {
-        s_pairingDone   = true;
-        s_pairingMode   = false;
+        s_pairingDone    = true;
+        s_pairingMode    = false;
         s_seqInitialized = false;
         s_lastSeq        = 0;
-        log_defer("[LORA RX] *** PAIRED DID %08lX  (%u in list) ***",
-                  (unsigned long)did, (unsigned)PairedDev_Count());
+
+        log_defer("[LORA RX] *** PAIRED DID %08lX (%u in list) ***",
+                  (unsigned long)did,
+                  (unsigned)PairedDev_Count());
     }
     else
     {
-        log_defer("[LORA RX] PairedDev_Add failed (list full?)");
+        log_defer("[LORA RX] PairedDev_Add failed");
     }
 }
 
-/* ── Pairing API ────────────────────────────────────────────────────── */
+bool LoRa_PairDiscoveredDevice(uint8_t index)
+{
+    if (index >= s_discoveredCount)
+        return false;
+
+    if (!s_discovered[index].valid)
+        return false;
+
+    uint32_t did = s_discovered[index].did;
+
+    pair_device(did);
+
+    s_pairingDone   = true;
+    s_pairingMode   = false;
+    s_lastPairedDID = did;
+
+    LoRa_ClearDiscoveredDevices();
+
+    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+    LoRa_EnterRxContinuous();
+
+    return true;
+}
+
 void LoRa_EnterPairingMode(void)
 {
+    LoRa_ClearDiscoveredDevices();
+
     s_pairingMode      = true;
     s_pairingDone      = false;
     s_lastPairedDID    = 0;
@@ -396,16 +510,33 @@ void LoRa_EnterPairingMode(void)
     LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
     LoRa_EnterRxContinuous();
 
-    uart_print_now("[LORA RX] *** MANUAL PAIRING MODE ACTIVE — RX CONTINUOUS ***");
+    uart_print_now("[LORA RX] *** MANUAL PAIRING DISCOVERY ACTIVE ***");
     LED_SetIntent(LED_COLOR_BLUE, LED_MODE_BLINK, 200);
 }
 
-void     LoRa_ExitPairingMode  (void) { s_pairingMode = false; }
-bool     LoRa_IsPairingMode    (void) { return s_pairingMode;  }
-bool     LoRa_IsPairingComplete(void) { return s_pairingDone;  }
-uint32_t LoRa_GetLastPairedDID (void) { return s_lastPairedDID;}
+void LoRa_ExitPairingMode(void)
+{
+    s_pairingMode = false;
+    LoRa_ClearDiscoveredDevices();
 
-/* ── Wireless data accessors ────────────────────────────────────────── */
+    LoRa_WriteReg(REG_IRQ_FLAGS, 0xFF);
+    LoRa_EnterRxContinuous();
+}
+
+bool LoRa_IsPairingMode(void)
+{
+    return s_pairingMode;
+}
+
+bool LoRa_IsPairingComplete(void)
+{
+    return s_pairingDone;
+}
+
+uint32_t LoRa_GetLastPairedDID(void)
+{
+    return s_lastPairedDID;
+}/* ── Wireless data accessors ────────────────────────────────────────── */
 uint8_t  LoRa_GetWirelessTankLevel(void) { return s_wirelessLevel;   }
 uint8_t  LoRa_GetWirelessWellDry  (void) { return s_wirelessWellDry; }
 uint32_t LoRa_GetLastSequence     (void) { return s_lastSeq;         }
@@ -678,7 +809,17 @@ static void handle_stale_periodics(uint32_t now)
         uart_print_now("[LORA RX] STALE — sent @SY (waiting for TX HELLO)");
     }
 }
-
+void LoRa_ClearWirelessData(void)
+{
+    s_wirelessLevel      = 0;
+    s_wirelessWellDry    = 0;
+    s_wirelessDataValid  = false;
+    s_wirelessLastRxTick = 0;
+    s_lastSeq            = 0;
+    s_seqInitialized     = false;
+    g_loraConnected      = 0;
+    set_state(LORA_STATE_DISCONNECTED);
+}
 /* ── Per-cycle stats (every 30 s) ───────────────────────────────────── */
 static void maybe_print_stats(uint32_t now)
 {
@@ -790,10 +931,21 @@ void LoRa_Task(void)
     {
     case PKT_TYPE_HELLO:
     {
+        if (s_pairingMode)
+        {
+            discovery_add_or_update(p.did, rssi);
+            send_ack(p.did);
+
+            log_defer("[LORA RX] DISCOVERED HELLO DID=%08lX RSSI=%d",
+                      (unsigned long)p.did,
+                      (int)rssi);
+
+            g_loraNewPacketFlag = true;
+            break;
+        }
+
         if (should_allow(p.did))
         {
-            pair_device(p.did);
-
             s_lastPeerTick       = now;
             s_wirelessDataValid  = false;
             s_seqInitialized     = false;
@@ -803,7 +955,7 @@ void LoRa_Task(void)
 
             set_state(LORA_STATE_CONNECTED);
 
-            log_defer("[LORA RX] HELLO from %08lX -> ACK, CONNECTED",
+            log_defer("[LORA RX] HELLO from paired DID %08lX -> ACK CONNECTED",
                       (unsigned long)p.did);
 
             LED_SetIntent(LED_COLOR_GREEN, LED_MODE_BLINK, 300);
@@ -812,53 +964,68 @@ void LoRa_Task(void)
         {
             send_reject(p.did);
 
-            log_defer("[LORA RX] HELLO from unknown %08lX -> REJECT",
+            log_defer("[LORA RX] HELLO from unpaired DID %08lX -> REJECT",
                       (unsigned long)p.did);
         }
     }
     break;
 
-        case PKT_TYPE_TANKLEVEL:
+    case PKT_TYPE_TANKLEVEL:
+    {
+        if (s_pairingMode)
         {
-            if (!should_allow(p.did))
-            {
-                send_reject(p.did);
-
-                log_defer("[LORA RX] TL from unpaired DID %08lX -> REJECT",
-                          (unsigned long)p.did);
-                break;
-            }
-
-            pair_device(p.did);
-
-            bool fresh = validate_sequence(p.seq);
-
-            /*
-             * ACK duplicate also. This helps transmitter stop retrying.
-             */
+            discovery_add_or_update(p.did, rssi);
             send_ack(p.did);
 
-            if (fresh)
-            {
-                accept_data(p.level, p.well_dry, p.did);
+            log_defer("[LORA RX] DISCOVERED TL DID=%08lX RSSI=%d",
+                      (unsigned long)p.did,
+                      (int)rssi);
 
-                LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 1);
-
-                log_defer("[LORA RX] TL=%u%% WD=%u seq=%08lX DID=%08lX -> ACCEPTED",
-                          (unsigned)p.level,
-                          (unsigned)p.well_dry,
-                          (unsigned long)p.seq,
-                          (unsigned long)p.did);
-            }
-            else
-            {
-                s_lastPeerTick = now;
-
-                log_defer("[LORA RX] TL duplicate/out-of-order seq=%08lX -> re-ACKed",
-                          (unsigned long)p.seq);
-            }
+            g_loraNewPacketFlag = true;
+            break;
         }
-        break;
+
+        if (!should_allow(p.did))
+        {
+            send_reject(p.did);
+
+            log_defer("[LORA RX] TL from unpaired DID %08lX -> REJECT",
+                      (unsigned long)p.did);
+            break;
+        }
+
+        bool fresh = validate_sequence(p.seq);
+
+        /*
+         * ACK duplicate also.
+         * This helps transmitter stop retrying after reconnection.
+         */
+        send_ack(p.did);
+
+        if (fresh)
+        {
+            accept_data(p.level, p.well_dry, p.did);
+
+            set_state(LORA_STATE_CONNECTED);
+            s_lastPeerTick = now;
+
+            LED_SetIntent(LED_COLOR_GREEN, LED_MODE_STEADY, 1);
+
+            log_defer("[LORA RX] TL=%u%% WD=%u seq=%08lX DID=%08lX -> ACCEPTED",
+                      (unsigned)p.level,
+                      (unsigned)p.well_dry,
+                      (unsigned long)p.seq,
+                      (unsigned long)p.did);
+        }
+        else
+        {
+            s_lastPeerTick = now;
+
+            log_defer("[LORA RX] TL duplicate/out-of-order seq=%08lX -> re-ACKed",
+                      (unsigned long)p.seq);
+        }
+    }
+    break;
 
         case PKT_TYPE_PING:
         {

@@ -105,7 +105,7 @@ static uint32_t pairingDoneDispTime = 0;
 #define PAIRING_DONE_HOLD_MS     3000UL   /* show result before auto-dismiss */
 
 static bool reset_confirm_yes = false;
-
+static uint8_t discoveredIndex = 0;
 extern ADC_Data adcData;
 extern TimerSlot timerSlots[5];
 extern TwistSettings twistSettings;
@@ -533,36 +533,72 @@ static void show_add_device_menu(void)
 
 static void show_add_device_pair(void)
 {
+    char l0[17];
     char l1[17];
 
     if (pairingComplete)
     {
         uint32_t did = LoRa_GetLastPairedDID();
-        char hex[9]; snprintf(hex, sizeof(hex), "%08lX", (unsigned long)did);
-        lcd_line0("Paired! DID:");
-        snprintf(l1, sizeof(l1), "%.16s", hex); lcd_line1(l1); return;
+
+        lcd_line0("Paired OK!");
+        snprintf(l1, sizeof(l1), "%08lX", (unsigned long)did);
+        lcd_line1(l1);
+        return;
     }
+
     if (pairingTimedOut)
     {
-        lcd_line0("Pairing Failed"); lcd_line1("No TX received"); return;
+        lcd_line0("Pairing Failed");
+        lcd_line1("SELECT=Back");
+        return;
     }
+
     if (pairingInProgress)
     {
-        uint32_t elapsed = HAL_GetTick() - pairingStartTime;
-        uint32_t remaining = (elapsed < PAIRING_UI_TIMEOUT_MS)
-                             ? (PAIRING_UI_TIMEOUT_MS - elapsed) / 1000UL : 0;
-        lcd_line0("Pairing...");
-        snprintf(l1, sizeof(l1), "Wait TX %2lus P:%u",
-                 (unsigned long)remaining, PairedDev_Count());
-        lcd_line1(l1); return;
+        uint8_t cnt = LoRa_GetDiscoveredCount();
+
+        if (cnt == 0)
+        {
+            lcd_line0("Searching TX...");
+            lcd_line1("RESET=Cancel");
+            return;
+        }
+
+        if (discoveredIndex >= cnt)
+            discoveredIndex = 0;
+
+        LoRa_DiscoveredDevice_t d;
+
+        if (LoRa_GetDiscoveredDevice(discoveredIndex, &d))
+        {
+            snprintf(l0, sizeof(l0), "TX %u/%u R:%d",
+                     (unsigned)(discoveredIndex + 1),
+                     (unsigned)cnt,
+                     (int)d.rssi);
+
+            snprintf(l1, sizeof(l1), "%08lX SEL",
+                     (unsigned long)d.did);
+
+            lcd_line0(l0);
+            lcd_line1(l1);
+            return;
+        }
+
+        lcd_line0("Device Error");
+        lcd_line1("RESET=Back");
+        return;
     }
-    /* Idle */
-    char l0[17];
-    uint8_t cnt = PairedDev_Count();
-    snprintf(l0, sizeof(l0), "Pair TX (%u/%u)", cnt, (uint8_t)MAX_PAIRED);
+
+    uint8_t pairedCnt = PairedDev_Count();
+
+    snprintf(l0, sizeof(l0), "Pair TX %u/%u",
+             (unsigned)pairedCnt,
+             (unsigned)MAX_PAIRED);
+
     lcd_line0(l0);
-    lcd_line1(cnt >= MAX_PAIRED ? "Full Remove1st>" : "SELECT=Start   >");
+    lcd_line1(pairedCnt >= MAX_PAIRED ? "Full Remove1st" : "SELECT=Start");
 }
+
 
 static void show_add_device_remove(void)
 {
@@ -889,88 +925,146 @@ static UiButton decode_button_press(void)
     }
     return BTN_NONE;
 }
-
-/* ════════════════════════════════════════════════════════════════════
- *  SCREEN_HANDLESWITCHES
- * ════════════════════════════════════════════════════════════════════ */
 void Screen_HandleSwitches(void)
 {
     UiButton b = decode_button_press();
     uint32_t now_sw = HAL_GetTick();
+
     {
         static uint32_t rep_start[2] = {0, 0};
         static uint32_t rep_last[2]  = {0, 0};
-        bool in_menu = (ui != UI_DASH && ui != UI_WELCOME && ui != UI_COUNTDOWN && ui != UI_NONE);
+
+        bool in_menu = (ui != UI_DASH &&
+                        ui != UI_WELCOME &&
+                        ui != UI_COUNTDOWN &&
+                        ui != UI_NONE);
+
         if (in_menu)
         {
             for (int ri = 0; ri < 2; ri++)
             {
                 bool held = Switch_IsPressed(ri == 0 ? 2 : 3);
+
                 if (held)
                 {
-                    if (rep_start[ri] == 0) rep_start[ri] = now_sw;
+                    if (rep_start[ri] == 0)
+                        rep_start[ri] = now_sw;
+
                     if ((now_sw - rep_start[ri]) >= REPEAT_START_MS &&
                         (now_sw - rep_last[ri]) >= REPEAT_INTERVAL_MS)
-                    { rep_last[ri] = now_sw; if (b == BTN_NONE) b = (ri == 0) ? BTN_UP : BTN_DOWN; }
+                    {
+                        rep_last[ri] = now_sw;
+
+                        if (b == BTN_NONE)
+                            b = (ri == 0) ? BTN_UP : BTN_DOWN;
+                    }
                 }
-                else { rep_start[ri] = 0; rep_last[ri] = 0; }
+                else
+                {
+                    rep_start[ri] = 0;
+                    rep_last[ri]  = 0;
+                }
             }
         }
-        else { rep_start[0] = rep_start[1] = 0; rep_last[0] = rep_last[1] = 0; }
+        else
+        {
+            rep_start[0] = rep_start[1] = 0;
+            rep_last[0]  = rep_last[1]  = 0;
+        }
     }
-    if (b == BTN_NONE) return;
+
+    if (b == BTN_NONE)
+        return;
+
     refreshInactivityTimer();
 
-    /* Countdown quick-stop */
     if (ui == UI_COUNTDOWN && b == BTN_DOWN)
-    { ModelHandle_StopCountdown(); ui = UI_DASH; screenNeedsRefresh = true; return; }
+    {
+        ModelHandle_StopCountdown();
+        ui = UI_DASH;
+        screenNeedsRefresh = true;
+        return;
+    }
 
-    /* ── RESET button: back navigation ────────────────────────────── */
     if (b == BTN_RESET)
     {
         if (ui == UI_DASH)
         {
-            if (!ModelHandle_IsRestartActive()) ModelHandle_StartRestart();
-            else                                ModelHandle_StopRestart();
-            dash_page = 0; dash_cycle_start = HAL_GetTick(); screenNeedsRefresh = true; return;
-        }
-        else
-        {
-            /* Cancel pairing if active */
-            if (ui == UI_ADD_DEVICE_PAIR && pairingInProgress)
-            { pairingInProgress = false; LoRa_ExitPairingMode(); }
+            if (!ModelHandle_IsRestartActive())
+                ModelHandle_StartRestart();
+            else
+                ModelHandle_StopRestart();
 
-            switch (ui)
-            {
-                case UI_SETTINGS_GAP: case UI_SETTINGS_RETRY: case UI_SETTINGS_UV:
-                case UI_SETTINGS_OV:  case UI_SETTINGS_OL:    case UI_SETTINGS_UL:
-                case UI_SETTINGS_MAXRUN: case UI_SETTINGS_PWRREST: case UI_SETTINGS_FACTORY:
-                case UI_DEVSET_EDIT_DATE: case UI_DEVSET_EDIT_TIME: case UI_DEVSET_EDIT_DAY:
-                    ui = UI_DEVSET_MENU; break;
-                case UI_DEVSET_MENU:
-                case UI_ADD_DEVICE_MENU:
-                case UI_ADD_DEVICE_PAIR:
-                case UI_ADD_DEVICE_REMOVE:
-                case UI_ADD_DEVICE_PAIR_DONE:
-                case UI_ADD_DEVICE_REMOVE_DONE:
-                    ui = UI_MENU; break;
-                case UI_COUNTDOWN_EDIT_MIN: ui = UI_COUNTDOWN; break;
-                case UI_COUNTDOWN: ModelHandle_StopCountdown(); ui = UI_DASH; break;
-                default: ui = UI_DASH; break;
-            }
+            dash_page = 0;
+            dash_cycle_start = HAL_GetTick();
+            screenNeedsRefresh = true;
+            return;
         }
-        screenNeedsRefresh = true; return;
+
+        if (ui == UI_ADD_DEVICE_PAIR && pairingInProgress)
+        {
+            pairingInProgress = false;
+            pairingComplete   = false;
+            pairingTimedOut   = false;
+            LoRa_ExitPairingMode();
+        }
+
+        switch (ui)
+        {
+            case UI_SETTINGS_GAP:
+            case UI_SETTINGS_RETRY:
+            case UI_SETTINGS_UV:
+            case UI_SETTINGS_OV:
+            case UI_SETTINGS_OL:
+            case UI_SETTINGS_UL:
+            case UI_SETTINGS_MAXRUN:
+            case UI_SETTINGS_PWRREST:
+            case UI_SETTINGS_FACTORY:
+            case UI_DEVSET_EDIT_DATE:
+            case UI_DEVSET_EDIT_TIME:
+            case UI_DEVSET_EDIT_DAY:
+                ui = UI_DEVSET_MENU;
+                break;
+
+            case UI_DEVSET_MENU:
+            case UI_ADD_DEVICE_MENU:
+            case UI_ADD_DEVICE_PAIR:
+            case UI_ADD_DEVICE_REMOVE:
+            case UI_ADD_DEVICE_PAIR_DONE:
+            case UI_ADD_DEVICE_REMOVE_DONE:
+                ui = UI_MENU;
+                break;
+
+            case UI_COUNTDOWN_EDIT_MIN:
+                ui = UI_COUNTDOWN;
+                break;
+
+            case UI_COUNTDOWN:
+                ModelHandle_StopCountdown();
+                ui = UI_DASH;
+                break;
+
+            default:
+                ui = UI_DASH;
+                break;
+        }
+
+        screenNeedsRefresh = true;
+        return;
     }
 
-    /* ── Reset-to-default confirm ─────────────────────────────────── */
     if (ui == UI_RESET_CONFIRM)
     {
-        if (b == BTN_UP || b == BTN_DOWN) reset_confirm_yes = !reset_confirm_yes;
+        if (b == BTN_UP || b == BTN_DOWN)
+        {
+            reset_confirm_yes = !reset_confirm_yes;
+        }
         else if (b == BTN_SELECT)
         {
             if (reset_confirm_yes)
             {
                 ModelHandle_FactoryReset();
+
                 edit_settings_dry_en  = ModelHandle_GetDryRunEnable() ? 1 : 0;
                 edit_settings_gap_s   = ModelHandle_GetGapTime() / 60;
                 edit_settings_retry   = ModelHandle_GetDryRunRetryGap() / 60;
@@ -980,73 +1074,140 @@ void Screen_HandleSwitches(void)
                 edit_settings_ol      = (int)ModelHandle_GetOverloadLimit();
                 edit_settings_ul      = (int)ModelHandle_GetUnderloadLimit();
                 edit_settings_pwrrest = ModelHandle_GetPowerRestoreMode();
+
                 clear_sticky_mode_flags();
             }
+
             ui = UI_DASH;
         }
-        screenNeedsRefresh = true; return;
+
+        screenNeedsRefresh = true;
+        return;
     }
 
-    /* ── DASH shortcuts ───────────────────────────────────────────── */
     if (ui == UI_DASH)
     {
         switch (b)
         {
-            case BTN_RESET_LONG: ModelHandle_ToggleManual(); break;
+            case BTN_RESET_LONG:
+                ModelHandle_ToggleManual();
+                break;
+
             case BTN_SELECT:
-                if (!autoActive) ModelHandle_StartAuto(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
-                else             ModelHandle_StopAuto(); break;
+                if (!autoActive)
+                    ModelHandle_StartAuto(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
+                else
+                    ModelHandle_StopAuto();
+                break;
+
             case BTN_SELECT_LONG:
-                ui = UI_MENU; menu_idx = 0; menu_view_top = 0; screenNeedsRefresh = true; return;
+                ui = UI_MENU;
+                menu_idx = 0;
+                menu_view_top = 0;
+                screenNeedsRefresh = true;
+                return;
+
             case BTN_UP:
-                if (autoActive) { if (!timerActive) ModelHandle_Button3_SinglePress(); else ModelHandle_StopTimer(); }
-                screenNeedsRefresh = true; break;
+                if (autoActive)
+                {
+                    if (!timerActive)
+                        ModelHandle_Button3_SinglePress();
+                    else
+                        ModelHandle_StopTimer();
+                }
+                screenNeedsRefresh = true;
+                break;
+
             case BTN_UP_LONG:
-                if (!semiAutoActive) { ModelHandle_StartSemiAuto(); sticky_set_semi(); }
-                else                   ModelHandle_StopSemiAuto();
-                screenNeedsRefresh = true; break;
+                if (!semiAutoActive)
+                {
+                    ModelHandle_StartSemiAuto();
+                    sticky_set_semi();
+                }
+                else
+                {
+                    ModelHandle_StopSemiAuto();
+                }
+                screenNeedsRefresh = true;
+                break;
+
             case BTN_DOWN:
                 if (!countdownActive)
-                { ModelHandle_StartCountdown(edit_countdown_min * 60); countdownActive = true; sticky_set_countdown(); ui = UI_COUNTDOWN; }
+                {
+                    ModelHandle_StartCountdown(edit_countdown_min * 60);
+                    countdownActive = true;
+                    sticky_set_countdown();
+                    ui = UI_COUNTDOWN;
+                }
                 else
-                { ModelHandle_StopCountdown(); countdownActive = false; ui = UI_DASH; }
-                screenNeedsRefresh = true; return;
+                {
+                    ModelHandle_StopCountdown();
+                    countdownActive = false;
+                    ui = UI_DASH;
+                }
+
+                screenNeedsRefresh = true;
+                return;
+
             case BTN_DOWN_LONG:
-                if (!countdownActive) { ui = UI_COUNTDOWN_EDIT_MIN; edit_countdown_min = 1; screenNeedsRefresh = true; } break;
-            default: break;
+                if (!countdownActive)
+                {
+                    ui = UI_COUNTDOWN_EDIT_MIN;
+                    edit_countdown_min = 1;
+                    screenNeedsRefresh = true;
+                }
+                break;
+
+            default:
+                break;
         }
+
         return;
     }
 
-    /* ── Main menu ────────────────────────────────────────────────── */
     if (ui == UI_MENU)
     {
-        if (b == BTN_SELECT || b == BTN_SELECT_LONG) menu_select();
-        else if (b == BTN_DOWN && menu_idx < MAIN_MENU_COUNT - 1) menu_idx++;
-        else if (b == BTN_UP   && menu_idx > 0)                   menu_idx--;
-        screenNeedsRefresh = true; return;
+        if (b == BTN_SELECT || b == BTN_SELECT_LONG)
+            menu_select();
+        else if (b == BTN_DOWN && menu_idx < MAIN_MENU_COUNT - 1)
+            menu_idx++;
+        else if (b == BTN_UP && menu_idx > 0)
+            menu_idx--;
+
+        screenNeedsRefresh = true;
+        return;
     }
 
-    /* ── Device setup menu ────────────────────────────────────────── */
     if (ui == UI_DEVSET_MENU)
     {
-        if (b == BTN_SELECT || b == BTN_SELECT_LONG) menu_select();
-        else if (b == BTN_DOWN && devset_idx < DEVSET_MENU_COUNT - 1) devset_idx++;
-        else if (b == BTN_UP   && devset_idx > 0)                     devset_idx--;
-        screenNeedsRefresh = true; return;
+        if (b == BTN_SELECT || b == BTN_SELECT_LONG)
+            menu_select();
+        else if (b == BTN_DOWN && devset_idx < DEVSET_MENU_COUNT - 1)
+            devset_idx++;
+        else if (b == BTN_UP && devset_idx > 0)
+            devset_idx--;
+
+        screenNeedsRefresh = true;
+        return;
     }
 
-    /* ── ADD DEVICE: menu navigation (Pair / Remove) ─────────────── */
     if (ui == UI_ADD_DEVICE_MENU)
     {
-        if (b == BTN_UP   && addDevMenuIndex > 0) addDevMenuIndex--;
-        if (b == BTN_DOWN && addDevMenuIndex < 1) addDevMenuIndex++;
-        if (b == BTN_SELECT)
+        if (b == BTN_UP && addDevMenuIndex > 0)
+            addDevMenuIndex--;
+
+        if (b == BTN_DOWN && addDevMenuIndex < 1)
+            addDevMenuIndex++;
+
+        if (b == BTN_SELECT || b == BTN_SELECT_LONG)
         {
             if (addDevMenuIndex == 0)
             {
-                pairingInProgress = false; pairingComplete = false; pairingTimedOut = false;
-                addDevTypeIndex = 0;
+                pairingInProgress = false;
+                pairingComplete   = false;
+                pairingTimedOut   = false;
+                discoveredIndex   = 0;
+                addDevTypeIndex   = 0;
                 ui = UI_ADD_DEVICE_PAIR;
             }
             else
@@ -1055,197 +1216,319 @@ void Screen_HandleSwitches(void)
                 ui = UI_ADD_DEVICE_REMOVE;
             }
         }
-        screenNeedsRefresh = true; return;
+
+        screenNeedsRefresh = true;
+        return;
     }
 
-    /* ── ADD DEVICE: pair screen ──────────────────────────────────── */
     if (ui == UI_ADD_DEVICE_PAIR)
     {
-        if (b == BTN_SELECT)
+        uint8_t cnt = LoRa_GetDiscoveredCount();
+
+        if (pairingComplete || pairingTimedOut)
         {
-            if (pairingComplete || pairingTimedOut)
+            if (b == BTN_SELECT || b == BTN_SELECT_LONG)
             {
-                /* Acknowledge result — go back */
-                pairingInProgress = false; pairingComplete = false; pairingTimedOut = false;
+                pairingInProgress = false;
+                pairingComplete   = false;
+                pairingTimedOut   = false;
                 LoRa_ExitPairingMode();
                 ui = UI_ADD_DEVICE_MENU;
             }
-            else if (!pairingInProgress)
+
+            screenNeedsRefresh = true;
+            return;
+        }
+
+        if (!pairingInProgress)
+        {
+            if (b == BTN_SELECT || b == BTN_SELECT_LONG)
             {
                 if (PairedDev_Count() >= MAX_PAIRED)
                 {
-                    /* List full — display message, do nothing */
-                    /* show_add_device_pair() will show "Full Remove1st>" */
+                    pairingTimedOut     = true;
+                    pairingDoneDispTime = HAL_GetTick();
                 }
                 else
                 {
+                    discoveredIndex = 0;
+
+                    LoRa_ClearDiscoveredDevices();
                     LoRa_EnterPairingMode();
-                    pairingInProgress = true;
-                    pairingComplete   = false;
-                    pairingTimedOut   = false;
-                    pairingStartTime  = HAL_GetTick();
+
+                    pairingInProgress   = true;
+                    pairingComplete     = false;
+                    pairingTimedOut     = false;
+                    pairingStartTime    = HAL_GetTick();
+                    pairingDoneDispTime = 0;
                 }
+
+                screenNeedsRefresh = true;
+            }
+
+            return;
+        }
+
+        if ((b == BTN_UP || b == BTN_DOWN) && cnt > 1)
+        {
+            if (b == BTN_UP)
+                discoveredIndex = (discoveredIndex == 0) ? (cnt - 1) : (discoveredIndex - 1);
+            else
+                discoveredIndex = (uint8_t)((discoveredIndex + 1) % cnt);
+
+            screenNeedsRefresh = true;
+            return;
+        }
+
+        if ((b == BTN_SELECT || b == BTN_SELECT_LONG) && cnt > 0)
+        {
+            if (discoveredIndex >= cnt)
+                discoveredIndex = 0;
+
+            if (LoRa_PairDiscoveredDevice(discoveredIndex))
+            {
+                pairingInProgress   = false;
+                pairingComplete     = true;
+                pairingTimedOut     = false;
+                pairingDoneDispTime = HAL_GetTick();
             }
             else
             {
-                /* SELECT while waiting → cancel pairing */
-                pairingInProgress = false;
+                pairingInProgress   = false;
+                pairingComplete     = false;
+                pairingTimedOut     = true;
+                pairingDoneDispTime = HAL_GetTick();
                 LoRa_ExitPairingMode();
             }
+
+            screenNeedsRefresh = true;
+            return;
         }
-        screenNeedsRefresh = true; return;
+
+        return;
     }
 
-    /* ── ADD DEVICE: remove screen ───────────────────────────────── */
     if (ui == UI_ADD_DEVICE_REMOVE)
     {
         uint8_t cnt = PairedDev_Count();
+
         if ((b == BTN_UP || b == BTN_DOWN) && cnt > 0)
+        {
             addDevTypeIndex = (uint8_t)((addDevTypeIndex + 1) % cnt);
-        else if (b == BTN_SELECT)
+        }
+        else if (b == BTN_SELECT || b == BTN_SELECT_LONG)
         {
             if (cnt > 0)
             {
-                PairedDev_Remove(PairedDev_Get(addDevTypeIndex % cnt));
+                uint32_t removedDid = PairedDev_Get(addDevTypeIndex % cnt);
+                PairedDev_Remove(removedDid);
+
+                LoRa_ClearWirelessData();
+
                 addDevTypeIndex     = 0;
                 pairingDoneDispTime = HAL_GetTick();
                 ui = UI_ADD_DEVICE_REMOVE_DONE;
             }
-            else { ui = UI_ADD_DEVICE_MENU; }
+            else
+            {
+                ui = UI_ADD_DEVICE_MENU;
+            }
         }
-        screenNeedsRefresh = true; return;
-    }
 
-    /* ── ADD DEVICE: done screens (SELECT to dismiss early) ──────── */
-    if (ui == UI_ADD_DEVICE_PAIR_DONE || ui == UI_ADD_DEVICE_REMOVE_DONE)
-    {
-        if (b == BTN_SELECT) { ui = UI_ADD_DEVICE_MENU; screenNeedsRefresh = true; }
+        screenNeedsRefresh = true;
         return;
     }
 
-    /* ── Generic edit screens (all other states) ──────────────────── */
+    if (ui == UI_ADD_DEVICE_PAIR_DONE || ui == UI_ADD_DEVICE_REMOVE_DONE)
+    {
+        if (b == BTN_SELECT || b == BTN_SELECT_LONG)
+        {
+            ui = UI_ADD_DEVICE_MENU;
+            screenNeedsRefresh = true;
+        }
+
+        return;
+    }
+
     if (ui != UI_DASH)
     {
-        if      (b == BTN_UP)        increase_edit_value(1);
-        else if (b == BTN_DOWN)      decrease_edit_value(1);
-        else if (b == BTN_UP_LONG)   increase_edit_value(5);
-        else if (b == BTN_DOWN_LONG) decrease_edit_value(5);
-        else if (b == BTN_SELECT)    menu_select();
-        screenNeedsRefresh = true; return;
+        if (b == BTN_UP)
+            increase_edit_value(1);
+        else if (b == BTN_DOWN)
+            decrease_edit_value(1);
+        else if (b == BTN_UP_LONG)
+            increase_edit_value(5);
+        else if (b == BTN_DOWN_LONG)
+            decrease_edit_value(5);
+        else if (b == BTN_SELECT)
+            menu_select();
+
+        screenNeedsRefresh = true;
+        return;
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════
- *  SCREEN_UPDATE
- * ════════════════════════════════════════════════════════════════════ */
+
 void Screen_Update(void)
 {
     uint32_t now = HAL_GetTick();
 
-    if (ui >= UI_MAX_) { ui = UI_DASH; screenNeedsRefresh = true; }
+    if (ui >= UI_MAX_)
+    {
+        ui = UI_DASH;
+        screenNeedsRefresh = true;
+    }
 
-    /* Welcome → Dash */
     if (ui == UI_WELCOME && (now - lastLcdUpdateTime >= WELCOME_MS))
-    { lastLcdUpdateTime = now; ui = UI_DASH; screenNeedsRefresh = true; }
+    {
+        lastLcdUpdateTime = now;
+        ui = UI_DASH;
+        screenNeedsRefresh = true;
+    }
 
-    /* Inactivity auto-back (not from welcome/dash/countdown/pairing) */
-    if (ui != UI_WELCOME && ui != UI_DASH && ui != UI_COUNTDOWN &&
-        ui != UI_ADD_DEVICE_PAIR &&           /* don't time-out mid-pairing */
+    if (ui != UI_WELCOME &&
+        ui != UI_DASH &&
+        ui != UI_COUNTDOWN &&
+        ui != UI_ADD_DEVICE_PAIR &&
         (now - lastUserAction >= AUTO_BACK_MS))
-    { ui = UI_DASH; screenNeedsRefresh = true; }
+    {
+        ui = UI_DASH;
+        screenNeedsRefresh = true;
+    }
 
-    /* Countdown refresh */
-    if (ui == UI_COUNTDOWN && (now - lastLcdUpdateTime) >= 1000)
-    { lastLcdUpdateTime = now; screenNeedsRefresh = true; }
+    if (ui == UI_COUNTDOWN && (now - lastLcdUpdateTime) >= 1000UL)
+    {
+        lastLcdUpdateTime = now;
+        screenNeedsRefresh = true;
+    }
 
-    /* ── Pairing mode live polling ────────────────────────────────── */
     if (ui == UI_ADD_DEVICE_PAIR && pairingInProgress)
     {
-        if (LoRa_IsPairingComplete())
+        uint8_t cnt = LoRa_GetDiscoveredCount();
+
+        if (cnt > 0 && discoveredIndex >= cnt)
         {
-            pairingInProgress   = false;
-            pairingComplete     = true;
-            pairingDoneDispTime = now;
-            LoRa_ExitPairingMode();
-            screenNeedsRefresh  = true;
+            discoveredIndex = 0;
+            screenNeedsRefresh = true;
         }
-        else if ((now - pairingStartTime) >= PAIRING_UI_TIMEOUT_MS)
+
+        if ((now - pairingStartTime) >= PAIRING_UI_TIMEOUT_MS)
         {
             pairingInProgress   = false;
             pairingTimedOut     = true;
             pairingDoneDispTime = now;
             LoRa_ExitPairingMode();
-            screenNeedsRefresh  = true;
+            screenNeedsRefresh = true;
         }
         else if ((now - lastLcdUpdateTime) >= 1000UL)
-        { lastLcdUpdateTime = now; screenNeedsRefresh = true; }
+        {
+            lastLcdUpdateTime = now;
+            screenNeedsRefresh = true;
+        }
     }
 
-    /* Auto-dismiss pair result after 3 s */
     if (ui == UI_ADD_DEVICE_PAIR &&
         (pairingComplete || pairingTimedOut) &&
         (now - pairingDoneDispTime) >= PAIRING_DONE_HOLD_MS)
     {
-        pairingComplete = false; pairingTimedOut = false; pairingInProgress = false;
-        ui = UI_ADD_DEVICE_MENU; screenNeedsRefresh = true;
+        pairingComplete   = false;
+        pairingTimedOut   = false;
+        pairingInProgress = false;
+
+        LoRa_ExitPairingMode();
+
+        ui = UI_ADD_DEVICE_MENU;
+        screenNeedsRefresh = true;
     }
 
-    /* Auto-dismiss remove-done after 3 s */
     if (ui == UI_ADD_DEVICE_REMOVE_DONE &&
         (now - pairingDoneDispTime) >= PAIRING_DONE_HOLD_MS)
-    { ui = UI_ADD_DEVICE_MENU; screenNeedsRefresh = true; }
+    {
+        ui = UI_ADD_DEVICE_MENU;
+        screenNeedsRefresh = true;
+    }
 
-    if (ui == UI_DASH && dash_cycle_start == 0) dash_cycle_start = now;
+    if (ui == UI_DASH && dash_cycle_start == 0)
+        dash_cycle_start = now;
 
-    if (ui == UI_DASH && dash_page == 0 && (now - dry_blink_start) >= DRY_BLINK_MS)
-    { dry_blink_slot = dry_blink_slot ? 0 : 1; dry_blink_start = now; show_dash(); }
+    if (ui == UI_DASH &&
+        dash_page == 0 &&
+        (now - dry_blink_start) >= DRY_BLINK_MS)
+    {
+        dry_blink_slot = dry_blink_slot ? 0 : 1;
+        dry_blink_start = now;
+        show_dash();
+    }
 
-    if (ui == UI_DASH && dash_page == 1 && (now - dry_blink_start) >= DRY_BLINK_MS)
-    { dry_blink_start = now; show_dash(); }
+    if (ui == UI_DASH &&
+        dash_page == 1 &&
+        (now - dry_blink_start) >= DRY_BLINK_MS)
+    {
+        dry_blink_start = now;
+        show_dash();
+    }
 
     if (screenNeedsRefresh || ui != last_ui)
     {
-        lcd_clear(); last_ui = ui; screenNeedsRefresh = false;
-        if (ui == UI_DASH) { if (dash_cycle_start == 0) dash_cycle_start = now; dry_blink_slot = 0; dry_blink_start = now; }
+        if (ui != last_ui)
+        {
+            lcd_clear();
+        }
+
+        last_ui = ui;
+        screenNeedsRefresh = false;
+
+        if (ui == UI_DASH)
+        {
+            if (dash_cycle_start == 0)
+                dash_cycle_start = now;
+
+            dry_blink_slot  = 0;
+            dry_blink_start = now;
+        }
 
         switch (ui)
         {
-            case UI_WELCOME:              show_welcome(); break;
-            case UI_DASH:                 show_dash(); break;
-            case UI_MENU:                 show_menu(); break;
-            case UI_DEVSET_MENU:          show_devset_menu(); break;
-            case UI_ADD_DEVICE_MENU:      show_add_device_menu(); break;
-            case UI_ADD_DEVICE_PAIR:      show_add_device_pair(); break;
-            case UI_ADD_DEVICE_REMOVE:    show_add_device_remove(); break;
-            case UI_ADD_DEVICE_PAIR_DONE: show_add_device_pair_done(); break;
+            case UI_WELCOME:                show_welcome(); break;
+            case UI_DASH:                   show_dash(); break;
+            case UI_MENU:                   show_menu(); break;
+            case UI_DEVSET_MENU:            show_devset_menu(); break;
+            case UI_ADD_DEVICE_MENU:        show_add_device_menu(); break;
+            case UI_ADD_DEVICE_PAIR:        show_add_device_pair(); break;
+            case UI_ADD_DEVICE_REMOVE:      show_add_device_remove(); break;
+            case UI_ADD_DEVICE_PAIR_DONE:   show_add_device_pair_done(); break;
             case UI_ADD_DEVICE_REMOVE_DONE: show_add_device_remove_done(); break;
-            case UI_DEVSET_EDIT_DATE:     show_devset_edit_date(); break;
-            case UI_DEVSET_EDIT_TIME:     show_devset_edit_time(); break;
-            case UI_DEVSET_EDIT_DAY:      show_devset_edit_day(); break;
-            case UI_RESET_CONFIRM:        show_reset_confirm(); break;
-            case UI_COUNTDOWN:            show_countdown(); break;
-            case UI_COUNTDOWN_EDIT_MIN:   show_countdown_edit_min(); break;
-            case UI_TIMER_SLOT_SELECT:    show_timer_slot_select(); break;
-            case UI_TIMER_EDIT_DAYS:      show_timer_days(); break;
-            case UI_TIMER_EDIT_GAP:       show_timer_gap(); break;
-            case UI_TIMER_EDIT_ENABLE:    show_timer_enable(); break;
-            case UI_TIMER_EDIT_SUMMARY:   show_timer_summary(); break;
-            case UI_AUTO_MENU:            show_auto_menu(); break;
-            case UI_AUTO_EDIT_GAP:        show_auto_gap(); break;
-            case UI_AUTO_EDIT_MAXRUN:     show_auto_maxrun(); break;
-            case UI_AUTO_EDIT_RETRY:      show_auto_retry(); break;
-            case UI_SEMI_AUTO:            show_semi_auto(); break;
-            case UI_TWIST:                show_twist(); break;
-            case UI_SETTINGS_GAP:         show_settings_gap(); break;
-            case UI_SETTINGS_RETRY:       show_settings_retry(); break;
-            case UI_SETTINGS_UV:          show_settings_uv(); break;
-            case UI_SETTINGS_OV:          show_settings_ov(); break;
-            case UI_SETTINGS_OL:          show_settings_ol(); break;
-            case UI_SETTINGS_UL:          show_settings_ul(); break;
-            case UI_SETTINGS_MAXRUN:      show_settings_maxrun(); break;
-            case UI_SETTINGS_PWRREST:     show_settings_pwrrest(); break;
-            case UI_SETTINGS_FACTORY:     show_settings_factory(); break;
-            default: lcd_line0("Unknown UI"); lcd_line1("Check state"); break;
+            case UI_DEVSET_EDIT_DATE:       show_devset_edit_date(); break;
+            case UI_DEVSET_EDIT_TIME:       show_devset_edit_time(); break;
+            case UI_DEVSET_EDIT_DAY:        show_devset_edit_day(); break;
+            case UI_RESET_CONFIRM:          show_reset_confirm(); break;
+            case UI_COUNTDOWN:              show_countdown(); break;
+            case UI_COUNTDOWN_EDIT_MIN:     show_countdown_edit_min(); break;
+            case UI_TIMER_SLOT_SELECT:      show_timer_slot_select(); break;
+            case UI_TIMER_EDIT_DAYS:        show_timer_days(); break;
+            case UI_TIMER_EDIT_GAP:         show_timer_gap(); break;
+            case UI_TIMER_EDIT_ENABLE:      show_timer_enable(); break;
+            case UI_TIMER_EDIT_SUMMARY:     show_timer_summary(); break;
+            case UI_AUTO_MENU:              show_auto_menu(); break;
+            case UI_AUTO_EDIT_GAP:          show_auto_gap(); break;
+            case UI_AUTO_EDIT_MAXRUN:       show_auto_maxrun(); break;
+            case UI_AUTO_EDIT_RETRY:        show_auto_retry(); break;
+            case UI_SEMI_AUTO:              show_semi_auto(); break;
+            case UI_TWIST:                  show_twist(); break;
+            case UI_SETTINGS_GAP:           show_settings_gap(); break;
+            case UI_SETTINGS_RETRY:         show_settings_retry(); break;
+            case UI_SETTINGS_UV:            show_settings_uv(); break;
+            case UI_SETTINGS_OV:            show_settings_ov(); break;
+            case UI_SETTINGS_OL:            show_settings_ol(); break;
+            case UI_SETTINGS_UL:            show_settings_ul(); break;
+            case UI_SETTINGS_MAXRUN:        show_settings_maxrun(); break;
+            case UI_SETTINGS_PWRREST:       show_settings_pwrrest(); break;
+            case UI_SETTINGS_FACTORY:       show_settings_factory(); break;
+
+            default:
+                lcd_line0("Unknown UI");
+                lcd_line1("Check state");
+                break;
         }
     }
 }
