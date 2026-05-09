@@ -93,6 +93,7 @@ extern void ModelHandle_FactoryReset(void);
 #define DASH_PAGE0_TIME     4500UL
 #define DASH_PAGE1_TIME     2500UL
 #define DRY_BLINK_MS        400UL
+#define CD_EDIT_REPEAT_MS   3000UL   /* hold-DOWN auto-increment in countdown edit */
 
 /* ── Pairing UI state ────────────────────────────────────────────── */
 static bool     pairingInProgress   = false;
@@ -200,10 +201,53 @@ static uint32_t dry_blink_start  = 0;
 static bool     dash_semi_shown      = false;
 static bool     dash_countdown_shown = false;
 
-static inline void clear_sticky_mode_flags(void) { dash_semi_shown = false; dash_countdown_shown = false; }
-static inline void sticky_set_countdown(void)  { dash_countdown_shown = true;  dash_semi_shown = false; }
-static inline void sticky_set_semi(void)       { dash_semi_shown = true; dash_countdown_shown = false; }
+static bool dash_manual_off_shown = false;
+static bool dash_auto_off_shown   = false;
 
+/* ── Countdown edit hold-repeat state ────────────────────────────── */
+static uint32_t cd_edit_repeat_time  = 0;
+static bool     countdown_was_active = false;
+
+static inline void clear_sticky_mode_flags(void)
+{
+    dash_semi_shown = false;
+    dash_countdown_shown = false;
+}
+
+static inline void sticky_set_manual_off(void)
+{
+    dash_manual_off_shown = true;
+    dash_auto_off_shown = false;
+    dash_semi_shown = false;
+    dash_countdown_shown = false;
+}
+
+static inline void sticky_set_auto_off(void)
+{
+    dash_auto_off_shown = true;
+    dash_manual_off_shown = false;
+    dash_semi_shown = false;
+    dash_countdown_shown = false;
+}
+
+static inline void clear_all_dash_sticky_flags(void)
+{
+    dash_manual_off_shown = false;
+    dash_auto_off_shown = false;
+    clear_sticky_mode_flags();
+}
+
+static inline void sticky_set_countdown(void)
+{
+    dash_countdown_shown = true;
+    dash_semi_shown = false;
+}
+
+static inline void sticky_set_semi(void)
+{
+    dash_semi_shown = true;
+    dash_countdown_shown = false;
+}
 /* ════════════════════════════════════════════════════════════════════
  *  LCD HELPERS
  * ════════════════════════════════════════════════════════════════════ */
@@ -260,7 +304,7 @@ static void show_dash(void)
     if (timerActive || autoActive || twistActive || manualActive ||
         ModelHandle_IsRestartActive() || ModelHandle_IsVoltageFault() ||
         ModelHandle_IsOverload()      || ModelHandle_IsUnderload())
-        { dash_semi_shown = false; dash_countdown_shown = false; }
+        { clear_all_dash_sticky_flags(); }
 
     const char *mode;
     if      (ModelHandle_IsRestartActive()) mode = "Refill ";
@@ -274,9 +318,11 @@ static void show_dash(void)
     else if (semiAutoActive)    mode = motorOn ? "SEMI   " : "SEMI";
     else if (manualActive)      mode = "MANUAL ";
     else if (tankFull)          mode = "FULL   ";
-    else if (dash_countdown_shown) mode = "COUNT  ";
-    else if (dash_semi_shown)      mode = "SEMI   ";
-    else                           mode = "READY  ";
+    else if (dash_countdown_shown)  mode = "COUNT  ";
+    else if (dash_semi_shown)       mode = "SEMI   ";
+    else if (dash_manual_off_shown) mode = "MANUAL ";
+    else if (dash_auto_off_shown)   mode = "AUTO   ";
+    else                            mode = "READY  ";
 
     if (dash_page == 0)
     {
@@ -441,7 +487,7 @@ static void show_countdown(void)
     lcd_line0(l0); lcd_line1("DOWN=STOP      ");
 }
 
-static void show_countdown_edit_min(void) { lcd_line0("SET MINUTES"); char b[17]; snprintf(b,sizeof(b),"val:%03u Next>",edit_countdown_min); lcd_line1(b); }
+static void show_countdown_edit_min(void) { lcd_line0("SET MINUTES"); char b[17]; snprintf(b,sizeof(b),"val:%03u DOWN+>",edit_countdown_min); lcd_line1(b); }
 
 static void show_settings_gap(void)
 {
@@ -934,9 +980,12 @@ void Screen_HandleSwitches(void)
         static uint32_t rep_start[2] = {0, 0};
         static uint32_t rep_last[2]  = {0, 0};
 
+        /* Exclude UI_COUNTDOWN_EDIT_MIN from fast repeat –
+           it uses its own 3-second hold-repeat below */
         bool in_menu = (ui != UI_DASH &&
                         ui != UI_WELCOME &&
                         ui != UI_COUNTDOWN &&
+                        ui != UI_COUNTDOWN_EDIT_MIN &&
                         ui != UI_NONE);
 
         if (in_menu)
@@ -974,13 +1023,28 @@ void Screen_HandleSwitches(void)
     }
 
     if (b == BTN_NONE)
+    {
+        /* ── Countdown-edit: hold-DOWN 3-second auto-increment ────── */
+        if (ui == UI_COUNTDOWN_EDIT_MIN && Switch_IsPressed(3))
+        {
+            if ((now_sw - cd_edit_repeat_time) >= CD_EDIT_REPEAT_MS)
+            {
+                if (edit_countdown_min < 180) edit_countdown_min++;
+                cd_edit_repeat_time = now_sw;
+                screenNeedsRefresh = true;
+            }
+        }
         return;
+    }
 
     refreshInactivityTimer();
 
+    /* ── Countdown running screen: DOWN stops it ─────────────────── */
     if (ui == UI_COUNTDOWN && b == BTN_DOWN)
     {
         ModelHandle_StopCountdown();
+        countdown_was_active = false;
+        sticky_set_countdown();
         ui = UI_DASH;
         screenNeedsRefresh = true;
         return;
@@ -1036,11 +1100,13 @@ void Screen_HandleSwitches(void)
                 break;
 
             case UI_COUNTDOWN_EDIT_MIN:
-                ui = UI_COUNTDOWN;
+                ui = UI_DASH;
                 break;
 
             case UI_COUNTDOWN:
                 ModelHandle_StopCountdown();
+                countdown_was_active = false;
+                sticky_set_countdown();
                 ui = UI_DASH;
                 break;
 
@@ -1090,15 +1156,39 @@ void Screen_HandleSwitches(void)
         switch (b)
         {
             case BTN_RESET_LONG:
+            {
+                bool wasManual = manualActive;
                 ModelHandle_ToggleManual();
+
+                if (wasManual && !manualActive)
+                    sticky_set_manual_off();
+                else
+                    clear_all_dash_sticky_flags();
+
+                screenNeedsRefresh = true;
                 break;
+            }
 
             case BTN_SELECT:
+            {
+                bool wasAuto = autoActive;
+
                 if (!autoActive)
+                {
                     ModelHandle_StartAuto(edit_auto_gap_s, edit_auto_maxrun_min, edit_auto_retry);
+                    clear_all_dash_sticky_flags();
+                }
                 else
+                {
                     ModelHandle_StopAuto();
+
+                    if (wasAuto && !autoActive)
+                        sticky_set_auto_off();
+                }
+
+                screenNeedsRefresh = true;
                 break;
+            }
 
             case BTN_SELECT_LONG:
                 ui = UI_MENU;
@@ -1128,6 +1218,7 @@ void Screen_HandleSwitches(void)
                 {
                     ModelHandle_StopSemiAuto();
                 }
+
                 screenNeedsRefresh = true;
                 break;
 
@@ -1135,14 +1226,15 @@ void Screen_HandleSwitches(void)
                 if (!countdownActive)
                 {
                     ModelHandle_StartCountdown(edit_countdown_min * 60);
-                    countdownActive = true;
+                    countdown_was_active = true;
                     sticky_set_countdown();
                     ui = UI_COUNTDOWN;
                 }
                 else
                 {
                     ModelHandle_StopCountdown();
-                    countdownActive = false;
+                    countdown_was_active = false;
+                    sticky_set_countdown();
                     ui = UI_DASH;
                 }
 
@@ -1154,6 +1246,7 @@ void Screen_HandleSwitches(void)
                 {
                     ui = UI_COUNTDOWN_EDIT_MIN;
                     edit_countdown_min = 1;
+                    cd_edit_repeat_time = HAL_GetTick();
                     screenNeedsRefresh = true;
                 }
                 break;
@@ -1320,16 +1413,14 @@ void Screen_HandleSwitches(void)
         {
             if (cnt > 0)
             {
-            	uint32_t removedDid = PairedDev_Get(addDevTypeIndex % cnt);
+                uint32_t removedDid = PairedDev_Get(addDevTypeIndex % cnt);
 
-            	PairedDev_Remove(removedDid);
+                PairedDev_Remove(removedDid);
+                LoRa_OnPairingListChanged();
 
-            	/* Important: immediately stop using old wireless ADC data */
-            	LoRa_OnPairingListChanged();
-
-            	addDevTypeIndex     = 0;
-            	pairingDoneDispTime = HAL_GetTick();
-            	ui = UI_ADD_DEVICE_REMOVE_DONE;
+                addDevTypeIndex     = 0;
+                pairingDoneDispTime = HAL_GetTick();
+                ui = UI_ADD_DEVICE_REMOVE_DONE;
             }
             else
             {
@@ -1352,6 +1443,45 @@ void Screen_HandleSwitches(void)
         return;
     }
 
+    /* ════════════════════════════════════════════════════════════════
+     *  Dedicated countdown-edit handler
+     *  DOWN short  = +1
+     *  DOWN hold   = auto +1 every 3 s  (handled in BTN_NONE block above)
+     *  UP          = −1
+     *  SELECT      = confirm & start countdown
+     *  RESET       = cancel  (already handled in BTN_RESET switch above)
+     * ════════════════════════════════════════════════════════════════ */
+    if (ui == UI_COUNTDOWN_EDIT_MIN)
+    {
+        if (b == BTN_DOWN || b == BTN_DOWN_LONG)
+        {
+            if (edit_countdown_min < 180) edit_countdown_min++;
+            cd_edit_repeat_time = HAL_GetTick();
+            screenNeedsRefresh = true;
+            return;
+        }
+
+        if (b == BTN_UP || b == BTN_UP_LONG)
+        {
+            if (edit_countdown_min > 1) edit_countdown_min--;
+            screenNeedsRefresh = true;
+            return;
+        }
+
+        if (b == BTN_SELECT || b == BTN_SELECT_LONG)
+        {
+            ModelHandle_StartCountdown(edit_countdown_min * 60);
+            countdown_was_active = true;
+            sticky_set_countdown();
+            ui = UI_COUNTDOWN;
+            screenNeedsRefresh = true;
+            return;
+        }
+
+        screenNeedsRefresh = true;
+        return;
+    }
+
     if (ui != UI_DASH)
     {
         if (b == BTN_UP)
@@ -1369,7 +1499,6 @@ void Screen_HandleSwitches(void)
         return;
     }
 }
-
 
 void Screen_Update(void)
 {
@@ -1402,6 +1531,20 @@ void Screen_Update(void)
     {
         lastLcdUpdateTime = now;
         screenNeedsRefresh = true;
+    }
+
+    /* ── Countdown completed: auto-transition to dash with sticky ── */
+    if (ui == UI_COUNTDOWN)
+    {
+        if (countdownActive)
+            countdown_was_active = true;
+        else if (countdown_was_active)
+        {
+            countdown_was_active = false;
+            sticky_set_countdown();
+            ui = UI_DASH;
+            screenNeedsRefresh = true;
+        }
     }
 
     if (ui == UI_ADD_DEVICE_PAIR && pairingInProgress)

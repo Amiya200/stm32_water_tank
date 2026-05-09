@@ -620,17 +620,33 @@ void ModelHandle_ToggleManual(void)
         timerActive     = false;
         semiAutoActive  = false;
         countdownActive = false;
+        countdownMode   = false;
         twistActive     = false;
-        if (autoActive) { autoActive = false; autoUserLocked = true; }
-        stop_motor();
-        manualActive = true;
-        dryState     = DRY_IDLE;
+
+        if (autoActive)
+        {
+            autoActive = false;
+            autoUserLocked = true;
+        }
+
+        manualActive       = true;
+        manualOverride     = true;
+        motorOwner         = MOTOR_OWNER_MANUAL;
+        dryState           = DRY_IDLE;
+        senseMaxRunReached = false;
+
+        start_motor();
     }
     else
     {
-        manualActive = false;
+        manualActive   = false;
+        manualOverride = false;
+        motorOwner     = MOTOR_OWNER_NONE;
+        dryState       = DRY_IDLE;
+
         stop_motor();
     }
+
     ModelHandle_SaveModeState();
 }
 
@@ -1375,13 +1391,17 @@ void ModelHandle_StopAuto(void)
 {
     timerActive        = false;
     timerStateDeadline = 0;
-    stop_motor();
+
     autoActive       = false;
+    autoUserLocked   = true;
     autoState        = AUTO_IDLE;
     stateDeadline    = 0;
     auto_retry_count = 0;
     autoDeadline     = 0;
     dryState         = DRY_IDLE;
+    motorOwner       = MOTOR_OWNER_NONE;
+
+    stop_motor();
     ModelHandle_SaveModeState();
 }
 
@@ -1564,16 +1584,20 @@ void ModelHandle_StartCountdown(uint32_t seconds)
 {
     if (seconds < 60)    seconds = 60;
     if (seconds > 10800) seconds = 10800;
+
     clear_all_modes();
+
     senseMaxRunReached = false;
     countdownActive    = true;
     countdownMode      = true;
+
     uint32_t now       = HAL_GetTick();
     cd_deadline        = now + (seconds * 1000UL);
     countdownDuration  = seconds;
     motorOwner         = MOTOR_OWNER_COUNTDOWN;
     cdTankFullHold     = false;
     dryState           = DRY_IDLE;
+
     start_motor();
     ModelHandle_SaveModeState();
 }
@@ -1586,10 +1610,13 @@ void ModelHandle_StopCountdown(void)
     countdownDuration = 0;
     cdTankFullHold    = false;
     dryState          = DRY_IDLE;
+    motorOwner        = MOTOR_OWNER_NONE;
+
+    suppressAutoOneCycle = true;
+
     stop_motor();
     ModelHandle_SaveModeState();
 }
-
 static uint16_t CD_CRC(const uint8_t* d, uint16_t l)
 {
     uint16_t c = 0xFFFF;
