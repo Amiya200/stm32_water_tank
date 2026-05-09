@@ -189,7 +189,7 @@ static const char* const devset_menu_items[] = {
 
 #define DEBOUNCE_MS        15
 #define REPEAT_START_MS    600
-#define REPEAT_INTERVAL_MS 100
+#define REPEAT_INTERVAL_MS 500
 
 static uint8_t devset_idx      = 0;
 static uint8_t devset_view_top = 0;
@@ -1461,12 +1461,12 @@ void Screen_HandleSwitches(void)
             return;
         }
 
-        if (b == BTN_UP || b == BTN_UP_LONG)
-        {
-            if (edit_countdown_min > 1) edit_countdown_min--;
-            screenNeedsRefresh = true;
-            return;
-        }
+//        if (b == BTN_UP || b == BTN_UP_LONG)
+//        {
+//            if (edit_countdown_min > 1) edit_countdown_min--;
+//            screenNeedsRefresh = true;
+//            return;
+//        }
 
         if (b == BTN_SELECT || b == BTN_SELECT_LONG)
         {
