@@ -91,7 +91,9 @@ volatile bool manualOverride      = false;
 volatile uint16_t auto_retry_counter = 0;
 volatile bool     countdownMode      = false;
 volatile uint32_t countdownDuration  = 0;
-
+#define DEFAULT_DRY_GAP_S        120U   /* motor run/test time: 2 min */
+#define DEFAULT_DRY_RETRY_S      300U   /* retry wait time: 5 min */
+#define DEFAULT_AUTO_MAXRUN_MIN  300U
 TwistSettings twistSettings;
 
 typedef struct {
@@ -306,12 +308,53 @@ typedef enum {
 static RestartState restartState   = RESTART_RUN_TEST;
 static uint32_t     restartDeadline = 0;
 static uint32_t     stateDeadline   = 0;
+static void ensure_dry_run_defaults_if_enabled(void)
+{
+    bool changed = false;
 
+    /*
+     * If dry-run is enabled but values are not configured,
+     * use safe default values automatically.
+     */
+    if (sys.dry_run_enable != 0)
+    {
+        if (sys.gap_time_s == 0)
+        {
+            sys.gap_time_s = DEFAULT_DRY_GAP_S;
+            changed = true;
+        }
+
+        if (sys.dry_run_time_s == 0)
+        {
+            sys.dry_run_time_s = DEFAULT_DRY_RETRY_S;
+            changed = true;
+        }
+
+        if (sys.maxrun_min == 0)
+        {
+            sys.maxrun_min = DEFAULT_AUTO_MAXRUN_MIN;
+            changed = true;
+        }
+    }
+
+    if (changed)
+    {
+        ModelHandle_SaveSettingsToEEPROM();
+    }
+}
 static inline bool dry_protection_enabled(void)
 {
-    return (sys.dry_run_enable != 0) && (sys.gap_time_s > 0);
-}
+    if (sys.dry_run_enable == 0)
+        return false;
 
+    if (sys.gap_time_s == 0)
+        sys.gap_time_s = DEFAULT_DRY_GAP_S;
+
+    if (sys.dry_run_time_s == 0)
+        sys.dry_run_time_s = DEFAULT_DRY_RETRY_S;
+
+    return true;
+}
 uint16_t ModelHandle_GetGapTime(void)        { return sys.gap_time_s; }
 uint8_t  ModelHandle_GetRetryCount(void)     { return sys.retry_count; }
 uint16_t ModelHandle_GetUnderVolt(void)      { return sys.uv_limit; }
@@ -371,12 +414,15 @@ void ModelHandle_LoadSettingsFromEEPROM(void)
 {
     SystemEEPROMBlock b;
     EEPROM_ReadBuffer(EE_ADDR_SYS_BLOCK, (uint8_t*)&b, sizeof(b));
+
     uint16_t crc = SYS_CRC16((uint8_t*)&b, sizeof(b) - 2);
+
     if (b.sig != SYS_SIG || crc != b.crc)
     {
         ModelHandle_SaveSettingsToEEPROM();
         return;
     }
+
     sys.gap_time_s     = b.gap;
     sys.dry_run_time_s = b.dry_time;
     sys.retry_count    = b.retry;
@@ -386,6 +432,13 @@ void ModelHandle_LoadSettingsFromEEPROM(void)
     sys.overload       = b.over10  / 10.0f;
     sys.underload      = b.under10 / 10.0f;
     sys.dry_run_enable = b.dry_enable;
+
+    /*
+     * Safety correction:
+     * If dry run is enabled but old EEPROM has zero values,
+     * restore defaults automatically.
+     */
+    ensure_dry_run_defaults_if_enabled();
 }
 
 void ModelHandle_SaveModeState(void)
@@ -733,8 +786,8 @@ static uint32_t buzzerPatternStart = 0;
 static bool     buzzerState        = false;
 static inline void Buzzer_SetPin(bool on)
 {
-    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
-                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+//    HAL_GPIO_WritePin(LED5_GPIO_Port, LED5_Pin,
+//                      on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 static void Buzzer_StartEvent(BuzzerEvent ev)
@@ -1363,6 +1416,25 @@ void ModelHandle_StopSemiAuto(void)
 void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry)
 {
     clear_all_modes();
+
+    /*
+     * If Sense Dry Run is enabled but no dry-run value is configured,
+     * automatically use default settings.
+     */
+    ensure_dry_run_defaults_if_enabled();
+
+    if (gap_s == 0)
+        gap_s = sys.gap_time_s;
+
+    if (gap_s == 0)
+        gap_s = DEFAULT_DRY_GAP_S;
+
+    if (maxrun_min == 0)
+        maxrun_min = sys.maxrun_min;
+
+    if (maxrun_min == 0)
+        maxrun_min = DEFAULT_AUTO_MAXRUN_MIN;
+
     auto_gap_s       = gap_s;
     auto_maxrun_min  = maxrun_min;
     auto_retry_limit = retry;
@@ -1373,6 +1445,7 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry)
     stateDeadline    = 0;
     motorOwner       = MOTOR_OWNER_AUTO;
     dryState         = DRY_IDLE;
+
     if (timer_any_active_slot())
     {
         timerActive        = true;
@@ -1380,13 +1453,12 @@ void ModelHandle_StartAuto(uint16_t gap_s, uint16_t maxrun_min, uint8_t retry)
         timerStateDeadline = 0;
         motorOwner         = MOTOR_OWNER_TIMER;
     }
-    /* Start motor immediately — ground water will be checked
-     * after the first gap + dry_run_time cycle completes.    */
+
     if (motorOwner == MOTOR_OWNER_AUTO)
         start_motor();
+
     ModelHandle_SaveModeState();
 }
-
 void ModelHandle_StopAuto(void)
 {
     timerActive        = false;
@@ -1457,129 +1529,187 @@ void ModelHandle_SetBuzzerSettings(uint8_t pump, uint8_t full, uint8_t empty)
 static void auto_tick(void)
 {
     if (!autoActive) return;
+
     uint32_t now = HAL_GetTick();
+
     ModelHandle_CheckDryRun();
+    ModelHandle_CheckGroundWater();
+
     uint8_t level = get_tank_level_percent();
-    bool protectionFault = senseOverLoad || senseUnderLoad || senseOverUnderVolt || senseMaxRunReached;
-    if (protectionFault) { stop_motor(); autoState = AUTO_IDLE; stateDeadline = 0; return; }
+
+    bool protectionFault =
+        senseOverLoad ||
+        senseUnderLoad ||
+        senseOverUnderVolt ||
+        senseMaxRunReached;
+
+    if (protectionFault)
+    {
+        stop_motor();
+        autoState     = AUTO_IDLE;
+        stateDeadline = 0;
+        return;
+    }
 
     if (level >= AUTO_STOP_LEVEL_PERCENT)
     {
-        stop_motor(); autoState = AUTO_ON_WAIT; stateDeadline = 0; dryState = DRY_IDLE;
+        stop_motor();
+        autoState     = AUTO_ON_WAIT;
+        stateDeadline = 0;
+        dryState      = DRY_IDLE;
         return;
     }
 
-    /* ── Updated auto mode flow ──────────────────────────────────
-     *  1. AUTO_ON_WAIT  : Start motor immediately (no ground-water
-     *                     pre-check). Set deadline = now + gap_time.
-     *  2. AUTO_OFF_WAIT : Motor is running.  When gap_time expires
-     *                     → stop motor, go to DRY_CHECK.
-     *  3. AUTO_DRY_CHECK: Motor is off, wait for dry_run_time.
-     *                     When it expires → check ground water.
-     *                     If available  → back to AUTO_ON_WAIT.
-     *                     If absent     → wait another dry_run_time.
-     * ─────────────────────────────────────────────────────────── */
+    /*
+     * Auto mode final behavior:
+     *
+     * 1. If tank level <= start level, motor starts.
+     * 2. During first dry-test gap, dry sensor is checked.
+     * 3. If water is detected, motor keeps running continuously.
+     * 4. If water is not detected, motor stops and waits retry time.
+     * 5. After retry time, it tries again.
+     *
+     * This prevents unnecessary AUTO ON / AUTO W cycling.
+     */
 
-    uint32_t gapMs      = (uint32_t)sys.gap_time_s     * 1000UL;
-    uint32_t retryGapMs = (uint32_t)sys.dry_run_time_s * 1000UL;
-
-    /* When dry protection is disabled (gap_time_s == 0) the motor
-     * should just run continuously; ground-water loss is the only
-     * reason to pause, checked after a short fixed wait.           */
     if (!dry_protection_enabled())
     {
-        switch (autoState)
+        /*
+         * Dry protection disabled:
+         * Auto mode should run motor continuously until tank full
+         * or protection fault.
+         */
+        if (level <= AUTO_START_LEVEL_PERCENT)
         {
-            case AUTO_IDLE:
-            case AUTO_DRY_CHECK:
-                autoState = AUTO_ON_WAIT;
-                /* fall through */
-            case AUTO_ON_WAIT:
-                if (level > AUTO_START_LEVEL_PERCENT) break;
-                motorOwner    = MOTOR_OWNER_AUTO;
-                autoState     = AUTO_OFF_WAIT;
-                stateDeadline = 0;
-                dryState      = DRY_IDLE;
-                start_motor();
-                break;
-
-            case AUTO_OFF_WAIT:
-                /* Running continuously — only stop if ground water
-                 * disappears, then wait 30 s and re-check.          */
-                ModelHandle_CheckGroundWater();
-                if (!groundWater)
-                {
-                    stop_motor();
-                    autoState     = AUTO_DRY_CHECK;
-                    stateDeadline = now + 30000UL;
-                    dryState      = DRY_WAITING;
-                    break;
-                }
-                dryState = DRY_IDLE;
-                start_motor();
-                break;
-
-            default:
-                autoState = AUTO_ON_WAIT; stateDeadline = 0; break;
+            motorOwner = MOTOR_OWNER_AUTO;
+            dryState   = DRY_IDLE;
+            autoState  = AUTO_OFF_WAIT;
+            start_motor();
         }
+
         return;
     }
 
-    /* ── Dry-protection enabled path ──────────────────────────── */
+    uint32_t dryTestMs  = (uint32_t)sys.gap_time_s * 1000UL;
+    uint32_t retryGapMs = (uint32_t)sys.dry_run_time_s * 1000UL;
+
     switch (autoState)
     {
-        /* Step 1: Start motor immediately, no ground-water gate */
+        case AUTO_IDLE:
         case AUTO_ON_WAIT:
-            if (level > AUTO_START_LEVEL_PERCENT) break;
-            motorOwner    = MOTOR_OWNER_AUTO;
-            start_motor();
-            autoState     = AUTO_OFF_WAIT;
-            stateDeadline = now + gapMs;       /* run for gap_time */
-            dryState      = DRY_IDLE;
-            break;
-
-        /* Step 2: Motor is running — wait until gap_time expires */
-        case AUTO_OFF_WAIT:
-            start_motor();                     /* keep motor on    */
-            if ((int32_t)(now - stateDeadline) >= 0)
+        {
+            if (level > AUTO_START_LEVEL_PERCENT)
             {
-                /* Gap time finished → stop motor, enter wait     */
                 stop_motor();
-                autoState     = AUTO_DRY_CHECK;
-                stateDeadline = now + retryGapMs;
-                dryState      = DRY_WAITING;
+                dryState      = DRY_IDLE;
+                stateDeadline = 0;
+                break;
             }
-            break;
 
-        /* Step 3: Motor is off — wait dry_run_time then check
-         *         ground water before restarting                  */
-        case AUTO_DRY_CHECK:
+            motorOwner = MOTOR_OWNER_AUTO;
+            start_motor();
+
+            autoState     = AUTO_OFF_WAIT;
+            stateDeadline = now + dryTestMs;
+            dryState      = DRY_WAITING;
+            break;
+        }
+
+        case AUTO_OFF_WAIT:
+        {
+            /*
+             * Motor is ON during dry-test period.
+             * After dry-test time, decide:
+             * - water available     → keep motor ON continuously
+             * - water not available → stop motor and wait retry
+             */
+
+            start_motor();
+
             if ((int32_t)(now - stateDeadline) >= 0)
             {
-                ModelHandle_CheckGroundWater();
-                if (groundWater)
+                ModelHandle_CheckDryRun();
+
+                if (senseDryRun)
                 {
-                    /* Ground water available → restart cycle      */
+                    /*
+                     * Water available.
+                     * Keep motor ON. Do not go to AUTO W.
+                     */
+                    dryState      = DRY_IDLE;
+                    stateDeadline = 0;
+
+                    /*
+                     * Stay in AUTO_OFF_WAIT as continuous running state.
+                     * No more ON/OFF cycling.
+                     */
+                    start_motor();
+                }
+                else
+                {
+                    /*
+                     * Water not available.
+                     * Now only stop motor and enter AUTO W / wait state.
+                     */
+                    stop_motor();
+                    autoState     = AUTO_DRY_CHECK;
+                    stateDeadline = now + retryGapMs;
+                    dryState      = DRY_FAULT;
+
+                    if (buzzerSettings.tankEmptySound)
+                        Buzzer_StartEvent(BUZZ_TANK_EMPTY);
+                }
+            }
+
+            break;
+        }
+
+        case AUTO_DRY_CHECK:
+        {
+            /*
+             * Motor is OFF during retry wait.
+             * After retry time, try again.
+             */
+
+            stop_motor();
+
+            if ((int32_t)(now - stateDeadline) >= 0)
+            {
+                ModelHandle_CheckDryRun();
+                ModelHandle_CheckGroundWater();
+
+                if (senseDryRun || groundWater)
+                {
                     autoState     = AUTO_ON_WAIT;
                     stateDeadline = 0;
                     dryState      = DRY_IDLE;
                 }
                 else
                 {
-                    /* No ground water — wait another retry gap    */
+                    /*
+                     * Still no water.
+                     * Keep waiting another retry cycle.
+                     */
                     stateDeadline = now + retryGapMs;
                     dryState      = DRY_FAULT;
+
                     if (buzzerSettings.tankEmptySound)
                         Buzzer_StartEvent(BUZZ_TANK_EMPTY);
                 }
             }
+
             break;
+        }
 
         default:
-            autoState = AUTO_ON_WAIT; stateDeadline = 0; break;
+        {
+            autoState     = AUTO_ON_WAIT;
+            stateDeadline = 0;
+            dryState      = DRY_IDLE;
+            break;
+        }
     }
 }
-
 void ModelHandle_StartCountdown(uint32_t seconds)
 {
     if (seconds < 60)    seconds = 60;

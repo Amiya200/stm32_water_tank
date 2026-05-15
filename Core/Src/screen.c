@@ -337,11 +337,40 @@ static void show_dash(void)
     }
     else
     {
+        /*
+         * Dashboard Page 2:
+         * - Time removed from second page.
+         * - Error is shown only when actual error/fault occurs.
+         * - Normal condition shows voltage/current and day.
+         */
+
         const char *dow = "---";
-        if (time.dow >= 1 && time.dow <= 7) dow = dowNames[(time.dow - 1) % 7];
-        snprintf(l0, sizeof(l0), "%02u:%02u %3.0fV %4.1fA", time.hour, time.min, g_voltageV, g_currentA);
-        snprintf(l1, sizeof(l1), "%-12.12s", dow);
-        lcd_line0(l0); lcd_line1(l1);
+        if (time.dow >= 1 && time.dow <= 7)
+            dow = dowNames[(time.dow - 1) % 7];
+
+        if (ModelHandle_IsVoltageFault())
+        {
+            lcd_line0("VOLTAGE ERROR");
+            lcd_line1("Check Supply");
+        }
+        else if (ModelHandle_IsOverload())
+        {
+            lcd_line0("OVERLOAD ERROR");
+            lcd_line1("Check Motor");
+        }
+        else if (ModelHandle_IsUnderload())
+        {
+            lcd_line0("UNDERLOAD ERROR");
+            lcd_line1("Check Water");
+        }
+        else
+        {
+            snprintf(l0, sizeof(l0), "V:%3.0fV I:%4.1fA", g_voltageV, g_currentA);
+            snprintf(l1, sizeof(l1), "%-12.12s", dow);
+
+            lcd_line0(l0);
+            lcd_line1(l1);
+        }
     }
     (void)dryFSMState; (void)dryEnabled; (void)sensorHasWater;
 }

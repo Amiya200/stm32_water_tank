@@ -55,7 +55,6 @@
 
 #ifndef RF_H
 #define RF_H
-
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -94,25 +93,22 @@
 /* Maximum bits to scan while hunting for sync before giving up.         */
 #define RF_SYNC_HUNT_MAX_BITS       120u
 
-/* ─────────────────────────────────────────────────────────────────────
- *  Shared API
- * ──────────────────────────────────────────────────────────────────── */
-void    RF_Init (void);
-uint8_t RF_CRC8 (const uint8_t *data, uint8_t len);
+void RF_Init(void);
+void RF_Task(void);
 
-/* ─────────────────────────────────────────────────────────────────────
- *  TX-only API  (compiled into the TRANSMITTER firmware)
- * ──────────────────────────────────────────────────────────────────── */
-void RF_SendPacket (const char *payload, uint8_t len);
-void RF_Service    (uint8_t tank_level, uint8_t well_dry);
-
-/* ─────────────────────────────────────────────────────────────────────
- *  RX-only API  (compiled into the RECEIVER firmware)
- * ──────────────────────────────────────────────────────────────────── */
-void    RF_Task                (void);
-bool    RF_IsWirelessDataValid (void);
+bool RF_IsWirelessDataValid(void);
 uint8_t RF_GetWirelessTankLevel(void);
-uint8_t RF_GetWirelessWellDry  (void);
-void    RF_ClearWirelessData   (void);
+uint8_t RF_GetWirelessWellDry(void);
+void RF_ClearWirelessData(void);
 
+bool RF_HasReceivedPacket(void);
+const char* RF_GetLastRawPacket(void);
+uint32_t RF_GetLastPacketDID(void);
+uint32_t RF_GetLastPacketSeq(void);
+uint8_t RF_GetLastPacketType(void);
+uint32_t RF_GetLastPacketAgeMs(void);
+uint8_t RF_GetLastPacketCrcRx(void);
+uint8_t RF_GetLastPacketCrcCalc(void);
+uint32_t RF_GetRxPacketCount(void);
+uint32_t RF_GetRxErrorCount(void);
 #endif /* RF_H */
