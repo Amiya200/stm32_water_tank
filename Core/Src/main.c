@@ -1,10 +1,24 @@
 /* ====================================================================
- * main.c  —  RECEIVER (motor-controller node) — ENHANCED
+ * main.c  —  RECEIVER (motor-controller node)
  *
- * IMPROVEMENTS:
- *  • Startup banner with device ID
- *  • Periodic connection status updates
- *  • Better debugging output
+ * Dual-channel wireless:
+ *   PRIMARY   — LoRa  Ra-02 SX1278  (bidirectional, ACK'd)
+ *   SECONDARY — RF433 XY-MK-5V OOK  (simplex receive)
+ *
+ * Data source priority (evaluated every loop in adc.c):
+ *   1. LoRa  — if LoRa_IsWirelessDataValid()   → inject LoRa data
+ *   2. RF433 — else if RF_IsWirelessDataValid() → inject RF data
+ *   3. Local — both links down                 → use physical probes
+ *
+ * Active channel is reported every STATUS_UPDATE_INTERVAL seconds.
+ *
+ * Timer usage
+ *   TIM3 — reconfigured by RF_Init() to 1 MHz for RF bit-bang decode.
+ *          LoRa_Task() uses only SPI + HAL_GetTick(), no TIM3.
+ *
+ * GPIO
+ *   RF_DATA_Pin — INPUT (no pull).  Already correct in original code.
+ *                 Connected to XY-MK-5V DATA output.
  * ==================================================================== */
 
 #include "main.h"
@@ -13,68 +27,65 @@
 #include "global.h"
 #include "adc.h"
 #include "lora.h"
+#include "rf.h"
 #include "uart.h"
 #include "model_handle.h"
 #include "screen.h"
 #include "led.h"
 #include "relay.h"
-#include <stdio.h>
-#include <string.h>
-#include "rf.h"
-#include "stdio.h"
 #include "acs712.h"
 #include "device_id.h"
+#include <stdio.h>
+#include <string.h>
 
 /* ── Private defines ────────────────────────────────────────────────── */
-#define ADC_CHANNEL_COUNT 6
+#define ADC_CHANNEL_COUNT        6
+#define STATUS_UPDATE_INTERVAL   15000u   /* 15 s  */
+
+/* ── Peripheral handles ─────────────────────────────────────────────── */
+ADC_HandleTypeDef  hadc1;
+I2C_HandleTypeDef  hi2c2;
+RTC_HandleTypeDef  hrtc;
+SPI_HandleTypeDef  hspi1;
+TIM_HandleTypeDef  htim3;
+UART_HandleTypeDef huart1;
+
+/* ── Application data ───────────────────────────────────────────────── */
 uint16_t adcBuffer[ADC_CHANNEL_COUNT];
-#define ADC_BUFFER_SIZE ADC_CHANNEL_COUNT
-float g_adcAvg[ADC_CHANNEL_COUNT] = {0};
-float g_vADC_ACS = 0.0f;
+float    g_adcAvg[ADC_CHANNEL_COUNT] = {0};
+float    g_vADC_ACS  = 0.0f;
+ADC_Data adcData;
 
 extern float g_currentA;
 extern float g_voltageV;
 
-/* ── Private variables ──────────────────────────────────────────────── */
-ADC_HandleTypeDef hadc1;
-I2C_HandleTypeDef hi2c2;
-RTC_HandleTypeDef hrtc;
-SPI_HandleTypeDef hspi1;
-TIM_HandleTypeDef htim3;
-UART_HandleTypeDef huart1;
-
-ADC_Data adcData;
-char receivedUartPacket[UART_RX_BUFFER_SIZE];
-int ak = 0;
-bool g_screenUpdatePending = false;
+char     receivedUartPacket[UART_RX_BUFFER_SIZE];
+bool     g_screenUpdatePending = false;
 extern uint8_t loraMode;
 
-/* Status update timer */
-static uint32_t lastStatusUpdate = 0;
-#define STATUS_UPDATE_INTERVAL 15000  /* 15 seconds */
+/* ── Status timer ───────────────────────────────────────────────────── */
+static uint32_t lastStatusUpdate = 0u;
 
-/* External function declarations */
-extern bool Motor_GetStatus(void);
+/* ── External declarations ──────────────────────────────────────────── */
+extern bool    Motor_GetStatus(void);
+extern uint8_t g_loraConnected;
 
 /* ── Private function prototypes ────────────────────────────────────── */
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_ADC1_Init(void);
-static void MX_SPI1_Init(void);
+static void MX_GPIO_Init       (void);
+static void MX_ADC1_Init       (void);
+static void MX_SPI1_Init       (void);
 static void MX_USART1_UART_Init(void);
-static void MX_I2C2_Init(void);
-static void MX_TIM3_Init(void);
+static void MX_I2C2_Init       (void);
+static void MX_TIM3_Init       (void);
 
-char dbg[64];
-void Debug_Print(char *msg)
-{
-    UART_TransmitString(&huart1, msg);
-}
+/* ── UART helpers ────────────────────────────────────────────────────── */
+void Debug_Print(char *msg) { UART_TransmitString(&huart1, msg); }
 
 void UART_PrintLn(const char *s)
 {
-    HAL_UART_Transmit(&huart1, (uint8_t*)s, strlen(s), 1000);
-    HAL_UART_Transmit(&huart1, (uint8_t*)"\r\n", 2, 1000);
+    HAL_UART_Transmit(&huart1, (uint8_t *)s,   (uint16_t)strlen(s), 1000u);
+    HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2u,               1000u);
 }
 
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
@@ -82,7 +93,17 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
     if (hadc->Instance == ADC1) { /* reserved */ }
 }
 
-/* ── Application entry point ────────────────────────────────────────── */
+/* ── Helper: determine which channel is currently supplying data ─────── */
+static const char *active_channel(void)
+{
+    if (LoRa_IsWirelessDataValid()) return "LORA";
+    if (RF_IsWirelessDataValid())   return "RF-433";
+    return "LOCAL-ADC";
+}
+
+/* ====================================================================
+ *  main()
+ * ==================================================================== */
 int main(void)
 {
     HAL_Init();
@@ -95,21 +116,27 @@ int main(void)
     MX_I2C2_Init();
     MX_TIM3_Init();
 
-    /* Startup banner */
-    HAL_Delay(100);
+    HAL_Delay(100u);
+
     UART_PrintLn("\r\n\r\n");
     UART_PrintLn("=========================================");
     UART_PrintLn("  HELONIX - RECEIVER (MOTOR CONTROLLER)");
-    UART_PrintLn("  Firmware: v3.2 - LoRa Water Tank RX");
-    UART_PrintLn("  UART: 115200 8N1");
+    UART_PrintLn("  Firmware : Dual-Channel RX v5.0");
+    UART_PrintLn("  Channels : LoRa Ra-02 + RF433 XY-MK-5V");
+    UART_PrintLn("  UART     : 115200 8N1");
     UART_PrintLn("=========================================");
 
     RTC_Init();
     lcd_init();
     ADC_Init(&hadc1);
 
-    /* LoRa init with device ID display */
-    LoRa_Init();  /* This prints its own banner */
+    /* ── LoRa init (primary channel) ─────────────────────────────── */
+    LoRa_Init();
+
+    /* ── RF433 init (secondary / backup channel) ─────────────────── *
+     * RF_Init() reconfigures TIM3 to 1 MHz.                          *
+     * LoRa_Task() uses SPI + HAL_GetTick() only — no TIM3 conflict.  */
+    RF_Init();
 
     Screen_Init();
     UART_Init();
@@ -118,7 +145,7 @@ int main(void)
     LED_Init();
     ACS712_Init(&hadc1);
 
-    HAL_Delay(100);
+    HAL_Delay(100u);
     Timer_EEPROM_EnsureValid();
 
     ModelHandle_LoadSettingsFromEEPROM();
@@ -127,66 +154,139 @@ int main(void)
     ModelHandle_LoadModeState();
     ModelHandle_LoadCountdown();
     ModelHandle_LoadBuzzerSettings();
-    HAL_Delay(50);
+    HAL_Delay(50u);
     ModelHandle_OnPowerUp();
     RTC_GetTimeDate();
 
-    /* Receiver always starts in RX mode */
     loraMode = LORA_MODE_RECEIVER;
 
     UART_PrintLn("\r\n[MAIN] All systems initialized");
+    UART_PrintLn("[MAIN] Data priority: LoRa > RF433 > Local ADC");
     UART_PrintLn("[MAIN] Entering main loop...\r\n");
 
+    /* ================================================================
+     *  Main loop
+     *
+     *  Step 1 : LoRa_Task()   — non-blocking IRQ poll, ACK/PONG reply
+     *  Step 2 : RF_Task()     — check RF pin, decode if packet present
+     *  Step 3 : New-data flags — trigger screen refresh on fresh data
+     *  Step 4 : ACS712        — current / voltage update
+     *  Step 5 : ADC           — read channels (wireless override inside)
+     *  Step 6 : RTC           — time refresh
+     *  Step 7 : UART commands — handle any incoming serial command
+     *  Step 8 : Model process — motor FSM, auto/timer logic
+     *  Step 9 : Screen + LED  — display & indicator update
+     *  Step 10: Status print  — periodic channel status over UART
+     *  Step 11: Loop delay    — 10 ms pace
+     * ================================================================ */
     while (1)
     {
         uint32_t now = HAL_GetTick();
+
+        /* ── Step 1: LoRa service ───────────────────────────────────── *
+         * Non-blocking: polls SX1278 IRQ register over SPI.           *
+         * Sends ACK/PONG immediately when a valid packet is received.  */
         LoRa_Task();
+
+        /* ── Step 2: RF433 receive ──────────────────────────────────── *
+         * Non-blocking when pin is idle (<5 ms).                       *
+         * Blocks up to ~600 ms when a valid preamble is detected —     *
+         * acceptable because the motor FSM runs on a seconds timescale *
+         * and LoRa already handles real-time updates.                  *
+         *                                                               *
+         * RF_Task() is called AFTER LoRa_Task() so that any pending   *
+         * LoRa ACK is sent before we potentially block on RF decode.  */
+        RF_Task();
+
+        /* ── Step 3: new-data flags ─────────────────────────────────── */
+        /* LoRa: flag set inside lora.c on every accepted packet        */
         if (g_loraNewPacketFlag)
         {
-            g_loraNewPacketFlag    = false;
-            g_screenUpdatePending  = true;
+            g_loraNewPacketFlag   = false;
+            g_screenUpdatePending = true;
         }
+
+        /* RF433: detect transition from no-data → valid data           */
+        {
+            static bool s_rfWasValid = false;
+            bool rf_now = RF_IsWirelessDataValid();
+            if (!s_rfWasValid && rf_now)
+                g_screenUpdatePending = true;
+            s_rfWasValid = rf_now;
+        }
+
+        /* ── Step 4: ACS712 ──────────────────────────────────────────── */
         ACS712_Update();
+
+        /* ── Step 5: ADC ─────────────────────────────────────────────── *
+         * ADC_ReadAllChannels() applies the wireless override:         *
+         *   if LoRa valid  → inject LoRa data  (CH0-3, CH5)           *
+         *   else if RF valid → inject RF data                          *
+         *   else             → keep raw local ADC readings             */
         ADC_ReadAllChannels(&hadc1, &adcData);
+
+        /* ── Step 6: RTC ─────────────────────────────────────────────── */
         RTC_GetTimeDate();
+
+        /* ── Step 7: UART command ────────────────────────────────────── */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
             g_screenUpdatePending = true;
         }
+
+        /* ── Step 8: model process ───────────────────────────────────── */
         ModelHandle_CheckAutoTimerActivation();
         ModelHandle_Process();
 
+        /* ── Step 9: screen + LED ────────────────────────────────────── */
         Screen_HandleSwitches();
         Screen_Update();
         LED_Task();
 
+        /* ── Step 10: periodic status print ─────────────────────────── */
         if ((now - lastStatusUpdate) >= STATUS_UPDATE_INTERVAL)
         {
             lastStatusUpdate = now;
 
-            char status[120];
-            extern uint8_t g_loraConnected;
+            /* Determine active source and tank level to display        */
+            const char *src = active_channel();
+            uint8_t     lvl = LoRa_IsWirelessDataValid()
+                              ? LoRa_GetWirelessTankLevel()
+                              : (RF_IsWirelessDataValid()
+                                 ? RF_GetWirelessTankLevel()
+                                 : 0u);
+            uint8_t     wd  = LoRa_IsWirelessDataValid()
+                              ? LoRa_GetWirelessWellDry()
+                              : (RF_IsWirelessDataValid()
+                                 ? RF_GetWirelessWellDry()
+                                 : 0u);
 
+            char status[160];
             snprintf(status, sizeof(status),
-                     "[STATUS] LoRa: %s | Data: %s | TL: %u%% | Motor: %s",
-                     g_loraConnected ? "CONNECTED" : "DISCONNECTED",
-                     (LoRa_IsWirelessDataValid() ? "VALID" : "OFFLINE"),
-                     LoRa_GetWirelessTankLevel(),
-                     Motor_GetStatus() ? "ON" : "OFF");
+                "[STATUS] Src:%-9s | LoRa:%-4s | RF:%-3s | "
+                "TL:%u%% | WD:%u | Motor:%s",
+                src,
+                LoRa_IsWirelessDataValid() ? "OK"  : "---",
+                RF_IsWirelessDataValid()   ? "OK"  : "---",
+                lvl, wd,
+                Motor_GetStatus() ? "ON" : "OFF");
             UART_PrintLn(status);
         }
 
-        HAL_Delay(10);
+        /* ── Step 11: loop pace ──────────────────────────────────────── */
+        HAL_Delay(10u);
     }
 }
 
-/* ── Clock configuration ────────────────────────────────────────────── */
+/* ====================================================================
+ *  Peripheral init
+ * ==================================================================== */
 void SystemClock_Config(void)
 {
-    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+    RCC_OscInitTypeDef       RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef       RCC_ClkInitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit     = {0};
 
     RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSI;
     RCC_OscInitStruct.HSIState            = RCC_HSI_ON;
@@ -311,30 +411,19 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_AFIO_CLK_ENABLE();
 
-    /*
-     * PA15 is used as LORA_SELECT / NSS.
-     * Disable JTAG but keep SWD enabled.
-     */
+    /* PA15 = LoRa NSS — disable JTAG, keep SWD */
     __HAL_AFIO_REMAP_SWJ_NOJTAG();
 
-    /*
-     * Safe default states.
-     * Important: LoRa NSS/CS must stay HIGH when idle.
-     */
+    /* Safe defaults */
     HAL_GPIO_WritePin(GPIOB,
-                      Relay1_Pin | Relay2_Pin | Relay3_Pin |
-                      LORA_STATUS_Pin | LED4_Pin | LED5_Pin,
-                      GPIO_PIN_RESET);
-
+        Relay1_Pin | Relay2_Pin | Relay3_Pin | LORA_STATUS_Pin | LED4_Pin | LED5_Pin,
+        GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOA,
-                      LED1_Pin | LED2_Pin | LED3_Pin,
-                      GPIO_PIN_RESET);
+        LED1_Pin | LED2_Pin | LED3_Pin,
+        GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_SET);
 
-    HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port,
-                      LORA_SELECT_Pin,
-                      GPIO_PIN_SET);
-
-    /* Relay + LoRa RESET + LED4/LED5 */
+    /* Relays + LEDs */
     GPIO_InitStruct.Pin   = Relay1_Pin | Relay2_Pin | Relay3_Pin |
                             LORA_STATUS_Pin | LED4_Pin | LED5_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
@@ -348,27 +437,29 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* LEDs + LoRa NSS / CS */
+    /* LEDs + LoRa NSS */
     GPIO_InitStruct.Pin   = LED1_Pin | LED2_Pin | LED3_Pin | LORA_SELECT_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* Keep NSS HIGH after GPIO mode is applied */
-    HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port,
-                      LORA_SELECT_Pin,
-                      GPIO_PIN_SET);
+    /* Keep LoRa NSS HIGH */
+    HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_SET);
 
-    /* LoRa DIO0 / RF_DATA */
+    /* ── RF433 XY-MK-5V receiver data pin ──────────────────────────── *
+     * INPUT, no pull.  The module drives the line; an internal pull   *
+     * would distort the AGC-generated signal.                         *
+     * No change from original — this block is kept here for clarity.  */
     GPIO_InitStruct.Pin  = RF_DATA_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(RF_DATA_GPIO_Port, &GPIO_InitStruct);
 }
+
 void Error_Handler(void)
 {
-    UART_PrintLn("[ERROR] Error_Handler called - system halted!");
+    UART_PrintLn("[ERROR] Error_Handler called — system halted!");
     __disable_irq();
     while (1) { }
 }
