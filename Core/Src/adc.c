@@ -3,76 +3,55 @@
  *
  * NODE TYPE: LORA_RECEIVER_NODE
  *
- * ── Three-tier wireless source selection ────────────────────────────
+ * ── Three operating modes — controlled by g_wireless_mode ───────────
  *
- *  Every call to ADC_ReadAllChannels() does:
+ *  g_wireless_mode is a FILE-SCOPE GLOBAL defined in main.c.
+ *  This file reads it via  extern uint8_t g_wireless_mode.
+ *  Change one line in main.c to switch the entire data source.
  *
- *    Step 1 — Read ALL 6 local ADC channels through the EMA filter.
- *             This keeps s_filtered[] current regardless of link state,
- *             so the fallback path has fresh values instantly.
+ *    WIRELESS_MODE_LOCAL  (0) — Step 2 does nothing.
+ *                               Local EMA ADC for all channels, always.
+ *                               No radio ever queried here.
  *
- *    Step 2 — Wireless source priority (checked in order):
+ *    WIRELESS_MODE_LORA   (1) — Step 2 calls LoRa_IsWirelessDataValid().
+ *                               Valid   → inject LoRa  data CH0–3, CH5.
+ *                               Invalid → keep local ADC (link down).
+ *                               RF433 not touched.
  *
- *              TIER 1 — LoRa   (LoRa_IsWirelessDataValid())
- *                        Bidirectional, ACK'd — highest confidence.
- *                        Overwrites voltages[0..3] + voltages[5].
+ *    WIRELESS_MODE_RF433  (2) — Step 2 calls RF_IsWirelessDataValid().
+ *                               Valid   → inject RF433 data CH0–3, CH5.
+ *                               Invalid → keep local ADC (no packets).
+ *                               LoRa not touched.
  *
- *              TIER 2 — RF433  (RF_IsWirelessDataValid())
- *                        Simplex OOK broadcast — used when LoRa is
- *                        absent/timed-out.  Same overwrite as Tier 1.
- *
- *              TIER 3 — Local ADC  (both wireless links invalid)
- *                        Physical sensors on the motor-controller PCB.
- *                        Safe bench / offline / wired-test mode.
- *
- *             CH4 (ground water) is ALWAYS from local ADC regardless
- *             of which wireless tier is active.
- *
- * v6.1 fix:
- *   Added Tier-2 RF433 fallback.  Previously only LoRa was checked,
- *   so when the TX was in RF433 mode the receiver always fell through
- *   to local ADC even though RF_Task() was successfully decoding and
- *   storing valid RF packets.
+ *  CH4 (ground water) is ALWAYS from local ADC in all modes.
  *
  * ── Voltage synthesis for CH0–CH3 (tank level probes) ───────────────
  *
- *   model_handle.c uses  PROBE_THRESHOLD = 0.50 V
- *   voltage < 0.50 V  →  probe submerged  (water has reached it)
- *   voltage ≥ 0.50 V  →  probe above water
+ *   model_handle.c PROBE_THRESHOLD = 0.50 V
+ *   voltage < 0.50 V → submerged     voltage ≥ 0.50 V → above water
  *
- *   Receiver probe layout:
  *     voltages[0] = 100 % probe
  *     voltages[1] =  75 % probe
  *     voltages[2] =  50 % probe
  *     voltages[3] =  25 % probe
  *
- *   Wireless level → probe synthesis:
- *     TX 100 % → RX all 4 submerged  (FULL)
- *     TX  75 % → RX [1..3] submerged
- *     TX  50 % → RX [2..3] submerged
- *     TX  25 % → RX [3]    submerged only
- *     TX   0 % → RX all 4  dry       (EMPTY)
- *
  * ── Voltage synthesis for CH5 (dry-run / well-dry sensor) ───────────
  *
- *   model_handle.c ModelHandle_CheckDryRun():
- *     senseDryRun = (voltages[5] < 0.30 V)
+ *   model_handle.c: senseDryRun = (voltages[5] < 0.30 V)
  *
- *   WD=0 (well has water) → inject 1.0 V → senseDryRun=false
- *   WD=1 (well DRY)       → inject 0.0 V → senseDryRun=true
- *                            → motor protection will activate
+ *   WD=0 (well has water) → 1.0 V → senseDryRun = false
+ *   WD=1 (well DRY)       → 0.0 V → senseDryRun = true → motor stops
  *
- * ── Offline fallback (Tier 3) ────────────────────────────────────────
- *
- *   When both LoRa and RF433 links are down / timed out:
- *     CH0–CH3 → physical ADC (local level probes at motor side)
- *     CH4     → physical ADC (always — ground water is local)
- *     CH5     → physical ADC (local dry-run sensor at motor side)
+ * Fix v6.2:
+ *   g_wireless_mode is now a proper file-scope global in main.c.
+ *   The  extern uint8_t g_wireless_mode  declaration here resolves
+ *   correctly at link time.  (Previously it was a local variable
+ *   inside main() which has no linkage — linker error.)
  * ==================================================================== */
 
 #include "adc.h"
-#include "lora.h"   /* LoRa_IsWirelessDataValid / LoRa_GetWireless*() */
-#include "rf.h"     /* RF_IsWirelessDataValid  / RF_GetWireless*()    */
+#include "lora.h"    /* LoRa_IsWirelessDataValid / LoRa_GetWireless*() */
+#include "rf.h"      /* RF_IsWirelessDataValid  / RF_GetWireless*()    */
 #include "main.h"
 #include "uart.h"
 #include "global.h"
@@ -83,30 +62,43 @@
 #include <math.h>
 #include "model_handle.h"
 
-/* ── Configuration ─────────────────────────────────────────────────── */
+/* ── Wireless mode constants — must match main.c ────────────────────── *
+ *  Do NOT change the numeric values here.                               *
+ *  Change g_wireless_mode in main.c to switch mode.                   */
+#define WIRELESS_MODE_LOCAL   0u
+#define WIRELESS_MODE_LORA    1u
+#define WIRELESS_MODE_RF433   2u
+
+/* ── g_wireless_mode — defined in main.c, read here via extern ──────── *
+ *                                                                        *
+ *  This MUST be an extern to a FILE-SCOPE global in main.c.            *
+ *  If main.c defines it as a local variable inside main(), the linker  *
+ *  will produce: "undefined reference to g_wireless_mode".             *
+ *  Fix: declare it outside any function in main.c (file scope).        */
+extern uint8_t g_wireless_mode;
+
+/* ── ADC configuration ──────────────────────────────────────────────── */
 #ifndef THR
-#define THR                       1.0f
+#define THR                     1.0f
 #endif
-#define EMA_ALPHA                 0.3f
-#define HYST_DELTA                0.10f
-#define GROUND_THRESHOLD          0.5f
-#define DRY_VOLTAGE_THRESHOLD     0.05f
-#define DRY_COUNT_THRESHOLD       3
-#define PRINT_DELTA               0.05f
-#define VREF                      3.3f
-#define ADC_RES                   4095.0f
+#define EMA_ALPHA               0.3f
+#define HYST_DELTA              0.10f
+#define GROUND_THRESHOLD        0.5f
+#define DRY_VOLTAGE_THRESHOLD   0.05f
+#define PRINT_DELTA             0.05f
+#define VREF                    3.3f
+#define ADC_RES                 4095.0f
 
 /* ── Injected probe voltages ─────────────────────────────────────────
- *
- *  PROBE_SUBMERGED  must be < PROBE_THRESHOLD (0.50 V)
- *  PROBE_DRY        must be > PROBE_THRESHOLD
- *  SENSOR_WATER     must be ≥ 0.30 V  (senseDryRun = false)
- *  SENSOR_DRY       must be <  0.30 V (senseDryRun = true  → protection)
+ *  PROBE_SUBMERGED  < PROBE_THRESHOLD (0.50 V) → water detected
+ *  PROBE_DRY        > PROBE_THRESHOLD           → no water
+ *  SENSOR_WATER    ≥ 0.30 V  →  senseDryRun = false  (motor allowed)
+ *  SENSOR_DRY      < 0.30 V  →  senseDryRun = true   (motor blocked)
  * ──────────────────────────────────────────────────────────────────── */
-#define PROBE_SUBMERGED  0.0f   /* < PROBE_THRESHOLD → water present    */
-#define PROBE_DRY        1.0f   /* > PROBE_THRESHOLD → no water         */
-#define SENSOR_WATER     1.0f   /* CH5 voltage when WD=0 (well OK)      */
-#define SENSOR_DRY       0.0f   /* CH5 voltage when WD=1 (well dry)     */
+#define PROBE_SUBMERGED  0.0f
+#define PROBE_DRY        1.0f
+#define SENSOR_WATER     1.0f
+#define SENSOR_DRY       0.0f
 
 /* ── Module state ───────────────────────────────────────────────────── */
 float g_adcVoltages[ADC_CHANNEL_COUNT] = {0};
@@ -116,7 +108,7 @@ float g_acVoltage_avg = 0.0f;
 float g_acCurrent_avg = 0.0f;
 bool  g_overload      = false;
 
-static float   s_filtered[ADC_CHANNEL_COUNT]   = {0};
+static float   s_filtered[ADC_CHANNEL_COUNT]    = {0};
 static uint8_t s_level_flags[ADC_CHANNEL_COUNT] = {0};
 static float   s_prev_volt[ADC_CHANNEL_COUNT]   = {0};
 
@@ -131,17 +123,17 @@ static const uint32_t adcChannels[ADC_CHANNEL_COUNT] = {
 
 static char dataPacketTx[16];
 
-/* ── Source tracking for diagnostics ───────────────────────────────── */
-typedef enum {
+/* ── Source tracking — for UART transition log only ────────────────── */
+typedef enum
+{
     ADC_SRC_LOCAL = 0,
     ADC_SRC_LORA,
     ADC_SRC_RF433
-} ADC_WirelessSrc_t;
+} ADC_ActualSrc_t;
 
-static ADC_WirelessSrc_t s_lastSrc     = ADC_SRC_LOCAL;
-static uint32_t          s_srcChangeTick = 0u;
+static ADC_ActualSrc_t s_activeSrc = ADC_SRC_LOCAL;
 
-/* ── Low-level single-channel read ─────────────────────────────────── */
+/* ── Low-level single-channel ADC read ─────────────────────────────── */
 static float readChannelVoltage(ADC_HandleTypeDef *hadc, uint32_t channel)
 {
     ADC_ChannelConfTypeDef sConfig = {0};
@@ -162,7 +154,7 @@ static float readChannelVoltage(ADC_HandleTypeDef *hadc, uint32_t channel)
     return v;
 }
 
-/* ── Init ───────────────────────────────────────────────────────────── */
+/* ── ADC_Init ───────────────────────────────────────────────────────── */
 void ADC_Init(ADC_HandleTypeDef *hadc)
 {
     if (HAL_ADCEx_Calibration_Start(hadc) != HAL_OK)
@@ -171,16 +163,12 @@ void ADC_Init(ADC_HandleTypeDef *hadc)
 
 /* ── inject_wireless_level ──────────────────────────────────────────
  *
- *  Shared by both Tier 1 (LoRa) and Tier 2 (RF433) paths.
- *  Overwrites data->voltages[0..3] from lvlPct and voltages[5] from
- *  wellDry.  CH4 (ground water) is intentionally NOT touched.
+ *  Shared by WIRELESS_MODE_LORA and WIRELESS_MODE_RF433.
+ *  Overwrites data->voltages[0..3] from lvlPct, voltages[5] from
+ *  wellDry.  CH4 is intentionally NOT touched (always local ADC).
  *
- *  s_filtered[] is also updated for CH0–CH3 and CH5 so that EMA
- *  state does not snap when switching between wireless and local ADC.
- *
- *  Parameters
- *    lvlPct   : tank level 0–100 %
- *    wellDry  : 0 = well has water  |  1 = well DRY alarm from TX
+ *  s_filtered[0..3,5] is also updated so EMA state stays in sync
+ *  and does not snap when switching back to local ADC after a drop.
  * ──────────────────────────────────────────────────────────────────── */
 static void inject_wireless_level(ADC_Data *data,
                                    uint8_t   lvlPct,
@@ -188,61 +176,109 @@ static void inject_wireless_level(ADC_Data *data,
 {
     if (lvlPct > 100u) lvlPct = 100u;
 
-    /* ── CH0–CH3: tank level → probe voltages ────────────────────── */
+    /* Tank level → probe voltages */
     float v0 = (lvlPct >= 100u) ? PROBE_SUBMERGED : PROBE_DRY;
     float v1 = (lvlPct >=  75u) ? PROBE_SUBMERGED : PROBE_DRY;
     float v2 = (lvlPct >=  50u) ? PROBE_SUBMERGED : PROBE_DRY;
     float v3 = (lvlPct >=  25u) ? PROBE_SUBMERGED : PROBE_DRY;
 
-    data->voltages[0] = v0;
-    data->voltages[1] = v1;
-    data->voltages[2] = v2;
-    data->voltages[3] = v3;
-
-    s_filtered[0] = v0;    /* keep EMA in sync for smooth fallback */
-    s_filtered[1] = v1;
-    s_filtered[2] = v2;
-    s_filtered[3] = v3;
+    data->voltages[0] = v0;  s_filtered[0] = v0;
+    data->voltages[1] = v1;  s_filtered[1] = v1;
+    data->voltages[2] = v2;  s_filtered[2] = v2;
+    data->voltages[3] = v3;  s_filtered[3] = v3;
 
     for (int i = 0; i < 4; i++)
         data->rawValues[i] = (uint16_t)((data->voltages[i] * ADC_RES) / VREF);
 
-    /* ── CH5: well-dry → dry-run sensor voltage ──────────────────── *
-     *
-     *  model_handle.c: senseDryRun = (voltages[5] < 0.30 V)
-     *
-     *  WD=0 → SENSOR_WATER (1.0 V) → senseDryRun = false
-     *  WD=1 → SENSOR_DRY   (0.0 V) → senseDryRun = true → motor stops
-     * ─────────────────────────────────────────────────────────────── */
+    /* Well-dry → dry-run sensor voltage */
     float v5 = (wellDry != 0u) ? SENSOR_DRY : SENSOR_WATER;
 
     data->voltages[5]  = v5;
     s_filtered[5]      = v5;
     data->rawValues[5] = (uint16_t)((v5 * ADC_RES) / VREF);
 
-    /* CH4 is intentionally NOT touched — always local ADC */
+    /* CH4 is NOT written — always local ADC */
+}
+
+/* ── log_source_change ──────────────────────────────────────────────
+ *
+ *  Prints one UART line when the actual data source changes.
+ *  Suppresses logging while source is stable (no repeated prints).
+ * ──────────────────────────────────────────────────────────────────── */
+static void log_source_change(ADC_ActualSrc_t newSrc,
+                               uint8_t lvl, uint8_t wd)
+{
+    if (newSrc == s_activeSrc) return;
+
+    s_activeSrc = newSrc;
+
+    char dbg[100];
+
+    switch (newSrc)
+    {
+        case ADC_SRC_LORA:
+            snprintf(dbg, sizeof(dbg),
+                     "[ADC] Source → LoRa    Level:%u%%  WD:%u",
+                     lvl, wd);
+            break;
+
+        case ADC_SRC_RF433:
+            snprintf(dbg, sizeof(dbg),
+                     "[ADC] Source → RF433   Level:%u%%  WD:%u  DID:%08lX",
+                     lvl, wd,
+                     (unsigned long)RF_GetLastPacketDID());
+            break;
+
+        case ADC_SRC_LOCAL:
+        default:
+            snprintf(dbg, sizeof(dbg),
+                     "[ADC] Source → LOCAL ADC (wireless link down or LOCAL mode)");
+            break;
+    }
+
+    HAL_UART_Transmit(&huart1,
+                      (uint8_t *)dbg, (uint16_t)strlen(dbg), 500u);
+    HAL_UART_Transmit(&huart1,
+                      (uint8_t *)"\r\n", 2u, 500u);
 }
 
 /* ── ADC_ReadAllChannels ────────────────────────────────────────────
  *
- *  Step 1 : Sample every local ADC channel through EMA.
- *  Step 2 : Apply wireless override (LoRa → RF433 → local).
- *  Step 3 : Evaluate level-flag events on final voltages.
+ *  Step 1 : Read all 6 physical ADC channels through EMA.
+ *           Runs unconditionally — keeps local values fresh.
+ *
+ *  Step 2 : Mode-controlled wireless override (reads g_wireless_mode):
+ *
+ *    WIRELESS_MODE_LOCAL  (0)
+ *      No override.  Local EMA values used for all channels.
+ *
+ *    WIRELESS_MODE_LORA   (1)
+ *      If LoRa link valid  → inject into CH0–3, CH5.
+ *      If LoRa link down   → local ADC (no RF433 fallback).
+ *
+ *    WIRELESS_MODE_RF433  (2)
+ *      If RF433 link valid → inject into CH0–3, CH5.
+ *      If RF433 link down  → local ADC (no LoRa fallback).
+ *
+ *    CH4 is ALWAYS local ADC regardless of mode.
+ *
+ *  Step 3 : Level-flag events on FINAL voltages (after Step 2).
  * ──────────────────────────────────────────────────────────────────── */
 void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
 {
     char loraPacket[32];
     loraPacket[0] = '\0';
 
-    /* ── Step 1: EMA-filter every local channel ─────────────────── */
+    /* ════════════════════════════════════════════════════════════════
+     *  Step 1 — EMA-filter every local ADC channel
+     * ════════════════════════════════════════════════════════════════ */
     for (uint8_t i = 0u; i < ADC_CHANNEL_COUNT; i++)
     {
         float v = readChannelVoltage(hadc, adcChannels[i]);
 
-        if (s_filtered[i] == 0.0f)
-            s_filtered[i] = v;
-        else
-            s_filtered[i] = EMA_ALPHA * v + (1.0f - EMA_ALPHA) * s_filtered[i];
+        s_filtered[i] = (s_filtered[i] == 0.0f)
+                        ? v
+                        : (EMA_ALPHA * v + (1.0f - EMA_ALPHA) * s_filtered[i]);
 
         v = s_filtered[i];
         data->voltages[i]   = v;
@@ -254,100 +290,83 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
             s_prev_volt[i] = v;
     }
 
-    /* ── Step 2: Wireless source priority ──────────────────────────
+    /* ════════════════════════════════════════════════════════════════
+     *  Step 2 — Mode-controlled wireless override
      *
-     *  TIER 1 — LoRa  (bidirectional, ACK'd — highest confidence)
-     *  TIER 2 — RF433 (simplex OOK broadcast — fallback)
-     *  TIER 3 — local ADC (both links invalid / timed out)
-     *
-     *  CH4 is NEVER overridden — ground-water sensor is physically
-     *  wired to the motor-controller PCB.
-     *
-     *  v6.1 fix: RF433 tier added.  Previously only LoRa was checked,
-     *  causing the receiver to ignore all RF packets and always use
-     *  local ADC when the transmitter was in RF433 mode.
-     * ─────────────────────────────────────────────────────────────── */
-    if (LoRa_IsWirelessDataValid())
+     *  The switch is driven by g_wireless_mode (global in main.c).
+     *  Each case is completely independent — no cross-mode fallback.
+     * ════════════════════════════════════════════════════════════════ */
+    switch (g_wireless_mode)
     {
-        /* ── Tier 1: LoRa ──────────────────────────────────────────── */
-        uint8_t level   = LoRa_GetWirelessTankLevel();
-        uint8_t wellDry = LoRa_GetWirelessWellDry();
-        inject_wireless_level(data, level, wellDry);
-
-        if (s_lastSrc != ADC_SRC_LORA)
+        /* ── Mode 0: LOCAL ────────────────────────────────────────── *
+         *  Physical probes only.  No radio queried.                   *
+         *  Use when the board is installed directly at the tank.      */
+        case WIRELESS_MODE_LOCAL:
         {
-            s_lastSrc     = ADC_SRC_LORA;
-            s_srcChangeTick = HAL_GetTick();
-            /* Log source switch only on transitions */
-            char dbg[64];
-            snprintf(dbg, sizeof(dbg),
-                     "[ADC] Source → LoRa   Level:%u%%  WD:%u",
-                     (unsigned)level, (unsigned)wellDry);
-            /* Route through whatever UART function is available */
-            HAL_UART_Transmit(
-                &huart1,
-                (uint8_t *)dbg, (uint16_t)strlen(dbg), 500u);
-            HAL_UART_Transmit(
-                &huart1,
-                (uint8_t *)"\r\n", 2u, 500u);
+            log_source_change(ADC_SRC_LOCAL, 0u, 0u);
+            /* local values from Step 1 already in data — nothing to do */
         }
-    }
-    else if (RF_IsWirelessDataValid())
-    {
-        /* ── Tier 2: RF433 ─────────────────────────────────────────── *
-         *  Root-cause fix (v6.1):                                       *
-         *    This branch was missing entirely.  RF_Task() was decoding  *
-         *    and storing RF packets correctly, but they were never       *
-         *    applied to the ADC data, so the receiver always ran on      *
-         *    local ADC even with a healthy RF433 link.                   */
-        uint8_t level   = RF_GetWirelessTankLevel();
-        uint8_t wellDry = RF_GetWirelessWellDry();
-        inject_wireless_level(data, level, wellDry);
+        break;
 
-        if (s_lastSrc != ADC_SRC_RF433)
+        /* ── Mode 1: LORA ─────────────────────────────────────────── *
+         *  LoRa data when link is healthy; local ADC when link down.  *
+         *  RF433 is NEVER checked in this mode.                       */
+        case WIRELESS_MODE_LORA:
         {
-            s_lastSrc     = ADC_SRC_RF433;
-            s_srcChangeTick = HAL_GetTick();
-
-            char dbg[80];
-            snprintf(dbg, sizeof(dbg),
-                     "[ADC] Source → RF433  Level:%u%%  WD:%u  DID:%08lX",
-                     (unsigned)level,
-                     (unsigned)wellDry,
-                     (unsigned long)RF_GetLastPacketDID());
-            HAL_UART_Transmit(
-                &huart1,
-                (uint8_t *)dbg, (uint16_t)strlen(dbg), 500u);
-            HAL_UART_Transmit(
-                &huart1,
-                (uint8_t *)"\r\n", 2u, 500u);
+            if (LoRa_IsWirelessDataValid())
+            {
+                uint8_t lvl = LoRa_GetWirelessTankLevel();
+                uint8_t wd  = LoRa_GetWirelessWellDry();
+                inject_wireless_level(data, lvl, wd);
+                log_source_change(ADC_SRC_LORA, lvl, wd);
+            }
+            else
+            {
+                /* LoRa link down → local ADC fallback (Step 1 values) */
+                log_source_change(ADC_SRC_LOCAL, 0u, 0u);
+            }
         }
-    }
-    else
-    {
-        /* ── Tier 3: local ADC (offline / bench / fallback) ────────── */
-        if (s_lastSrc != ADC_SRC_LOCAL)
+        break;
+
+        /* ── Mode 2: RF433 ────────────────────────────────────────── *
+         *  RF433 data when packets arriving; local ADC when silent.   *
+         *  LoRa is NEVER checked in this mode.                        */
+        case WIRELESS_MODE_RF433:
         {
-            s_lastSrc     = ADC_SRC_LOCAL;
-            s_srcChangeTick = HAL_GetTick();
-
-            HAL_UART_Transmit(
-                &huart1,
-                (uint8_t *)"[ADC] Source → LOCAL ADC (no wireless link)\r\n",
-                44u, 500u);
+            if (RF_IsWirelessDataValid())
+            {
+                uint8_t lvl = RF_GetWirelessTankLevel();
+                uint8_t wd  = RF_GetWirelessWellDry();
+                inject_wireless_level(data, lvl, wd);
+                log_source_change(ADC_SRC_RF433, lvl, wd);
+            }
+            else
+            {
+                /* RF link silent → local ADC fallback (Step 1 values) */
+                log_source_change(ADC_SRC_LOCAL, 0u, 0u);
+            }
         }
-        /* local ADC values from Step 1 are already in data → nothing to do */
+        break;
+
+        default:
+        {
+            /* Unknown mode — safe default: local ADC */
+            log_source_change(ADC_SRC_LOCAL, 0u, 0u);
+        }
+        break;
     }
 
-    /* ── Step 3: Level-flag events on final voltages ───────────────
+    /* ════════════════════════════════════════════════════════════════
+     *  Step 3 — Level-flag events on FINAL voltages
      *
-     *  Evaluated AFTER wireless injection so events are consistent
-     *  regardless of whether the source is LoRa, RF433, or local ADC.
-     * ─────────────────────────────────────────────────────────────── */
+     *  Evaluated after Step 2 so events always match what
+     *  model_handle.c actually sees, regardless of data source.
+     * ════════════════════════════════════════════════════════════════ */
     for (uint8_t i = 0u; i < ADC_CHANNEL_COUNT; i++)
     {
         float v = data->voltages[i];
 
+        /* CH0–CH3: tank level probes */
         if (i <= 3u)
         {
             if (!s_level_flags[i] && v >= THR)
@@ -355,10 +374,10 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
                 s_level_flags[i] = 1u;
                 switch (i)
                 {
-                    case 0: snprintf(dataPacketTx, sizeof(dataPacketTx), "@L1#");   break;
-                    case 1: snprintf(dataPacketTx, sizeof(dataPacketTx), "@L2#");   break;
-                    case 2: snprintf(dataPacketTx, sizeof(dataPacketTx), "@L3#");   break;
-                    case 3: snprintf(dataPacketTx, sizeof(dataPacketTx), "@FULL#"); break;
+                    case 0:  snprintf(dataPacketTx, sizeof(dataPacketTx), "@L1#");   break;
+                    case 1:  snprintf(dataPacketTx, sizeof(dataPacketTx), "@L2#");   break;
+                    case 2:  snprintf(dataPacketTx, sizeof(dataPacketTx), "@L3#");   break;
+                    case 3:  snprintf(dataPacketTx, sizeof(dataPacketTx), "@FULL#"); break;
                     default: dataPacketTx[0] = '\0'; break;
                 }
                 if (dataPacketTx[0])
@@ -376,7 +395,8 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
             continue;
         }
 
-        if (i == 4u)   /* Ground water — always local ADC */
+        /* CH4: ground water — always local ADC */
+        if (i == 4u)
         {
             if (!s_level_flags[i] && v >= GROUND_THRESHOLD)
             {
@@ -394,7 +414,8 @@ void ADC_ReadAllChannels(ADC_HandleTypeDef *hadc, ADC_Data *data)
             continue;
         }
 
-        if (i == 5u)   /* Dry-run sensor */
+        /* CH5: dry-run sensor */
+        if (i == 5u)
         {
             if (!s_level_flags[i] && v >= DRY_VOLTAGE_THRESHOLD)
             {
@@ -420,4 +441,15 @@ uint8_t ADC_CheckMaxVoltage(ADC_Data *data, float threshold)
     for (uint8_t i = 0u; i < ADC_CHANNEL_COUNT; i++)
         if (data->voltages[i] >= threshold) return 1u;
     return 0u;
+}
+
+/* ── ADC_GetActiveSourceString — for LCD / status display ───────────── */
+const char *ADC_GetActiveSourceString(void)
+{
+    switch (s_activeSrc)
+    {
+        case ADC_SRC_LORA:  return "LoRa";
+        case ADC_SRC_RF433: return "RF433";
+        default:            return "LOCAL";
+    }
 }

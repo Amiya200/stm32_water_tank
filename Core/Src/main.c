@@ -1,24 +1,35 @@
 /* ====================================================================
  * main.c  —  RECEIVER (motor-controller node)
  *
- * Dual-channel wireless:
- *   PRIMARY   — LoRa  Ra-02 SX1278  (bidirectional, ACK'd)
- *   SECONDARY — RF433 XY-MK-5V OOK  (simplex receive)
+ * Three operating modes — controlled by ONE global variable:
  *
- * Data source priority (evaluated every loop in adc.c):
- *   1. LoRa  — if LoRa_IsWirelessDataValid()   → inject LoRa data
- *   2. RF433 — else if RF_IsWirelessDataValid() → inject RF data
- *   3. Local — both links down                 → use physical probes
+ *   g_wireless_mode = WIRELESS_MODE_LOCAL   (0)
+ *       → No radio initialised.  ADC always reads physical probes.
  *
- * Active channel is reported every STATUS_UPDATE_INTERVAL seconds.
+ *   g_wireless_mode = WIRELESS_MODE_LORA    (1)
+ *       → LoRa Ra-02 SX1278 initialised and polled.
+ *         adc.c injects LoRa data when link is healthy.
+ *         Falls back to local ADC if LoRa times out.
+ *         RF433 driver is NOT started.
  *
- * Timer usage
- *   TIM3 — reconfigured by RF_Init() to 1 MHz for RF bit-bang decode.
- *          LoRa_Task() uses only SPI + HAL_GetTick(), no TIM3.
+ *   g_wireless_mode = WIRELESS_MODE_RF433   (2)
+ *       → RF433 XY-MK-5V OOK driver initialised and polled.
+ *         adc.c injects RF data when packets are arriving.
+ *         Falls back to local ADC if no RF packet received.
+ *         LoRa driver is NOT started.
  *
- * GPIO
- *   RF_DATA_Pin — INPUT (no pull).  Already correct in original code.
- *                 Connected to XY-MK-5V DATA output.
+ * ┌───────────────────────────────────────────────────────────────┐
+ * │  TO SWITCH MODE: change ONE line in the globals section:     │
+ * │      g_wireless_mode = WIRELESS_MODE_LOCAL;  ← local ADC    │
+ * │      g_wireless_mode = WIRELESS_MODE_LORA;   ← LoRa         │
+ * │      g_wireless_mode = WIRELESS_MODE_RF433;  ← RF433        │
+ * └───────────────────────────────────────────────────────────────┘
+ *
+ * Fix v6.2:
+ *   g_wireless_mode moved from local variable inside main() to
+ *   file-scope global.  adc.c references it via  extern uint8_t
+ *   g_wireless_mode — a local variable has no linkage and causes
+ *   "undefined reference" at link time.
  * ==================================================================== */
 
 #include "main.h"
@@ -37,10 +48,18 @@
 #include "device_id.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
-/* ── Private defines ────────────────────────────────────────────────── */
-#define ADC_CHANNEL_COUNT        6
-#define STATUS_UPDATE_INTERVAL   15000u   /* 15 s  */
+/* ── Wireless mode constants ─────────────────────────────────────────── *
+ *  These numeric values must match the identical defines in adc.c.      *
+ *  Do NOT renumber them.                                                */
+#define WIRELESS_MODE_LOCAL   0u   /* always physical ADC probes        */
+#define WIRELESS_MODE_LORA    1u   /* LoRa primary, local ADC fallback  */
+#define WIRELESS_MODE_RF433   2u   /* RF433 primary, local ADC fallback */
+
+/* ── Cadences ────────────────────────────────────────────────────────── */
+#define ADC_CHANNEL_COUNT        6u
+#define STATUS_UPDATE_INTERVAL   15000u   /* ms between status UART prints */
 
 /* ── Peripheral handles ─────────────────────────────────────────────── */
 ADC_HandleTypeDef  hadc1;
@@ -59,9 +78,25 @@ ADC_Data adcData;
 extern float g_currentA;
 extern float g_voltageV;
 
-char     receivedUartPacket[UART_RX_BUFFER_SIZE];
-bool     g_screenUpdatePending = false;
+char receivedUartPacket[UART_RX_BUFFER_SIZE];
+bool g_screenUpdatePending = false;
 extern uint8_t loraMode;
+
+/* ── Wireless mode — FILE-SCOPE GLOBAL ──────────────────────────────── *
+ *                                                                        *
+ *  MUST be at file scope (not inside main) so that adc.c can reach     *
+ *  it via   extern uint8_t g_wireless_mode;                             *
+ *  A local variable inside main() has no linkage and causes the         *
+ *  "undefined reference to g_wireless_mode" linker error.               *
+ *                                                                        *
+ *  ┌─────────────────────────────────────────────────────────────┐      *
+ *  │         CHANGE THIS ONE LINE TO SWITCH MODE                 │      *
+ *  │                                                             │      *
+ *  │   WIRELESS_MODE_LOCAL  (0)  physical ADC only              │      *
+ *  │   WIRELESS_MODE_LORA   (1)  LoRa  + local ADC fallback     │      *
+ *  │   WIRELESS_MODE_RF433  (2)  RF433 + local ADC fallback     │      *
+ *  └─────────────────────────────────────────────────────────────┘      */
+uint8_t g_wireless_mode = WIRELESS_MODE_RF433;   /* ← CHANGE HERE */
 
 /* ── Status timer ───────────────────────────────────────────────────── */
 static uint32_t lastStatusUpdate = 0u;
@@ -93,12 +128,15 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
     if (hadc->Instance == ADC1) { /* reserved */ }
 }
 
-/* ── Helper: determine which channel is currently supplying data ─────── */
-static const char *active_channel(void)
+/* ── Mode name helper ───────────────────────────────────────────────── */
+static const char *mode_name(uint8_t mode)
 {
-    if (LoRa_IsWirelessDataValid()) return "LORA";
-    if (RF_IsWirelessDataValid())   return "RF-433";
-    return "LOCAL-ADC";
+    switch (mode)
+    {
+        case WIRELESS_MODE_LORA:  return "LORA";
+        case WIRELESS_MODE_RF433: return "RF433";
+        default:                  return "LOCAL-ADC";
+    }
 }
 
 /* ====================================================================
@@ -118,26 +156,88 @@ int main(void)
 
     HAL_Delay(100u);
 
+    /* ── Startup banner ───────────────────────────────────────────── */
     UART_PrintLn("\r\n\r\n");
     UART_PrintLn("=========================================");
     UART_PrintLn("  HELONIX - RECEIVER (MOTOR CONTROLLER)");
-    UART_PrintLn("  Firmware : Dual-Channel RX v5.0");
-    UART_PrintLn("  Channels : LoRa Ra-02 + RF433 XY-MK-5V");
+    UART_PrintLn("  Firmware : Three-Mode RX v6.2");
     UART_PrintLn("  UART     : 115200 8N1");
     UART_PrintLn("=========================================");
 
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf),
+                 "  Mode     : %s (%u)",
+                 mode_name(g_wireless_mode),
+                 (unsigned)g_wireless_mode);
+        UART_PrintLn(buf);
+    }
+
+    switch (g_wireless_mode)
+    {
+        case WIRELESS_MODE_LOCAL:
+            UART_PrintLn("  Data src : Local ADC probes only");
+            UART_PrintLn("  Fallback : N/A — always local");
+            break;
+        case WIRELESS_MODE_LORA:
+            UART_PrintLn("  Data src : LoRa Ra-02 SX1278");
+            UART_PrintLn("  Fallback : Local ADC when LoRa link down");
+            break;
+        case WIRELESS_MODE_RF433:
+            UART_PrintLn("  Data src : RF433 XY-MK-5V OOK");
+            UART_PrintLn("  Fallback : Local ADC when RF link silent");
+            break;
+        default:
+            UART_PrintLn("  Data src : UNKNOWN mode — defaulting to LOCAL");
+            break;
+    }
+    UART_PrintLn("=========================================");
+
+    /* ── Peripheral and subsystem init ───────────────────────────── */
     RTC_Init();
     lcd_init();
     ADC_Init(&hadc1);
 
-    /* ── LoRa init (primary channel) ─────────────────────────────── */
-    LoRa_Init();
+    /* ── Radio init — ONLY for the selected mode ─────────────────── *
+     *                                                                 *
+     *  Only the active radio is initialised.  This avoids:           *
+     *    • TIM3 being reconfigured to 1 MHz in LoRa mode (LoRa       *
+     *      doesn't need it; RF433 bit-bang does)                     *
+     *    • Spurious SPI traffic from an idle LoRa module in RF mode  *
+     *    • Wasted startup time resetting hardware that won't be used  *
+     *                                                                 *
+     *  g_wireless_mode is read here AND inside adc.c Step 2.        */
+    switch (g_wireless_mode)
+    {
+        case WIRELESS_MODE_LORA:
+        {
+            LoRa_Init();
+            loraMode = LORA_MODE_RECEIVER;
+            UART_PrintLn("[INIT] LoRa: SX1278 initialised — RX continuous");
+            UART_PrintLn("[INIT] LoRa: awaiting HELLO / TL packets from TX");
+            break;
+        }
 
-    /* ── RF433 init (secondary / backup channel) ─────────────────── *
-     * RF_Init() reconfigures TIM3 to 1 MHz.                          *
-     * LoRa_Task() uses SPI + HAL_GetTick() only — no TIM3 conflict.  */
-    RF_Init();
+        case WIRELESS_MODE_RF433:
+        {
+            /* RF_Init() reconfigures TIM3 to 1 MHz for bit-bang decode.
+             * Must be called after MX_TIM3_Init().                    */
+            RF_Init();
+            UART_PrintLn("[INIT] RF433: XY-MK-5V initialised — OOK RX ready");
+            UART_PrintLn("[INIT] RF433: RF_Task() called continuously in loop");
+            break;
+        }
 
+        case WIRELESS_MODE_LOCAL:
+        default:
+        {
+            UART_PrintLn("[INIT] LOCAL: no radio initialised");
+            UART_PrintLn("[INIT] LOCAL: physical ADC probes used for all channels");
+            break;
+        }
+    }
+
+    /* ── Rest of subsystem init ──────────────────────────────────── */
     Screen_Init();
     UART_Init();
     Switches_Init();
@@ -158,77 +258,88 @@ int main(void)
     ModelHandle_OnPowerUp();
     RTC_GetTimeDate();
 
-    loraMode = LORA_MODE_RECEIVER;
-
-    UART_PrintLn("\r\n[MAIN] All systems initialized");
-    UART_PrintLn("[MAIN] Data priority: LoRa > RF433 > Local ADC");
-    UART_PrintLn("[MAIN] Entering main loop...\r\n");
+    UART_PrintLn("\r\n[MAIN] All systems initialised");
+    {
+        char buf[80];
+        snprintf(buf, sizeof(buf),
+                 "[MAIN] Wireless mode: %s — entering main loop",
+                 mode_name(g_wireless_mode));
+        UART_PrintLn(buf);
+    }
+    UART_PrintLn("");
 
     /* ================================================================
      *  Main loop
      *
-     *  Step 1 : LoRa_Task()   — non-blocking IRQ poll, ACK/PONG reply
-     *  Step 2 : RF_Task()     — check RF pin, decode if packet present
-     *  Step 3 : New-data flags — trigger screen refresh on fresh data
-     *  Step 4 : ACS712        — current / voltage update
-     *  Step 5 : ADC           — read channels (wireless override inside)
-     *  Step 6 : RTC           — time refresh
-     *  Step 7 : UART commands — handle any incoming serial command
+     *  Step 1 : LoRa_Task()   — ONLY when WIRELESS_MODE_LORA
+     *  Step 2 : RF_Task()     — ONLY when WIRELESS_MODE_RF433
+     *  Step 3 : New-data flags
+     *  Step 4 : ACS712        — current / voltage measurement
+     *  Step 5 : ADC           — read + wireless override (inside adc.c)
+     *  Step 6 : RTC
+     *  Step 7 : UART commands
      *  Step 8 : Model process — motor FSM, auto/timer logic
-     *  Step 9 : Screen + LED  — display & indicator update
-     *  Step 10: Status print  — periodic channel status over UART
-     *  Step 11: Loop delay    — 10 ms pace
+     *  Step 9 : Screen + LED
+     *  Step 10: Status print  — every STATUS_UPDATE_INTERVAL ms
+     *  Step 11: Loop delay    — 10 ms nominal pace
      * ================================================================ */
     while (1)
     {
         uint32_t now = HAL_GetTick();
 
         /* ── Step 1: LoRa service ───────────────────────────────────── *
-         * Non-blocking: polls SX1278 IRQ register over SPI.           *
-         * Sends ACK/PONG immediately when a valid packet is received.  */
-        LoRa_Task();
-
-        /* ── Step 2: RF433 receive ──────────────────────────────────── *
-         * Non-blocking when pin is idle (<5 ms).                       *
-         * Blocks up to ~600 ms when a valid preamble is detected —     *
-         * acceptable because the motor FSM runs on a seconds timescale *
-         * and LoRa already handles real-time updates.                  *
-         *                                                               *
-         * RF_Task() is called AFTER LoRa_Task() so that any pending   *
-         * LoRa ACK is sent before we potentially block on RF decode.  */
-        RF_Task();
-
-        /* ── Step 3: new-data flags ─────────────────────────────────── */
-        /* LoRa: flag set inside lora.c on every accepted packet        */
-        if (g_loraNewPacketFlag)
+         *  Non-blocking SPI IRQ poll.  Sends ACK/PONG immediately.     *
+         *  Completely skipped in RF433 / LOCAL modes.                  */
+        if (g_wireless_mode == WIRELESS_MODE_LORA)
         {
-            g_loraNewPacketFlag   = false;
-            g_screenUpdatePending = true;
+            LoRa_Task();
         }
 
-        /* RF433: detect transition from no-data → valid data           */
+        /* ── Step 2: RF433 receive ──────────────────────────────────── *
+         *  Non-blocking when pin is idle (≤ 2 ms wait).               *
+         *  Blocks up to ~600 ms during preamble + frame decode —       *
+         *  acceptable because motor FSM operates on a seconds          *
+         *  timescale.  Completely skipped in LoRa / LOCAL modes.      *
+         *                                                               *
+         *  Called AFTER LoRa (Step 1) so any pending ACK is sent      *
+         *  before potentially blocking on RF decode.                   */
+        if (g_wireless_mode == WIRELESS_MODE_RF433)
+        {
+            RF_Task();
+        }
+
+        /* ── Step 3: new-data flags ─────────────────────────────────── */
+        if (g_wireless_mode == WIRELESS_MODE_LORA)
+        {
+            if (g_loraNewPacketFlag)
+            {
+                g_loraNewPacketFlag   = false;
+                g_screenUpdatePending = true;
+            }
+        }
+
+        if (g_wireless_mode == WIRELESS_MODE_RF433)
         {
             static bool s_rfWasValid = false;
-            bool rf_now = RF_IsWirelessDataValid();
-            if (!s_rfWasValid && rf_now)
+            bool rfNow = RF_IsWirelessDataValid();
+            if (!s_rfWasValid && rfNow)
                 g_screenUpdatePending = true;
-            s_rfWasValid = rf_now;
+            s_rfWasValid = rfNow;
         }
 
         /* ── Step 4: ACS712 ──────────────────────────────────────────── */
         ACS712_Update();
 
         /* ── Step 5: ADC ─────────────────────────────────────────────── *
-         * ADC_ReadAllChannels() applies the wireless override:         *
-         *   if LoRa valid  → inject LoRa data  (CH0-3, CH5)           *
-         *   else if RF valid → inject RF data                          *
-         *   else             → keep raw local ADC readings             */
+         *  ADC_ReadAllChannels() reads g_wireless_mode internally and  *
+         *  decides which source to apply in Step 2 of its own logic.  *
+         *  No mode-check is needed here.                               */
         ADC_ReadAllChannels(&hadc1, &adcData);
 
         /* ── Step 6: RTC ─────────────────────────────────────────────── */
         RTC_GetTimeDate();
 
-        /* ── Step 7: UART command ────────────────────────────────────── */
+        /* ── Step 7: UART commands ───────────────────────────────────── */
         if (UART_GetReceivedPacket(receivedUartPacket, sizeof(receivedUartPacket)))
         {
             UART_HandleCommand(receivedUartPacket);
@@ -249,28 +360,47 @@ int main(void)
         {
             lastStatusUpdate = now;
 
-            /* Determine active source and tank level to display        */
-            const char *src = active_channel();
-            uint8_t     lvl = LoRa_IsWirelessDataValid()
-                              ? LoRa_GetWirelessTankLevel()
-                              : (RF_IsWirelessDataValid()
-                                 ? RF_GetWirelessTankLevel()
-                                 : 0u);
-            uint8_t     wd  = LoRa_IsWirelessDataValid()
-                              ? LoRa_GetWirelessWellDry()
-                              : (RF_IsWirelessDataValid()
-                                 ? RF_GetWirelessWellDry()
-                                 : 0u);
+            uint8_t lvl    = 0u;
+            uint8_t wd     = 0u;
+            const char *lnk = "N/A";
 
-            char status[160];
+            switch (g_wireless_mode)
+            {
+                case WIRELESS_MODE_LORA:
+                    if (LoRa_IsWirelessDataValid())
+                    {
+                        lvl = LoRa_GetWirelessTankLevel();
+                        wd  = LoRa_GetWirelessWellDry();
+                        lnk = "OK";
+                    }
+                    else { lnk = "DOWN"; }
+                    break;
+
+                case WIRELESS_MODE_RF433:
+                    if (RF_IsWirelessDataValid())
+                    {
+                        lvl = RF_GetWirelessTankLevel();
+                        wd  = RF_GetWirelessWellDry();
+                        lnk = "OK";
+                    }
+                    else { lnk = "DOWN"; }
+                    break;
+
+                case WIRELESS_MODE_LOCAL:
+                default:
+                    lnk = "N/A";
+                    break;
+            }
+
+            char status[180];
             snprintf(status, sizeof(status),
-                "[STATUS] Src:%-9s | LoRa:%-4s | RF:%-3s | "
-                "TL:%u%% | WD:%u | Motor:%s",
-                src,
-                LoRa_IsWirelessDataValid() ? "OK"  : "---",
-                RF_IsWirelessDataValid()   ? "OK"  : "---",
-                lvl, wd,
-                Motor_GetStatus() ? "ON" : "OFF");
+                     "[STATUS] Mode:%-9s | Link:%-4s | TL:%3u%% | WD:%u | "
+                     "RF_pkts:%lu | RF_err:%lu | Motor:%s",
+                     mode_name(g_wireless_mode),
+                     lnk, lvl, wd,
+                     (unsigned long)RF_GetRxPacketCount(),
+                     (unsigned long)RF_GetRxErrorCount(),
+                     Motor_GetStatus() ? "ON" : "OFF");
             UART_PrintLn(status);
         }
 
@@ -297,7 +427,7 @@ void SystemClock_Config(void)
     RCC_OscInitStruct.PLL.PLLMUL          = RCC_PLL_MUL16;
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
 
-    RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+    RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK  | RCC_CLOCKTYPE_SYSCLK |
                                        RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
     RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;
@@ -328,10 +458,10 @@ static void MX_ADC1_Init(void)
         ADC_CHANNEL_0, ADC_CHANNEL_1, ADC_CHANNEL_2, ADC_CHANNEL_3,
         ADC_CHANNEL_4, ADC_CHANNEL_5, ADC_CHANNEL_7, ADC_CHANNEL_6
     };
-    for (uint8_t r = 0; r < 8; r++)
+    for (uint8_t r = 0u; r < 8u; r++)
     {
         sConfig.Channel      = chList[r];
-        sConfig.Rank         = r + 1;
+        sConfig.Rank         = r + 1u;
         sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
         if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) Error_Handler();
     }
@@ -423,7 +553,7 @@ static void MX_GPIO_Init(void)
         GPIO_PIN_RESET);
     HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_SET);
 
-    /* Relays + LEDs */
+    /* Relays + LEDs — low-speed outputs */
     GPIO_InitStruct.Pin   = Relay1_Pin | Relay2_Pin | Relay3_Pin |
                             LORA_STATUS_Pin | LED4_Pin | LED5_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
@@ -431,32 +561,35 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* Switches */
+    /* Switches — interrupt on both edges */
     GPIO_InitStruct.Pin  = SWITCH1_Pin | SWITCH2_Pin | SWITCH3_Pin | SWITCH4_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* LEDs + LoRa NSS */
+    /* LEDs + LoRa NSS — high-speed outputs */
     GPIO_InitStruct.Pin   = LED1_Pin | LED2_Pin | LED3_Pin | LORA_SELECT_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* Keep LoRa NSS HIGH */
+    /* Keep LoRa NSS HIGH after GPIOA init */
     HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_SET);
 
-    /* ── RF433 XY-MK-5V receiver data pin ──────────────────────────── *
-     * INPUT, no pull.  The module drives the line; an internal pull   *
-     * would distort the AGC-generated signal.                         *
-     * No change from original — this block is kept here for clarity.  */
+    /* ── RF433 XY-MK-5V data pin ────────────────────────────────────── *
+     * Always INPUT, no pull.  The module actively drives the line;     *
+     * an internal pull-up would distort the AGC signal.               *
+     * Harmless in LoRa or LOCAL mode — the pin just floats unused.    */
     GPIO_InitStruct.Pin  = RF_DATA_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(RF_DATA_GPIO_Port, &GPIO_InitStruct);
 }
 
+/* ====================================================================
+ *  Error / assert handlers
+ * ==================================================================== */
 void Error_Handler(void)
 {
     UART_PrintLn("[ERROR] Error_Handler called — system halted!");
@@ -467,6 +600,7 @@ void Error_Handler(void)
 #ifdef USE_FULL_ASSERT
 void assert_failed(uint8_t *file, uint32_t line)
 {
-    (void)file; (void)line;
+    (void)file;
+    (void)line;
 }
 #endif
