@@ -62,14 +62,23 @@
   */
 void HAL_MspInit(void)
 {
+
+  /* USER CODE BEGIN MspInit 0 */
+
+  /* USER CODE END MspInit 0 */
+
   __HAL_RCC_AFIO_CLK_ENABLE();
   __HAL_RCC_PWR_CLK_ENABLE();
 
-  /*
-   * Disable JTAG, keep SWD enabled.
-   * Required because PA15 is used as LORA_SELECT / NSS.
-   */
+  /* System interrupt init*/
+
+  /** NOJTAG: JTAG-DP Disabled and SW-DP Enabled
+  */
   __HAL_AFIO_REMAP_SWJ_NOJTAG();
+
+  /* USER CODE BEGIN MspInit 1 */
+
+  /* USER CODE END MspInit 1 */
 }
 
 /**
@@ -283,37 +292,40 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* hrtc)
 void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-  if (hspi->Instance == SPI1)
+  if(hspi->Instance==SPI1)
   {
-    /* Peripheral clocks */
-    __HAL_RCC_AFIO_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
+    /* USER CODE BEGIN SPI1_MspInit 0 */
+
+    /* USER CODE END SPI1_MspInit 0 */
+    /* Peripheral clock enable */
     __HAL_RCC_SPI1_CLK_ENABLE();
 
-    /*
-     * SPI1 remap:
-     * PB3 -> SPI1_SCK
-     * PB4 -> SPI1_MISO
-     * PB5 -> SPI1_MOSI
-     *
-     * Important: enable remap BEFORE configuring GPIO pins.
-     */
-    __HAL_AFIO_REMAP_SPI1_ENABLE();
-
-    /* SCK + MOSI */
-    GPIO_InitStruct.Pin   = GPIO_PIN_3 | GPIO_PIN_5;
-    GPIO_InitStruct.Mode  = GPIO_MODE_AF_PP;
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    /**SPI1 GPIO Configuration
+    PB3     ------> SPI1_SCK
+    PB4     ------> SPI1_MISO
+    PB5     ------> SPI1_MOSI
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_5;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* MISO */
-    GPIO_InitStruct.Pin  = GPIO_PIN_4;
+    GPIO_InitStruct.Pin = GPIO_PIN_4;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    __HAL_AFIO_REMAP_SPI1_ENABLE();
+
+    /* USER CODE BEGIN SPI1_MspInit 1 */
+
+    /* USER CODE END SPI1_MspInit 1 */
+
   }
+
 }
+
 /**
   * @brief SPI MSP De-Initialization
   * This function freeze the hardware resources used in this example
