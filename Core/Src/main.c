@@ -77,7 +77,7 @@ extern uint8_t loraMode;
  *  │   WIRELESS_MODE_LORA   (1)  LoRa  + local ADC fallback     │      *
  *  │   WIRELESS_MODE_RF433  (2)  RF433 + local ADC fallback     │      *
  *  └─────────────────────────────────────────────────────────────┘      */
-uint8_t g_wireless_mode = WIRELESS_MODE_LORA;   /* ← CHANGE HERE */
+uint8_t g_wireless_mode = WIRELESS_MODE_LOCAL;   /* ← CHANGE HERE */
 
 /* ── Status timer ───────────────────────────────────────────────────── */
 static uint32_t lastStatusUpdate = 0u;
