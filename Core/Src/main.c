@@ -1,25 +1,33 @@
 /* ====================================================================
  * main.c  —  RECEIVER (motor-controller node)
  *
- * Pin assignments verified against schematic SCH_Schematic1_2026-06-08.
+ * Pin assignments verified against main.h (IOC updated 2026-06-09):
+ *   RF_connector_Pin  = GPIO_PIN_1, RF_connector_GPIO_Port = GPIOD (PD1)
+ *   RF_DATA_Pin       = GPIO_PIN_7, RF_DATA_GPIO_Port       = GPIOB (PB7)
+ *   LORA_SELECT_Pin   = GPIO_PIN_15, GPIOA (PA15)
+ *   LORA_STATUS_Pin   = GPIO_PIN_6,  GPIOB (PB6)
+ *   Relay1/2/3        = PB0 / PB1 / PB2
+ *   LED1/2/3          = PA8 / PA11 / PA12
+ *   LED4/5            = PB8 / PB9
+ *   SWITCH1–4         = PB12 / PB13 / PB14 / PB15
  *
- * Key corrections vs previous versions:
- *   RF_DATA  = PB7  (was incorrectly assumed PD1; PD1 is OSC_OUT only)
- *   SPI1 remap to PB3/PB4/PB5 — __HAL_AFIO_REMAP_SPI1_ENABLE() added
- *   Relay pins = PB0/PB1/PB2  (not PB11/12/13 as in old placeholder)
- *   LED pins   = PA8, PA11, PA12, PB8, PB9
- *   Switch pins = PB12–PB15
- *   No PD01 remap needed (RF_DATA is PB7, a standard GPIO)
+ * Key corrections vs previous RX main.c:
+ *   RF_connector_Pin is now PD1 (GPIOD), not PC13 (GPIOC).
+ *   __HAL_AFIO_REMAP_PD01_ENABLE() ADDED to MX_GPIO_Init().
+ *   PD0/PD1 are OSC_IN/OSC_OUT by default; the PD01 remap is
+ *   mandatory to use PD1 as a GPIO input for the XY-MK-5V DATA line.
+ *   GPIOD clock enable added.
+ *   GPIOC clock enable removed (PC13 no longer used).
+ *   RF_connector_Pin is configured as INPUT, no pull (RX reads it).
  *
  * Three operating modes via g_wireless_mode:
  *   WIRELESS_MODE_LOCAL  (0) — ADC probes only
  *   WIRELESS_MODE_LORA   (1) — SX1278 + local ADC fallback
- *   WIRELESS_MODE_RF433  (2) — XY-MK-5V OOK + local ADC fallback
+ *   WIRELESS_MODE_RF433  (2) — XY-MK-5V OOK on PD1 + local ADC fallback
  *
- * PB7 is shared between two mutually exclusive radio functions:
- *   LoRa  mode: PB7 = SX1278 DIO0 (RxDone IRQ, INPUT no pull)
- *   RF433 mode: PB7 = XY-MK-5V DATA (OOK input, INPUT no pull)
- *   Both use the same GPIO configuration — no switching needed.
+ * PB7 is LoRa DIO0 — used only in WIRELESS_MODE_LORA.
+ * PD1 is RF_connector_Pin — used only in WIRELESS_MODE_RF433.
+ * Both configured as INPUT; no switching logic needed.
  * ==================================================================== */
 
 #include "main.h"
@@ -77,7 +85,7 @@ extern uint8_t loraMode;
  *  │   WIRELESS_MODE_LORA   (1)  LoRa  + local ADC fallback     │      *
  *  │   WIRELESS_MODE_RF433  (2)  RF433 + local ADC fallback     │      *
  *  └─────────────────────────────────────────────────────────────┘      */
-uint8_t g_wireless_mode = WIRELESS_MODE_LOCAL;   /* ← CHANGE HERE */
+uint8_t g_wireless_mode = WIRELESS_MODE_RF433;   /* ← CHANGE HERE */
 
 /* ── Status timer ───────────────────────────────────────────────────── */
 static uint32_t lastStatusUpdate = 0u;
@@ -100,8 +108,8 @@ void Debug_Print(char *msg) { UART_TransmitString(&huart1, msg); }
 
 void UART_PrintLn(const char *s)
 {
-    HAL_UART_Transmit(&huart1, (uint8_t *)s,    (uint16_t)strlen(s), 1000u);
-    HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2u,                1000u);
+    HAL_UART_Transmit(&huart1, (uint8_t *)s,      (uint16_t)strlen(s), 1000u);
+    HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2u,                  1000u);
 }
 
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
@@ -130,7 +138,7 @@ int main(void)
 
     /* ── Peripheral init ── *
      * ORDER MATTERS:                                                   *
-     *   MX_GPIO_Init() calls the AFIO remaps first, then inits pins.  *
+     *   MX_GPIO_Init() applies all AFIO remaps first, then init pins. *
      *   MX_SPI1_Init() must come AFTER MX_GPIO_Init() (remap active). */
     MX_GPIO_Init();
     MX_ADC1_Init();
@@ -148,15 +156,16 @@ int main(void)
     UART_PrintLn("  PCB      : v1.0 — schematic verified");
     UART_PrintLn("  UART     : 115200 8N1");
     UART_PrintLn("=========================================");
-    UART_PrintLn("  Pin map (from schematic):");
-    UART_PrintLn("    RF_DATA / DIO0 : PB7");
-    UART_PrintLn("    LORA_SELECT    : PA15 (SWJ_NOJTAG)");
-    UART_PrintLn("    LORA_STATUS    : PB6");
-    UART_PrintLn("    SPI1 CLK/MISO/MOSI : PB3/PB4/PB5 (remapped)");
-    UART_PrintLn("    RELAY1/2/3     : PB0/PB1/PB2");
-    UART_PrintLn("    SW1/2/3/4      : PB12/PB13/PB14/PB15");
-    UART_PrintLn("    LED1/2/3       : PA8/PA11/PA12");
-    UART_PrintLn("    LED4/5         : PB8/PB9");
+    UART_PrintLn("  Pin map (from IOC / main.h):");
+    UART_PrintLn("    RF_DATA (XY-MK-5V) : PD1  (PD01 remap active)");
+    UART_PrintLn("    LORA DIO0          : PB7  (RF_DATA_Pin, INPUT float)");
+    UART_PrintLn("    LORA_SELECT (NSS)  : PA15 (SWJ_NOJTAG remap)");
+    UART_PrintLn("    LORA_STATUS (RST)  : PB6");
+    UART_PrintLn("    SPI1 CLK/MISO/MOSI : PB3/PB4/PB5 (SPI1 remap)");
+    UART_PrintLn("    RELAY1/2/3         : PB0/PB1/PB2");
+    UART_PrintLn("    SW1/2/3/4          : PB12/PB13/PB14/PB15");
+    UART_PrintLn("    LED1/2/3           : PA8/PA11/PA12");
+    UART_PrintLn("    LED4/5             : PB8/PB9");
 
     {
         char buf[64];
@@ -186,8 +195,8 @@ int main(void)
         case WIRELESS_MODE_RF433:
         {
             RF_Init();
-            UART_PrintLn("[INIT] RF433: XY-MK-5V DATA on PB7");
-            UART_PrintLn("[INIT] RF433: TIM3 reconfigured to 1MHz (1us/count)");
+            UART_PrintLn("[INIT] RF433: XY-MK-5V DATA on PD1 (PD01 remap)");
+            UART_PrintLn("[INIT] RF433: TIM3 reconfigured to 1 MHz (1 us/count)");
             UART_PrintLn("[INIT] RF433: RF_Task() polled continuously in loop");
             break;
         }
@@ -360,12 +369,22 @@ void SystemClock_Config(void)
 /* ====================================================================
  *  MX_GPIO_Init
  *
- *  AFIO remap sequence (order is critical):
+ *  AFIO remap sequence (ORDER IS CRITICAL):
+ *
  *    1. Enable AFIO clock
- *    2. SWJ_NOJTAG  → frees PA15, PB3, PB4 from JTAG
- *    3. SPI1_ENABLE → moves SPI1 to PB3/PB4/PB5 (needs PB3/PB4 free first)
- *    4. GPIO clock enables
- *    5. Pin configurations
+ *    2. SWJ_NOJTAG  → frees PA15 (TDI→LORA_SELECT),
+ *                           PB3  (TDO→SPI1_CLK),
+ *                           PB4  (TRST→SPI1_MISO)
+ *    3. SPI1_ENABLE → moves SPI1 from PA5/6/7 to PB3/4/5
+ *                     (requires PB3/PB4 free from JTAG — done in step 2)
+ *    4. PD01_ENABLE → releases PD0/PD1 from OSC_IN/OSC_OUT function,
+ *                     making PD1 (RF_connector_Pin) usable as GPIO.
+ *                     THIS IS MANDATORY for RF433 RX on PD1.
+ *    5. GPIO clock enables (including GPIOD for PD1)
+ *    6. Pin configurations
+ *
+ *  Without step 4, HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_1) always returns
+ *  GPIO_PIN_RESET regardless of the actual signal on the pin.
  * ==================================================================== */
 static void MX_GPIO_Init(void)
 {
@@ -376,35 +395,39 @@ static void MX_GPIO_Init(void)
 
     /* ── Step 2: SWJ → NOJTAG ─────────────────────────────────────── *
      *  Writes AFIO_MAPR[26:24] = 010.                                  *
-     *  Releases: PA15 (TDI) → LORA_SELECT                             *
-     *            PB3  (TDO) → SPI1_CLK  (needed for SPI1 remap)       *
-     *            PB4  (TRST)→ SPI1_MISO (needed for SPI1 remap)       *
+     *  Releases: PA15 (TDI) → LORA_SELECT (NSS)                       *
+     *            PB3  (TDO) → SPI1_CLK                                *
+     *            PB4  (TRST)→ SPI1_MISO                               *
      *  SWD (SWDIO=PA13, SWCLK=PA14) remains active for debug.         */
     __HAL_AFIO_REMAP_SWJ_NOJTAG();
 
     /* ── Step 3: SPI1 remap ────────────────────────────────────────── *
      *  Writes AFIO_MAPR[0] = 1.                                        *
-     *  Moves SPI1 from default PA5/PA6/PA7 → PB3/PB4/PB5.            *
-     *  The PCB routes all three SPI lines to PB3-5 (schematic page 1) *
-     *  so this MUST be enabled or SPI will not reach the Ra-02 module. *
-     *  PA5/PA6/PA7 remain available as ADC inputs (ADC3/4/5 = PA3-5). *
-     *  Actually PA5=ADC5, PA6=AC_VOLTAGE, PA7=AC_CURRENT per schematic.*
-     *  With SPI1 on PB3/PB4/PB5, PA5/PA6/PA7 are free for ADC.       */
+     *  Moves SPI1 from PA5/PA6/PA7 → PB3/PB4/PB5.                    *
+     *  PCB routes LoRa SPI to PB3-5; without this remap LoRa is dead. */
     __HAL_AFIO_REMAP_SPI1_ENABLE();
 
-    /* ── Step 4: GPIO clock enables ───────────────────────────────── *
-     *  GPIOC required for PC13 (RF_connector_Pin = XY-MK-5V DATA)   */
+    /* ── Step 4: PD01 remap ────────────────────────────────────────── *
+     *  Writes AFIO_MAPR[15] = 1.                                       *
+     *  Releases PD0 and PD1 from OSC_IN / OSC_OUT alternate function. *
+     *  After this, PD1 (RF_connector_Pin) works as a standard GPIO.   *
+     *  REQUIRED: XY-MK-5V DATA is wired to PD1 on this PCB.           *
+     *  Without this remap, PD1 is always low regardless of signal.    */
+    __HAL_AFIO_REMAP_PD01_ENABLE();
+
+    /* ── Step 5: GPIO clock enables ───────────────────────────────── *
+     *  GPIOD required for PD1 (RF_connector_Pin = XY-MK-5V DATA)     */
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOD_CLK_ENABLE();
 
-    /* ── Step 5: Safe output defaults ─────────────────────────────── */
+    /* ── Step 6a: Safe output defaults ────────────────────────────── */
     /* Relays OFF */
     HAL_GPIO_WritePin(GPIOB, Relay1_Pin | Relay2_Pin | Relay3_Pin, GPIO_PIN_RESET);
     /* LEDs OFF */
     HAL_GPIO_WritePin(GPIOA, LED1_Pin | LED2_Pin | LED3_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, LED4_Pin | LED5_Pin, GPIO_PIN_RESET);
-    /* LoRa RST HIGH (inactive) */
+    /* LoRa RST LOW (not reset-asserting — RST is active LOW on SX1278) */
     HAL_GPIO_WritePin(LORA_STATUS_GPIO_Port, LORA_STATUS_Pin, GPIO_PIN_RESET);
     /* LoRa NSS HIGH (deselected) — must be HIGH before any SPI */
     HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_SET);
@@ -423,28 +446,24 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(LORA_STATUS_GPIO_Port, &GPIO_InitStruct);
 
-    /* ── RF_DATA / LoRa DIO0: PB7  — input, no pull ───────────────── *
-     *  Used exclusively by lora.c as SX1278 DIO0 (RxDone/TxDone IRQ).*
-     *  SX1278 drives DIO0 actively (push-pull) — no pull required.   *
-     *  In RF433 mode this pin is unused (floating input, harmless).   *
-     *  rf.c reads RF_connector_Pin (PC13) for OOK data, NOT this pin. */
+    /* ── LoRa DIO0: PB7 (RF_DATA_Pin) — input, no pull ────────────── *
+     *  Used by lora.c as SX1278 DIO0 in WIRELESS_MODE_LORA.          *
+     *  In RF433 mode this pin is an unused floating input (harmless). */
     GPIO_InitStruct.Pin  = RF_DATA_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(RF_DATA_GPIO_Port, &GPIO_InitStruct);
 
-    /* ── RF_connector_Pin / XY-MK-5V DATA: PC13  — input, no pull ─── *
-     *  Used exclusively by rf.c for 433 MHz OOK bit-bang decode.      *
-     *  Connected to CN1 screw terminal via RF_CONNECTOR net on PCB.  *
-     *  XY-MK-5V drives DATA line actively — no pull needed.          *
+    /* ── XY-MK-5V DATA: PD1 (RF_connector_Pin) — input, no pull ───── *
+     *  Used by rf.c (RECEIVER) for 433 MHz OOK bit-bang decode.       *
+     *  PD01 remap (step 4) makes PD1 available as GPIO.               *
+     *  XY-MK-5V drives DATA actively — no pull needed.               *
      *  A pull-up would distort the module's AGC envelope signal.      *
-     *  PC13 carries TAMPER-RTC alternate function by default; usable  *
-     *  as GPIO when RTC tamper is not enabled (not used here).        *
-     *  In LoRa mode this pin is unused (floating input, harmless).    */
+     *  In LoRa mode this pin is an unused floating input (harmless).  */
     GPIO_InitStruct.Pin  = RF_connector_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(RF_connector_GPIO_Port, &GPIO_InitStruct);
+    HAL_GPIO_Init(RF_connector_GPIO_Port, &GPIO_InitStruct);  /* GPIOD */
 
     /* ── LED4 / LED5: PB8 / PB9  — output PP, low speed ──────────── */
     GPIO_InitStruct.Pin   = LED4_Pin | LED5_Pin;
@@ -474,38 +493,25 @@ static void MX_GPIO_Init(void)
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* ── LoRa NSS: PA15  — output PP, high speed ──────────────────── *
-     *  NSS toggles at SPI clock rate; high speed reduces edge         *
-     *  distortion on the CS line (though SPI_NSS_SOFT so it's GPIO).  */
+     *  NSS toggles at SPI clock rate; GPIO_SPEED_FREQ_HIGH reduces    *
+     *  edge distortion on the CS line.                                */
     GPIO_InitStruct.Pin   = LORA_SELECT_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(LORA_SELECT_GPIO_Port, &GPIO_InitStruct);
 
-    /* Re-assert NSS HIGH after GPIOA init (HAL_GPIO_Init resets ODR) */
+    /* Re-assert NSS HIGH after HAL_GPIO_Init (init resets ODR) */
     HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_SET);
 
-    /* ── SPI1 alternate-function pins: PB3/PB4/PB5 ────────────────── *
-     *  HAL configures these as AF_PP during HAL_SPI_Init() via        *
-     *  HAL_SPI_MspInit() in stm32f1xx_hal_msp.c.                     *
-     *  If you are NOT using CubeMX-generated MSP, configure them here: *
-     *
-     *  GPIO_InitStruct.Pin   = GPIO_PIN_3 | GPIO_PIN_5;    // CLK, MOSI
-     *  GPIO_InitStruct.Mode  = GPIO_MODE_AF_PP;
-     *  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-     *  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-     *
-     *  GPIO_InitStruct.Pin   = GPIO_PIN_4;                  // MISO
-     *  GPIO_InitStruct.Mode  = GPIO_MODE_INPUT;
-     *  GPIO_InitStruct.Pull  = GPIO_NOPULL;
-     *  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);              */
+    /* ── SPI1 AF pins PB3/PB4/PB5 ─────────────────────────────────── *
+     *  HAL configures these via HAL_SPI_MspInit() in stm32f1xx_hal_msp.c
+     *  when HAL_SPI_Init() is called. No manual init needed here.     */
 }
 
 /* ====================================================================
  *  MX_ADC1_Init
  *  8 channels: PA0–PA7 (ADC1_IN0–IN7)
- *  IN0=ADC0, IN1=ADC1, IN2=ADC2, IN3=ADC3, IN4=ADC4, IN5=ADC5,
- *  IN6=AC_VOLTAGE (PA6), IN7=AC_CURRENT (PA7)
  *  ScanConvMode DISABLED — adc.c reads channels individually.
  * ==================================================================== */
 static void MX_ADC1_Init(void)
@@ -535,16 +541,13 @@ static void MX_ADC1_Init(void)
     {
         sConfig.Channel      = chList[r];
         sConfig.Rank         = r + 1u;
-        sConfig.SamplingTime = ADC_SAMPLETIME_55CYCLES_5;  /* stable for sensor inputs */
+        sConfig.SamplingTime = ADC_SAMPLETIME_55CYCLES_5;
         if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) Error_Handler();
     }
 }
 
 /* ====================================================================
- *  MX_I2C2_Init
- *  I2C2 default pins: PB10=SCL, PB11=SDA — used for LCD/RTC.
- *  (schematic shows PB10=UART3_TX, PB11=UART3_RX — if these nets
- *   are also used for I2C, verify PCB routing; adjust if needed)
+ *  MX_I2C2_Init  — PB10=SCL, PB11=SDA (default, no remap)
  * ==================================================================== */
 static void MX_I2C2_Init(void)
 {
@@ -564,7 +567,7 @@ static void MX_I2C2_Init(void)
  *  MX_SPI1_Init
  *  SPI1 remapped to PB3(CLK)/PB4(MISO)/PB5(MOSI).
  *  NSS managed in software (PA15 toggled manually).
- *  Prescaler 16: 64MHz / 16 = 4 MHz SPI clock — within SX1278 10MHz max.
+ *  64 MHz / 16 = 4 MHz SPI clock — within SX1278 10 MHz max.
  * ==================================================================== */
 static void MX_SPI1_Init(void)
 {
@@ -586,8 +589,8 @@ static void MX_SPI1_Init(void)
 /* ====================================================================
  *  MX_TIM3_Init
  *  Default: prescaler=0, period=0xFFFF, internal clock.
- *  RF_Init() reconfigures TIM3 to 1 MHz (prescaler=63 for 64MHz APB1×2)
- *  when RF433 mode is selected. In LoRa/LOCAL mode TIM3 is unused.
+ *  RF_Init() reconfigures TIM3 to 1 MHz (prescaler=63) for RF433.
+ *  In LoRa/LOCAL mode TIM3 is unused after init.
  * ==================================================================== */
 static void MX_TIM3_Init(void)
 {
@@ -611,8 +614,7 @@ static void MX_TIM3_Init(void)
 }
 
 /* ====================================================================
- *  MX_USART1_UART_Init
- *  PA9=TX, PA10=RX — default pins, no remap needed.
+ *  MX_USART1_UART_Init  — PA9=TX, PA10=RX, no remap needed
  * ==================================================================== */
 static void MX_USART1_UART_Init(void)
 {
