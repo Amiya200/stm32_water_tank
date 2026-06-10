@@ -1,41 +1,41 @@
 /* ====================================================================
  * rf.c  —  RECEIVER  433 MHz OOK/ASK driver
  *
- * v6.6 — read_bit() timing fixed (critical bug)
+ * v6.7 — Superregenerative-receiver (XY-MK-5V) hardening
  *
- * ROOT CAUSE of s_rxPackets = 0:
- *   read_bit() called wait_high_us() which internally calls tim_rst()
- *   and spins until pin goes HIGH.  Then read_bit() called tim_rst()
- *   AGAIN before measuring the pulse.  This second reset wiped out any
- *   elapsed time since the rising edge, so all measurements started
- *   near zero.  A 300µs bit-1 pulse measured as < 100µs → returns -1.
- *   Every single bit returned -1 → sync hunt never completed → packets
- *   never received → s_rxPackets stays 0 forever.
+ * WHY: the red modules are SUPERHETERODYNE (clean, squelched DATA out).
+ *      The green XY-MK-5V is SUPERREGENERATIVE — while the carrier is
+ *      off it ramps AGC to maximum and sprays the DATA line with noise:
+ *      sub-100µs spikes plus AGC "pumping" during the 900µs carrier-off
+ *      half of every '1' bit. The v6.6 edge-timed decoder trusted every
+ *      edge, so that noise destroyed the bit stream (read_bit() locked
+ *      onto spikes -> -1; the "two bad bits -> abort" sync hunt bailed
+ *      before ever seeing 0x2DD4) -> s_rxPackets stuck at 0.
  *
- * FIX — read_bit() now works in three strictly ordered steps:
- *   Step 1: Wait for LOW  (end of previous bit's LOW phase, or idle).
- *           Timeout 2400µs (2 full bit periods).
- *           Skipped if pin is already LOW on entry.
- *   Step 2: Wait for HIGH (rising edge — start of this bit's pulse).
- *           Timeout 2400µs.
- *           Timer is NOT reset here; timer runs from before step 2.
- *   Step 3: Record the tick at the exact moment HIGH is detected,
- *           then spin until pin goes LOW, measuring the HIGH duration.
- *           This gives a clean measurement from rising to falling edge.
+ * FOUR RX-only changes (TX firmware and rf.h wire format UNCHANGED):
+ *   1. Glitch-confirmed rising edge in read_bit(): a real carrier pulse
+ *      holds HIGH >= RF_GLITCH_CONFIRM_US; noise spikes don't, so they
+ *      are rejected before they are ever measured.
+ *   2. Single-threshold bit classification: removes the old 550-600µs
+ *      dead zone. Superregen STRETCHES pulses, so anything landing in
+ *      that gap used to be thrown away. Now HIGH < RF_BIT_SPLIT_US => 1,
+ *      else => 0, with min/max sanity bounds.
+ *   3. Noise-tolerant sync hunt: a bad bit resets the clean-run AND the
+ *      shift register (noise can't be stitched into a false sync) instead
+ *      of aborting; bounded by RF_SYNC_HUNT_MAX_ATTEMPTS.
+ *   4. Glitch-confirmed activity gate in RF_Task(): idle superregen noise
+ *      no longer launches a full frame decode every loop iteration.
  *
- *   Both wait loops and the measurement loop share the SAME timer
- *   counter.  The counter runs continuously; only the start-of-measure
- *   snapshot (t_rise) is recorded at the rising edge instant.
+ * ── v6.6 history (read_bit timing fix — still in force) ──────────────
+ *   read_bit() uses ONE free-running TIM3 counter. It records the tick
+ *   at the rising edge (t_rise) and measures the HIGH width to the
+ *   falling edge (t_fall). No second timer reset between detect and
+ *   measure — that double-reset was the original s_rxPackets = 0 bug.
  *
  * Pin: PD1 (RF_connector_Pin = GPIO_PIN_1, RF_connector_GPIO_Port = GPIOD)
- *   Schematic: CN1 screw terminal → RF_CONNECTOR net → MCU pin PD1.
  *   PD01 AFIO remap MANDATORY in MX_GPIO_Init() before HAL_GPIO_Init().
- *   No pull resistor — XY-MK-5V drives DATA actively.
- *
- * Other fixes carried from v6.5:
- *   - TIM3-based activity gate (no HAL_GetTick for µs windows)
- *   - No HAL_Delay(10) in main loop (see rx_main.c)
- *   - No stale wait_low() at try_receive_frame() entry
+ *   No pull resistor — XY-MK-5V drives DATA actively (a pull would
+ *   distort the module's AGC envelope).
  * ==================================================================== */
 
 #include "rf.h"
@@ -49,21 +49,37 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ── TIM3: 64 MHz / (63+1) = 1 MHz → 1 µs/count ───────────────────── */
+/* ── TIM3: 64 MHz / (63+1) = 1 MHz -> 1 µs/count ──────────────────── */
 #define RF_TIM3_PRESCALER    63u
 
 /* ── Activity gate: how long RF_Task() waits for a preamble edge ────── *
- * 5000 µs = just over 4 bit periods.  Long enough to catch a preamble  *
+ * 5000 µs = just over 4 bit periods. Long enough to catch a preamble   *
  * HIGH with certainty; short enough to keep the function non-blocking.  */
 #define RF_IDLE_GATE_US      5000u
 
 /* ── read_bit() inter-bit timeout ───────────────────────────────────── *
- * Maximum time to wait for the LOW→HIGH transition between bits.        *
- * Set to 2 full bit periods (2400µs) to tolerate TX jitter.            */
+ * Maximum time to wait for the LOW->HIGH transition between bits.       *
+ * 2 full bit periods (2400µs) to tolerate TX jitter.                   */
 #define RF_BIT_EDGE_TIMEOUT_US   2400u
 
 /* ── Sync word ──────────────────────────────────────────────────────── */
 #define RF_SYNC16  ((uint16_t)(((uint16_t)RF_SYNC_BYTE1 << 8u) | RF_SYNC_BYTE2))
+
+/* ── Superregen (XY-MK-5V) hardening — RX decode tuning ─────────────── *
+ * Superregen receivers spray noise on DATA while the carrier is off and *
+ * pump their AGC, so the raw line is full of sub-100µs spikes. These    *
+ * constants let the decoder reject that noise. All tunable.             *
+ *                                                                       *
+ *   RF_GLITCH_CONFIRM_US : raise (e.g. 80-100) to reject more noise,    *
+ *                          lower if real '1' pulses get rejected.       *
+ *   RF_BIT_SPLIT_US      : midpoint between a 300µs '1' and 900µs '0'.  *
+ *   RF_BIT_WIDTH_MIN/MAX : hard sanity bounds on the HIGH pulse.        */
+#define RF_GLITCH_CONFIRM_US        60u   /* HIGH must persist this long to be a real edge */
+#define RF_BIT_WIDTH_MIN_US        150u   /* HIGH shorter than this = noise, reject        */
+#define RF_BIT_WIDTH_MAX_US       1300u   /* HIGH longer than this  = error, reject        */
+#define RF_BIT_SPLIT_US            600u   /* HIGH < split => '1' (short), >= split => '0'  */
+#define RF_SYNC_BAD_RUN_MAX         10u   /* consecutive bad bits before abandoning hunt   */
+#define RF_SYNC_HUNT_MAX_ATTEMPTS  400u   /* total read_bit() calls per hunt (time bound)  */
 
 extern TIM_HandleTypeDef  htim3;
 extern UART_HandleTypeDef huart1;
@@ -115,7 +131,7 @@ uint8_t RF_CRC8(const uint8_t *data, uint8_t len)
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  PIN READER
- *  Reads PD1.  PD01 remap must be active in AFIO or always returns 0.
+ *  Reads PD1. PD01 remap must be active in AFIO or always returns 0.
  * ═══════════════════════════════════════════════════════════════════════ */
 static inline uint8_t rf_pin(void)
 {
@@ -128,68 +144,67 @@ static inline void     tim_start(void) { __HAL_TIM_SET_COUNTER(&htim3, 0u); }
 static inline uint32_t tim_now(void)   { return __HAL_TIM_GET_COUNTER(&htim3); }
 
 /* ═══════════════════════════════════════════════════════════════════════
- *  READ ONE RF BIT  — v6.6 corrected
+ *  READ ONE RF BIT  — v6.7 (glitch-confirmed edge + single threshold)
  *
- *  Encoding reminder (from rf.h):
- *    bit '1': HIGH 300µs  + LOW 900µs  (total 1200µs)
- *    bit '0': HIGH 900µs  + LOW 300µs  (total 1200µs)
+ *  Encoding (from rf.h):
+ *    bit '1': HIGH 300µs + LOW 900µs   (total 1200µs)
+ *    bit '0': HIGH 900µs + LOW 300µs   (total 1200µs)
  *
- *  Correct measurement sequence:
- *    1. If pin is HIGH on entry (we're inside a pulse), wait for it
- *       to go LOW first.  This handles the case where RF_Task() entered
- *       try_receive_frame() mid-preamble with pin already HIGH.
- *    2. Wait for pin to go HIGH (rising edge = start of next pulse).
- *       Record tim_now() at the exact instant pin goes HIGH (t_rise).
- *    3. Wait for pin to go LOW (falling edge = end of pulse).
- *       Record tim_now() (t_fall).
- *    4. pulse_width = t_fall - t_rise.
- *       100–550µs → bit 1.
- *       600–1100µs → bit 0.
+ *  Sequence (all on ONE free-running TIM3 counter):
+ *    1. If HIGH on entry, wait out the current pulse.
+ *    2. Hunt for a CONFIRMED rising edge — the line must hold HIGH for
+ *       >= RF_GLITCH_CONFIRM_US. Superregen idle/AGC noise is only brief
+ *       spikes, so it is rejected here and never measured.
+ *    3. Measure HIGH width from t_rise to the falling edge (t_fall).
+ *    4. Classify by a single threshold (no dead zone):
+ *         w <  RF_BIT_SPLIT_US -> 1   (short pulse)
+ *         w >= RF_BIT_SPLIT_US -> 0   (long  pulse)
+ *       with min/max sanity bounds.
  *
- *  All steps use the SAME free-running TIM3 counter.  No second reset
- *  between steps — that was the v6.4/6.5 bug.
- *
- *  Returns: 1, 0, or -1 (timeout / bad width).
+ *  Returns: 1, 0, or -1 (timeout / out-of-range / noise).
  * ═══════════════════════════════════════════════════════════════════════ */
 static int8_t read_bit(void)
 {
-    /* Step 1: if already HIGH, wait for LOW (end of current pulse).
-     *         Timeout: ZERO_MAX + 300µs guard (1400µs).               */
+    uint32_t t_rise = 0u, t_fall = 0u, w = 0u, tc = 0u;
+    bool     glitch = false;
+
+    /* Step 1: if HIGH on entry, wait out the current pulse first. */
     if (rf_pin() == 1u)
     {
         tim_start();
         while (rf_pin() == 1u)
-        {
-            if (tim_now() > (RF_THRESH_ZERO_MAX_US + 300u))
-                return -1;  /* stuck HIGH — line error or noise burst */
-        }
+            if (tim_now() > RF_BIT_WIDTH_MAX_US) return -1;
     }
 
-    /* Step 2: wait for rising edge (pin goes HIGH).
-     *         Timeout: RF_BIT_EDGE_TIMEOUT_US (2400µs).               */
+    /* Step 2: hunt for a CONFIRMED rising edge.
+     *         A genuine carrier pulse stays HIGH >= RF_GLITCH_CONFIRM_US;
+     *         superregen idle noise produces only brief spikes that are
+     *         rejected here. Timer keeps running across glitches; the
+     *         overall wait is bounded by RF_BIT_EDGE_TIMEOUT_US.        */
     tim_start();
-    while (rf_pin() == 0u)
+    for (;;)
     {
-        if (tim_now() > RF_BIT_EDGE_TIMEOUT_US)
-            return -1;  /* no rising edge — gap between packets or noise */
-    }
-    uint32_t t_rise = tim_now();   /* exact tick when pin went HIGH */
+        if (tim_now() > RF_BIT_EDGE_TIMEOUT_US) return -1;   /* no edge */
+        if (rf_pin() == 0u) continue;
 
-    /* Step 3: wait for falling edge (pin goes LOW).
-     *         Timeout: ZERO_MAX + 300µs guard (1400µs) from t_rise.  */
+        t_rise = tim_now();                 /* candidate rising edge      */
+        tc     = t_rise;
+        glitch = false;
+        while ((tim_now() - tc) < RF_GLITCH_CONFIRM_US)
+            if (rf_pin() == 0u) { glitch = true; break; }
+        if (!glitch) break;                 /* confirmed real rising edge */
+        /* else: glitch — keep hunting                                    */
+    }
+
+    /* Step 3: measure HIGH width to the falling edge. */
     while (rf_pin() == 1u)
-    {
-        if ((tim_now() - t_rise) > (RF_THRESH_ZERO_MAX_US + 300u))
-            return -1;  /* pulse too long */
-    }
-    uint32_t t_fall = tim_now();
+        if ((tim_now() - t_rise) > RF_BIT_WIDTH_MAX_US) return -1;
+    t_fall = tim_now();
 
-    /* Step 4: classify pulse width */
-    uint32_t w = t_fall - t_rise;
-
-    if (w >= RF_THRESH_ONE_MIN_US  && w <= RF_THRESH_ONE_MAX_US)  return 1;
-    if (w >= RF_THRESH_ZERO_MIN_US && w <= RF_THRESH_ZERO_MAX_US) return 0;
-    return -1;  /* width outside both windows — noise or timing drift */
+    /* Step 4: single-threshold classification (no dead zone). */
+    w = t_fall - t_rise;
+    if (w < RF_BIT_WIDTH_MIN_US) return -1;
+    return (w < RF_BIT_SPLIT_US) ? (int8_t)1 : (int8_t)0;
 }
 
 /* ── read_byte: MSB first, 8 bits ───────────────────────────────────── */
@@ -209,39 +224,40 @@ static bool read_byte(uint8_t *out)
 /* ═══════════════════════════════════════════════════════════════════════
  *  TRY RECEIVE ONE COMPLETE RF FRAME
  *
- *  Called when RF_Task() detects the preamble rising edge on PD1.
+ *  Called when RF_Task() detects a confirmed preamble edge on PD1.
  *  Pin may already be HIGH on entry.
  *
  *  Frame: [5×0xAA preamble] [0x2D sync1] [0xD4 sync2] [len] [payload] [CRC8]
- *
- *  Phase 1 (sync hunt):
- *    read_bit() handles HIGH-at-entry correctly (Step 1 waits for LOW).
- *    Bits are shifted into sreg; match against RF_SYNC16 (0x2DD4).
- *    Requires RF_MIN_VALID_PREAMBLE_BITS clean bits before accepting sync
- *    to reject spurious glitch triggers.
  * ═══════════════════════════════════════════════════════════════════════ */
 static bool try_receive_frame(void)
 {
     uint16_t sreg      = 0u;
-    uint32_t bits      = 0u;
     uint32_t good_bits = 0u;
+    uint32_t bad_run   = 0u;
+    uint32_t attempts  = 0u;
     bool     found     = false;
 
-    /* ── Phase 1: sync hunt ─────────────────────────────────────────── */
-    while (bits < RF_SYNC_HUNT_MAX_BITS)
+    /* ── Phase 1: noise-tolerant sync hunt ──────────────────────────── *
+     * A bad bit resets the clean-run AND the shift register (so noise   *
+     * can't be concatenated into a false sync) instead of aborting.     *
+     * Only a clean RF_SYNC16 built from >= RF_MIN_VALID_PREAMBLE_BITS    *
+     * consecutive good bits is accepted. Attempts are bounded for time. */
+    while (attempts < RF_SYNC_HUNT_MAX_ATTEMPTS)
     {
+        attempts++;
         int8_t b = read_bit();
 
         if (b < 0)
         {
             good_bits = 0u;
-            b = read_bit();           /* one retry on bad bit */
-            if (b < 0) return false;  /* two bad in a row → abandon */
+            sreg      = 0u;
+            if (++bad_run >= RF_SYNC_BAD_RUN_MAX) return false;
+            continue;                       /* don't shift noise into sreg */
         }
+        bad_run = 0u;
 
-        bits++;
-        good_bits++;
         sreg = (uint16_t)((sreg << 1u) | (uint8_t)b);
+        good_bits++;
 
         if (sreg == RF_SYNC16 && good_bits >= RF_MIN_VALID_PREAMBLE_BITS)
         {
@@ -419,7 +435,7 @@ void RF_ClearWirelessData(void)
  * ═══════════════════════════════════════════════════════════════════════ */
 void RF_Init(void)
 {
-    uart_ln("[RF RX] Init v6.6...");
+    uart_ln("[RF RX] Init v6.7 (superregen-hardened)...");
     uart_ln("[RF RX] Pin     : PD1 (RF_connector_Pin = GPIO_PIN_1, GPIOD)");
     uart_ln("[RF RX] Remap   : __HAL_AFIO_REMAP_PD01_ENABLE() in MX_GPIO_Init");
     uart_ln("[RF RX] No pull : INPUT no pull (XY-MK-5V drives actively)");
@@ -436,22 +452,24 @@ void RF_Init(void)
     s_hwOk      = true;
 
     uart_ln("[RF RX] TIM3    : 1 MHz (prescaler=63)");
-    uart_ln("[RF RX] Gate    : 5000 us idle gate (TIM3)");
+    uart_ln("[RF RX] Gate    : 5000 us idle gate, glitch-confirmed");
+    uart_ln("[RF RX] Decode  : glitch-confirmed edges + single threshold");
     uart_ln("[RF RX] READY   : main loop must have NO HAL_Delay in RF433 mode");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  RF_Task
  *
- *  Non-blocking idle path: waits up to RF_IDLE_GATE_US (5ms) for a
- *  rising edge on PD1.  Returns immediately if none detected.
+ *  Non-blocking idle path: waits up to RF_IDLE_GATE_US for a CONFIRMED
+ *  rising edge on PD1. Returns immediately if none. Glitch-confirm stops
+ *  superregen idle noise from launching a full frame decode every loop.
  *
- *  Active path: rising edge detected → try_receive_frame() decodes
- *  the complete frame (~200ms for full packet).  Main loop blocks here
- *  — unavoidable for bit-bang OOK.
+ *  Active path: confirmed edge -> try_receive_frame() decodes the frame
+ *  (~200ms for a full packet). Main loop blocks here — unavoidable for
+ *  bit-bang OOK.
  *
- *  CALLER MUST NOT call HAL_Delay() between RF_Task() invocations
- *  when g_wireless_mode == WIRELESS_MODE_RF433.
+ *  CALLER MUST NOT call HAL_Delay() between RF_Task() invocations when
+ *  g_wireless_mode == WIRELESS_MODE_RF433.
  * ═══════════════════════════════════════════════════════════════════════ */
 void RF_Task(void)
 {
@@ -465,20 +483,24 @@ void RF_Task(void)
         uart_ln("[RF RX] data expired");
     }
 
-    /* Activity gate — TIM3 based for µs precision.
-     * If pin already HIGH: skip gate and decode immediately.
-     * If pin LOW: wait up to RF_IDLE_GATE_US for a rising edge.       */
-    if (rf_pin() == 0u)
+    /* Activity gate — wait up to RF_IDLE_GATE_US for a CONFIRMED HIGH.
+     * A real carrier holds HIGH >= RF_GLITCH_CONFIRM_US; superregen idle
+     * noise spikes don't, so they don't trigger a frame decode. If pin
+     * is already HIGH on entry (mid-preamble) it is confirmed and we go
+     * straight to decode.                                              */
+    tim_start();
+    for (;;)
     {
-        tim_start();
-        while (rf_pin() == 0u)
-        {
-            if (tim_now() > RF_IDLE_GATE_US)
-                return;   /* idle — no activity */
-        }
-        /* Rising edge detected within gate window */
+        if (tim_now() > RF_IDLE_GATE_US) return;     /* idle, no activity */
+        if (rf_pin() == 0u) continue;
+
+        uint32_t tc = tim_now();
+        bool glitch = false;
+        while ((tim_now() - tc) < RF_GLITCH_CONFIRM_US)
+            if (rf_pin() == 0u) { glitch = true; break; }
+        if (!glitch) break;                          /* real carrier */
     }
 
-    /* Pin is HIGH (or just went HIGH) — decode frame */
+    /* Confirmed carrier — decode frame */
     (void)try_receive_frame();
 }

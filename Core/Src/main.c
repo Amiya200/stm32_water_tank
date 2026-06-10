@@ -20,6 +20,21 @@
  *   GPIOC clock enable removed (PC13 no longer used).
  *   RF_connector_Pin is configured as INPUT, no pull (RX reads it).
  *
+ * v6.6 — g_rfRxData now updates on EVERY accepted packet:
+ *   • g_rfRxData is refreshed whenever RF_GetRxPacketCount() advances —
+ *     i.e. once per frame that passed CRC *and* parsed — covering both
+ *     HELLO and TANKLEVEL. Previously it only updated while
+ *     RF_IsWirelessDataValid() (TANKLEVEL-only) was true, so received
+ *     raw bytes landed in rf.c's pre-CRC raw buffer (s_rfLastRawPacket)
+ *     while g_rfRxData stayed empty unless a TANKLEVEL frame was fully
+ *     accepted. The counter is the reliable "a real packet arrived"
+ *     signal; the raw buffer fills before the CRC check and must NOT be
+ *     trusted as proof of reception.
+ *   • g_rfRxData.valid still reflects TANKLEVEL data freshness (90 s
+ *     window) via RF_IsWirelessDataValid(); .did/.seq/.raw track the
+ *     most recent accepted packet of either type; .level/.wellDry carry
+ *     the last known TANKLEVEL value (unchanged on a HELLO).
+ *
  * v6.5 — Dedicated RF received-data variable + build fixes:
  *   • Added g_rfRxData (RfRxData_t).  Holds the ACTUAL decoded RF values
  *     (level %, well-dry, DID, seq, raw packet) the moment an RF packet
@@ -103,9 +118,11 @@ extern uint8_t loraMode;
  *  A SEPARATE variable for RF-received values, distinct from the shared
  *  adcData / adcData.voltages[] buffer.
  *
- *  Populated in the main loop (Step 3, RF433 path) the moment
- *  RF_IsWirelessDataValid() is true — straight from the decoded packet
- *  in rf.c, NOT from the synthesized probe voltages in adc.c.
+ *  Populated in the main loop (Step 3, RF433 path) whenever
+ *  RF_GetRxPacketCount() advances — i.e. the moment a frame is decoded,
+ *  CRC-verified and parsed — straight from the decoded packet in rf.c,
+ *  NOT from the synthesized probe voltages in adc.c, and NOT from the
+ *  pre-CRC raw buffer.
  *
  *  Read this anywhere in the app (screen.c, logging, UART status) to get
  *  the actual last-received RF tank level / well-dry / DID / seq / raw,
@@ -207,7 +224,7 @@ int main(void)
     UART_PrintLn("\r\n\r\n");
     UART_PrintLn("=========================================");
     UART_PrintLn("  HELONIX - RECEIVER (MOTOR CONTROLLER)");
-    UART_PrintLn("  Firmware : Three-Mode RX v6.5");
+    UART_PrintLn("  Firmware : Three-Mode RX v6.6");
     UART_PrintLn("  PCB      : v1.0 — schematic verified");
     UART_PrintLn("  UART     : 115200 8N1");
     UART_PrintLn("=========================================");
@@ -307,28 +324,33 @@ int main(void)
         }
         if (g_wireless_mode == WIRELESS_MODE_RF433)
         {
-            static bool s_rfWasValid = false;
-            bool rfNow = RF_IsWirelessDataValid();
+            static uint32_t s_rfPktSeen  = 0u;
+            static bool      s_rfWasValid = false;
 
-            if (rfNow)
+            /* (a) Update g_rfRxData on EVERY accepted packet (HELLO or
+             *     TANKLEVEL).  RF_GetRxPacketCount() advances once per
+             *     frame that passed CRC *and* parsed, so a change here
+             *     means a genuinely-decoded packet just arrived.  Source
+             *     is rf.c's decoded packet, not the synthesized probe
+             *     voltages and not the pre-CRC raw buffer.              */
+            uint32_t pkts = RF_GetRxPacketCount();
+            if (pkts != s_rfPktSeen)
             {
-                /* Copy the ACTUAL decoded RF values into the dedicated
-                 * holder — separate from adcData / voltages[].  Sourced
-                 * from rf.c's decoded packet, not the synthesized probe
-                 * voltages, so the screen/logging see real RF data.   */
-                g_rfRxData.level   = RF_GetWirelessTankLevel();
-                g_rfRxData.wellDry = RF_GetWirelessWellDry();
+                s_rfPktSeen        = pkts;
                 g_rfRxData.did     = RF_GetLastPacketDID();
                 g_rfRxData.seq     = RF_GetLastPacketSeq();
-                g_rfRxData.valid   = true;
+                g_rfRxData.level   = RF_GetWirelessTankLevel();
+                g_rfRxData.wellDry = RF_GetWirelessWellDry();
 
                 strncpy(g_rfRxData.raw, RF_GetLastRawPacket(), RF_MAX_PAYLOAD);
                 g_rfRxData.raw[RF_MAX_PAYLOAD] = '\0';
+
+                g_screenUpdatePending = true;
             }
-            else
-            {
-                g_rfRxData.valid = false;
-            }
+
+            /* (b) .valid tracks TANKLEVEL data freshness (90 s window). */
+            bool rfNow = RF_IsWirelessDataValid();
+            g_rfRxData.valid = rfNow;
 
             if (!s_rfWasValid && rfNow)
                 g_screenUpdatePending = true;
