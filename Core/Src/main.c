@@ -20,6 +20,21 @@
  *   GPIOC clock enable removed (PC13 no longer used).
  *   RF_connector_Pin is configured as INPUT, no pull (RX reads it).
  *
+ * v6.5 — Dedicated RF received-data variable + build fixes:
+ *   • Added g_rfRxData (RfRxData_t).  Holds the ACTUAL decoded RF values
+ *     (level %, well-dry, DID, seq, raw packet) the moment an RF packet
+ *     is valid — kept SEPARATE from adcData / adcData.voltages[].
+ *     adc.c's inject_wireless_level() still synthesizes probe voltages
+ *     from the RF data so the motor logic keeps working; g_rfRxData is
+ *     an additional, directly-readable copy for display / logging / UART.
+ *   • RESTORED the g_wireless_mode file-scope global.  It had been
+ *     dropped in the previous edit, producing:
+ *       main.c:201  error: 'g_wireless_mode' undeclared
+ *     (and would also throw "undefined reference" from adc.c at link).
+ *   • Renamed main.c's ADC count macro to ADC_TOTAL_CHANNELS (= 8) so it
+ *     no longer collides with adc.h's ADC_CHANNEL_COUNT (= 6) — that
+ *     macro-redefinition warning is now gone.
+ *
  * Three operating modes via g_wireless_mode:
  *   WIRELESS_MODE_LOCAL  (0) — ADC probes only
  *   WIRELESS_MODE_LORA   (1) — SX1278 + local ADC fallback
@@ -53,8 +68,13 @@
 #define WIRELESS_MODE_LORA    1u
 #define WIRELESS_MODE_RF433   2u
 
-/* ── Cadences ────────────────────────────────────────────────────────── */
-#define ADC_CHANNEL_COUNT        8u
+/* ── Cadences ────────────────────────────────────────────────────────── *
+ *  ADC_TOTAL_CHANNELS is the TOTAL ADC conversion count for this board   *
+ *  (PA0–PA7 = 6 sensor channels + AC voltage + AC current).              *
+ *  It is deliberately NOT called ADC_CHANNEL_COUNT: adc.h owns that name *
+ *  (= 6 sensor channels) and redefining it here triggered a             *
+ *  macro-redefinition warning that risked a 6-vs-8 size mismatch.       */
+#define ADC_TOTAL_CHANNELS       8u
 #define STATUS_UPDATE_INTERVAL   15000u
 
 /* ── Peripheral handles ─────────────────────────────────────────────── */
@@ -66,8 +86,8 @@ TIM_HandleTypeDef  htim3;
 UART_HandleTypeDef huart1;
 
 /* ── Application data ───────────────────────────────────────────────── */
-uint16_t adcBuffer[ADC_CHANNEL_COUNT];
-float    g_adcAvg[ADC_CHANNEL_COUNT] = {0};
+uint16_t adcBuffer[ADC_TOTAL_CHANNELS];
+float    g_adcAvg[ADC_TOTAL_CHANNELS] = {0};
 float    g_vADC_ACS  = 0.0f;
 ADC_Data adcData;
 
@@ -78,13 +98,48 @@ char receivedUartPacket[UART_RX_BUFFER_SIZE];
 bool g_screenUpdatePending = false;
 extern uint8_t loraMode;
 
+/* ── Dedicated RF received-data holder ───────────────────────────────
+ *
+ *  A SEPARATE variable for RF-received values, distinct from the shared
+ *  adcData / adcData.voltages[] buffer.
+ *
+ *  Populated in the main loop (Step 3, RF433 path) the moment
+ *  RF_IsWirelessDataValid() is true — straight from the decoded packet
+ *  in rf.c, NOT from the synthesized probe voltages in adc.c.
+ *
+ *  Read this anywhere in the app (screen.c, logging, UART status) to get
+ *  the actual last-received RF tank level / well-dry / DID / seq / raw,
+ *  independent of how adc.c maps that data onto probe voltages.
+ *
+ *  NOTE: to read it from another .c file, add to global.h:
+ *      typedef struct { ... } RfRxData_t;   (same definition as below)
+ *      extern RfRxData_t g_rfRxData;
+ * ──────────────────────────────────────────────────────────────────── */
+typedef struct
+{
+    uint8_t  level;                    /* tank level 0..100 %         */
+    uint8_t  wellDry;                  /* 1 = well dry, 0 = has water */
+    uint32_t did;                      /* transmitter device ID       */
+    uint32_t seq;                      /* packet sequence number      */
+    bool     valid;                    /* RF link currently healthy   */
+    char     raw[RF_MAX_PAYLOAD + 1u]; /* last raw packet string      */
+} RfRxData_t;
+
+RfRxData_t g_rfRxData = {0};
+
 /* ── Wireless mode — FILE-SCOPE GLOBAL ──────────────────────────────── *
  *  ┌─────────────────────────────────────────────────────────────┐      *
  *  │         CHANGE THIS ONE LINE TO SWITCH MODE                 │      *
  *  │   WIRELESS_MODE_LOCAL  (0)  physical ADC only              │      *
  *  │   WIRELESS_MODE_LORA   (1)  LoRa  + local ADC fallback     │      *
  *  │   WIRELESS_MODE_RF433  (2)  RF433 + local ADC fallback     │      *
- *  └─────────────────────────────────────────────────────────────┘      */
+ *  └─────────────────────────────────────────────────────────────┘      *
+ *                                                                        *
+ *  MUST be a file-scope global: adc.c reads it via                       *
+ *  `extern uint8_t g_wireless_mode;`.  Defining it inside main() (a      *
+ *  local with no linkage) or omitting it entirely breaks the build:      *
+ *    - main.c: "g_wireless_mode undeclared"                              *
+ *    - adc.c : "undefined reference to g_wireless_mode" at link.         */
 uint8_t g_wireless_mode = WIRELESS_MODE_RF433;   /* ← CHANGE HERE */
 
 /* ── Status timer ───────────────────────────────────────────────────── */
@@ -152,7 +207,7 @@ int main(void)
     UART_PrintLn("\r\n\r\n");
     UART_PrintLn("=========================================");
     UART_PrintLn("  HELONIX - RECEIVER (MOTOR CONTROLLER)");
-    UART_PrintLn("  Firmware : Three-Mode RX v6.4");
+    UART_PrintLn("  Firmware : Three-Mode RX v6.5");
     UART_PrintLn("  PCB      : v1.0 — schematic verified");
     UART_PrintLn("  UART     : 115200 8N1");
     UART_PrintLn("=========================================");
@@ -244,7 +299,7 @@ int main(void)
         if (g_wireless_mode == WIRELESS_MODE_RF433)
             RF_Task();
 
-        /* Step 3: new-data flags */
+        /* Step 3: new-data flags + dedicated RF received-data refresh */
         if (g_wireless_mode == WIRELESS_MODE_LORA && g_loraNewPacketFlag)
         {
             g_loraNewPacketFlag   = false;
@@ -254,6 +309,27 @@ int main(void)
         {
             static bool s_rfWasValid = false;
             bool rfNow = RF_IsWirelessDataValid();
+
+            if (rfNow)
+            {
+                /* Copy the ACTUAL decoded RF values into the dedicated
+                 * holder — separate from adcData / voltages[].  Sourced
+                 * from rf.c's decoded packet, not the synthesized probe
+                 * voltages, so the screen/logging see real RF data.   */
+                g_rfRxData.level   = RF_GetWirelessTankLevel();
+                g_rfRxData.wellDry = RF_GetWirelessWellDry();
+                g_rfRxData.did     = RF_GetLastPacketDID();
+                g_rfRxData.seq     = RF_GetLastPacketSeq();
+                g_rfRxData.valid   = true;
+
+                strncpy(g_rfRxData.raw, RF_GetLastRawPacket(), RF_MAX_PAYLOAD);
+                g_rfRxData.raw[RF_MAX_PAYLOAD] = '\0';
+            }
+            else
+            {
+                g_rfRxData.valid = false;
+            }
+
             if (!s_rfWasValid && rfNow)
                 g_screenUpdatePending = true;
             s_rfWasValid = rfNow;
@@ -303,10 +379,11 @@ int main(void)
                     else { lnk = "DOWN"; }
                     break;
                 case WIRELESS_MODE_RF433:
-                    if (RF_IsWirelessDataValid())
+                    /* Report straight from the dedicated RF holder */
+                    if (g_rfRxData.valid)
                     {
-                        lvl = RF_GetWirelessTankLevel();
-                        wd  = RF_GetWirelessWellDry();
+                        lvl = g_rfRxData.level;
+                        wd  = g_rfRxData.wellDry;
                         lnk = "OK";
                     }
                     else { lnk = "DOWN"; }
