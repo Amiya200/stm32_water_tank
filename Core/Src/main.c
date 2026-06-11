@@ -11,44 +11,24 @@
  *   LED4/5            = PB8 / PB9
  *   SWITCH1–4         = PB12 / PB13 / PB14 / PB15
  *
- * Key corrections vs previous RX main.c:
- *   RF_connector_Pin is now PD1 (GPIOD), not PC13 (GPIOC).
- *   __HAL_AFIO_REMAP_PD01_ENABLE() ADDED to MX_GPIO_Init().
- *   PD0/PD1 are OSC_IN/OSC_OUT by default; the PD01 remap is
- *   mandatory to use PD1 as a GPIO input for the XY-MK-5V DATA line.
- *   GPIOD clock enable added.
- *   GPIOC clock enable removed (PC13 no longer used).
- *   RF_connector_Pin is configured as INPUT, no pull (RX reads it).
- *
- * v6.6 — g_rfRxData now updates on EVERY accepted packet:
- *   • g_rfRxData is refreshed whenever RF_GetRxPacketCount() advances —
- *     i.e. once per frame that passed CRC *and* parsed — covering both
- *     HELLO and TANKLEVEL. Previously it only updated while
- *     RF_IsWirelessDataValid() (TANKLEVEL-only) was true, so received
- *     raw bytes landed in rf.c's pre-CRC raw buffer (s_rfLastRawPacket)
- *     while g_rfRxData stayed empty unless a TANKLEVEL frame was fully
- *     accepted. The counter is the reliable "a real packet arrived"
- *     signal; the raw buffer fills before the CRC check and must NOT be
- *     trusted as proof of reception.
- *   • g_rfRxData.valid still reflects TANKLEVEL data freshness (90 s
- *     window) via RF_IsWirelessDataValid(); .did/.seq/.raw track the
- *     most recent accepted packet of either type; .level/.wellDry carry
- *     the last known TANKLEVEL value (unchanged on a HELLO).
- *
- * v6.5 — Dedicated RF received-data variable + build fixes:
- *   • Added g_rfRxData (RfRxData_t).  Holds the ACTUAL decoded RF values
- *     (level %, well-dry, DID, seq, raw packet) the moment an RF packet
- *     is valid — kept SEPARATE from adcData / adcData.voltages[].
- *     adc.c's inject_wireless_level() still synthesizes probe voltages
- *     from the RF data so the motor logic keeps working; g_rfRxData is
- *     an additional, directly-readable copy for display / logging / UART.
- *   • RESTORED the g_wireless_mode file-scope global.  It had been
- *     dropped in the previous edit, producing:
- *       main.c:201  error: 'g_wireless_mode' undeclared
- *     (and would also throw "undefined reference" from adc.c at link).
- *   • Renamed main.c's ADC count macro to ADC_TOTAL_CHANNELS (= 8) so it
- *     no longer collides with adc.h's ADC_CHANNEL_COUNT (= 6) — that
- *     macro-redefinition warning is now gone.
+ * v6.8 — RF received-data refresh corrected to match rf.c v6.8:
+ *   • rf.c now guarantees RF_GetRxPacketCount() advances ONLY on a
+ *     packet that passed the preamble gate, the sync word, CRC-8, AND
+ *     LoRa_ParsePacket().  So when the counter changes here, a genuinely
+ *     valid packet just arrived — no longer a noise-decoded false frame.
+ *   • RF_GetLastRawPacket() now returns the POST-CRC payload (rf.c writes
+ *     s_rfLastRawPacket only after CRC passes).  g_rfRxData.raw is
+ *     therefore a real last-good packet, not the previous pre-CRC buffer
+ *     that produced the misleading "@TL:000…/0x01-prefix" live view.
+ *   • g_rfRxData.level/.wellDry are refreshed from the accessors on each
+ *     advance, but they are only MEANINGFUL when .valid is true (a fresh
+ *     TANKLEVEL within the 90 s window).  On a HELLO/ACK/etc. the level
+ *     fields hold their last known TANKLEVEL value and .valid reflects
+ *     freshness via RF_IsWirelessDataValid().
+ *   • Status line now reports RF_frames (decode attempts) alongside
+ *     RF_pkts (validated) and RF_err, so a stuck/garbage link is visible:
+ *     frames climbing while pkts flat == carrier present but no valid
+ *     frames (alignment / CRC), which is the symptom v6.8 fixes.
  *
  * Three operating modes via g_wireless_mode:
  *   WIRELESS_MODE_LOCAL  (0) — ADC probes only
@@ -57,7 +37,6 @@
  *
  * PB7 is LoRa DIO0 — used only in WIRELESS_MODE_LORA.
  * PD1 is RF_connector_Pin — used only in WIRELESS_MODE_RF433.
- * Both configured as INPUT; no switching logic needed.
  * ==================================================================== */
 
 #include "main.h"
@@ -83,12 +62,7 @@
 #define WIRELESS_MODE_LORA    1u
 #define WIRELESS_MODE_RF433   2u
 
-/* ── Cadences ────────────────────────────────────────────────────────── *
- *  ADC_TOTAL_CHANNELS is the TOTAL ADC conversion count for this board   *
- *  (PA0–PA7 = 6 sensor channels + AC voltage + AC current).              *
- *  It is deliberately NOT called ADC_CHANNEL_COUNT: adc.h owns that name *
- *  (= 6 sensor channels) and redefining it here triggered a             *
- *  macro-redefinition warning that risked a 6-vs-8 size mismatch.       */
+/* ── Cadences ────────────────────────────────────────────────────────── */
 #define ADC_TOTAL_CHANNELS       8u
 #define STATUS_UPDATE_INTERVAL   15000u
 
@@ -114,49 +88,17 @@ bool g_screenUpdatePending = false;
 extern uint8_t loraMode;
 
 /* ── Dedicated RF received-data holder ───────────────────────────────
+ *  RfRxData_t is now defined ONCE in global.h and shared by every file
+ *  that touches g_rfRxData (adc.c, screen.c, …).  main.c only DEFINES
+ *  the instance here; the type and the `extern` live in global.h.
  *
- *  A SEPARATE variable for RF-received values, distinct from the shared
- *  adcData / adcData.voltages[] buffer.
- *
- *  Populated in the main loop (Step 3, RF433 path) whenever
- *  RF_GetRxPacketCount() advances — i.e. the moment a frame is decoded,
- *  CRC-verified and parsed — straight from the decoded packet in rf.c,
- *  NOT from the synthesized probe voltages in adc.c, and NOT from the
- *  pre-CRC raw buffer.
- *
- *  Read this anywhere in the app (screen.c, logging, UART status) to get
- *  the actual last-received RF tank level / well-dry / DID / seq / raw,
- *  independent of how adc.c maps that data onto probe voltages.
- *
- *  NOTE: to read it from another .c file, add to global.h:
- *      typedef struct { ... } RfRxData_t;   (same definition as below)
- *      extern RfRxData_t g_rfRxData;
+ *  This removes the layout-mismatch that let other files read/write the
+ *  wrong byte offsets (the cause of the impossible level=176 reading).
  * ──────────────────────────────────────────────────────────────────── */
-typedef struct
-{
-    uint8_t  level;                    /* tank level 0..100 %         */
-    uint8_t  wellDry;                  /* 1 = well dry, 0 = has water */
-    uint32_t did;                      /* transmitter device ID       */
-    uint32_t seq;                      /* packet sequence number      */
-    bool     valid;                    /* RF link currently healthy   */
-    char     raw[RF_MAX_PAYLOAD + 1u]; /* last raw packet string      */
-} RfRxData_t;
-
 RfRxData_t g_rfRxData = {0};
 
 /* ── Wireless mode — FILE-SCOPE GLOBAL ──────────────────────────────── *
- *  ┌─────────────────────────────────────────────────────────────┐      *
- *  │         CHANGE THIS ONE LINE TO SWITCH MODE                 │      *
- *  │   WIRELESS_MODE_LOCAL  (0)  physical ADC only              │      *
- *  │   WIRELESS_MODE_LORA   (1)  LoRa  + local ADC fallback     │      *
- *  │   WIRELESS_MODE_RF433  (2)  RF433 + local ADC fallback     │      *
- *  └─────────────────────────────────────────────────────────────┘      *
- *                                                                        *
- *  MUST be a file-scope global: adc.c reads it via                       *
- *  `extern uint8_t g_wireless_mode;`.  Defining it inside main() (a      *
- *  local with no linkage) or omitting it entirely breaks the build:      *
- *    - main.c: "g_wireless_mode undeclared"                              *
- *    - adc.c : "undefined reference to g_wireless_mode" at link.         */
+ *  adc.c reads it via `extern uint8_t g_wireless_mode;`.                 */
 uint8_t g_wireless_mode = WIRELESS_MODE_RF433;   /* ← CHANGE HERE */
 
 /* ── Status timer ───────────────────────────────────────────────────── */
@@ -165,6 +107,10 @@ static uint32_t lastStatusUpdate = 0u;
 /* ── External declarations ──────────────────────────────────────────── */
 extern bool    Motor_GetStatus(void);
 extern uint8_t g_loraConnected;
+
+/* New rf.c v6.8 diagnostics accessors */
+extern uint32_t    RF_GetRxFrameCount(void);
+extern const char *RF_GetLastRejectRaw(void);
 
 /* ── Private function prototypes ────────────────────────────────────── */
 void SystemClock_Config(void);
@@ -208,10 +154,6 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
 
-    /* ── Peripheral init ── *
-     * ORDER MATTERS:                                                   *
-     *   MX_GPIO_Init() applies all AFIO remaps first, then init pins. *
-     *   MX_SPI1_Init() must come AFTER MX_GPIO_Init() (remap active). */
     MX_GPIO_Init();
     MX_ADC1_Init();
     MX_SPI1_Init();
@@ -224,7 +166,7 @@ int main(void)
     UART_PrintLn("\r\n\r\n");
     UART_PrintLn("=========================================");
     UART_PrintLn("  HELONIX - RECEIVER (MOTOR CONTROLLER)");
-    UART_PrintLn("  Firmware : Three-Mode RX v6.6");
+    UART_PrintLn("  Firmware : Three-Mode RX v6.8");
     UART_PrintLn("  PCB      : v1.0 — schematic verified");
     UART_PrintLn("  UART     : 115200 8N1");
     UART_PrintLn("=========================================");
@@ -327,12 +269,11 @@ int main(void)
             static uint32_t s_rfPktSeen  = 0u;
             static bool      s_rfWasValid = false;
 
-            /* (a) Update g_rfRxData on EVERY accepted packet (HELLO or
-             *     TANKLEVEL).  RF_GetRxPacketCount() advances once per
-             *     frame that passed CRC *and* parsed, so a change here
-             *     means a genuinely-decoded packet just arrived.  Source
-             *     is rf.c's decoded packet, not the synthesized probe
-             *     voltages and not the pre-CRC raw buffer.              */
+            /* (a) Refresh g_rfRxData on EVERY validated packet.  In v6.8
+             *     RF_GetRxPacketCount() advances ONLY after preamble gate
+             *     + sync + CRC + parse, so a change here is a genuine
+             *     packet.  RF_GetLastRawPacket() is now the post-CRC
+             *     payload, so .raw is a real last-good packet.            */
             uint32_t pkts = RF_GetRxPacketCount();
             if (pkts != s_rfPktSeen)
             {
@@ -401,7 +342,6 @@ int main(void)
                     else { lnk = "DOWN"; }
                     break;
                 case WIRELESS_MODE_RF433:
-                    /* Report straight from the dedicated RF holder */
                     if (g_rfRxData.valid)
                     {
                         lvl = g_rfRxData.level;
@@ -413,12 +353,16 @@ int main(void)
                 default: break;
             }
 
-            char status[180];
+            /* RF_frames = decode attempts, RF_pkts = validated packets.
+             * frames climbing while pkts flat  => carrier present but no
+             * valid frame (alignment/CRC) — the v6.8 fix target.          */
+            char status[200];
             snprintf(status, sizeof(status),
                      "[STATUS] Mode:%-9s | Link:%-4s | TL:%3u%% | WD:%u | "
-                     "RF_pkts:%lu | RF_err:%lu | Motor:%s",
+                     "RF_pkts:%lu | RF_frames:%lu | RF_err:%lu | Motor:%s",
                      mode_name(g_wireless_mode), lnk, lvl, wd,
                      (unsigned long)RF_GetRxPacketCount(),
+                     (unsigned long)RF_GetRxFrameCount(),
                      (unsigned long)RF_GetRxErrorCount(),
                      Motor_GetStatus() ? "ON" : "OFF");
             UART_PrintLn(status);
@@ -431,10 +375,6 @@ int main(void)
 
 /* ====================================================================
  *  SystemClock_Config
- *  HSI → PLL × 16 → 64 MHz SYSCLK
- *  APB1 = 32 MHz (÷2), APB2 = 64 MHz (÷1)
- *  ADC clock = PCLK2 / 6 ≈ 10.67 MHz
- *  LSI for RTC
  * ==================================================================== */
 void SystemClock_Config(void)
 {
@@ -466,152 +406,91 @@ void SystemClock_Config(void)
 }
 
 /* ====================================================================
- *  MX_GPIO_Init
- *
- *  AFIO remap sequence (ORDER IS CRITICAL):
- *
- *    1. Enable AFIO clock
- *    2. SWJ_NOJTAG  → frees PA15 (TDI→LORA_SELECT),
- *                           PB3  (TDO→SPI1_CLK),
- *                           PB4  (TRST→SPI1_MISO)
- *    3. SPI1_ENABLE → moves SPI1 from PA5/6/7 to PB3/4/5
- *                     (requires PB3/PB4 free from JTAG — done in step 2)
- *    4. PD01_ENABLE → releases PD0/PD1 from OSC_IN/OSC_OUT function,
- *                     making PD1 (RF_connector_Pin) usable as GPIO.
- *                     THIS IS MANDATORY for RF433 RX on PD1.
- *    5. GPIO clock enables (including GPIOD for PD1)
- *    6. Pin configurations
- *
- *  Without step 4, HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_1) always returns
- *  GPIO_PIN_RESET regardless of the actual signal on the pin.
+ *  MX_GPIO_Init  (unchanged — AFIO remap order is load-bearing)
  * ==================================================================== */
 static void MX_GPIO_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    /* ── Step 1: AFIO clock ────────────────────────────────────────── */
     __HAL_RCC_AFIO_CLK_ENABLE();
-
-    /* ── Step 2: SWJ → NOJTAG ─────────────────────────────────────── *
-     *  Writes AFIO_MAPR[26:24] = 010.                                  *
-     *  Releases: PA15 (TDI) → LORA_SELECT (NSS)                       *
-     *            PB3  (TDO) → SPI1_CLK                                *
-     *            PB4  (TRST)→ SPI1_MISO                               *
-     *  SWD (SWDIO=PA13, SWCLK=PA14) remains active for debug.         */
     __HAL_AFIO_REMAP_SWJ_NOJTAG();
-
-    /* ── Step 3: SPI1 remap ────────────────────────────────────────── *
-     *  Writes AFIO_MAPR[0] = 1.                                        *
-     *  Moves SPI1 from PA5/PA6/PA7 → PB3/PB4/PB5.                    *
-     *  PCB routes LoRa SPI to PB3-5; without this remap LoRa is dead. */
     __HAL_AFIO_REMAP_SPI1_ENABLE();
-
-    /* ── Step 4: PD01 remap ────────────────────────────────────────── *
-     *  Writes AFIO_MAPR[15] = 1.                                       *
-     *  Releases PD0 and PD1 from OSC_IN / OSC_OUT alternate function. *
-     *  After this, PD1 (RF_connector_Pin) works as a standard GPIO.   *
-     *  REQUIRED: XY-MK-5V DATA is wired to PD1 on this PCB.           *
-     *  Without this remap, PD1 is always low regardless of signal.    */
     __HAL_AFIO_REMAP_PD01_ENABLE();
 
-    /* ── Step 5: GPIO clock enables ───────────────────────────────── *
-     *  GPIOD required for PD1 (RF_connector_Pin = XY-MK-5V DATA)     */
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOD_CLK_ENABLE();
 
-    /* ── Step 6a: Safe output defaults ────────────────────────────── */
-    /* Relays OFF */
     HAL_GPIO_WritePin(GPIOB, Relay1_Pin | Relay2_Pin | Relay3_Pin, GPIO_PIN_RESET);
-    /* LEDs OFF */
     HAL_GPIO_WritePin(GPIOA, LED1_Pin | LED2_Pin | LED3_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, LED4_Pin | LED5_Pin, GPIO_PIN_RESET);
-    /* LoRa RST LOW (not reset-asserting — RST is active LOW on SX1278) */
     HAL_GPIO_WritePin(LORA_STATUS_GPIO_Port, LORA_STATUS_Pin, GPIO_PIN_RESET);
-    /* LoRa NSS HIGH (deselected) — must be HIGH before any SPI */
     HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_SET);
 
-    /* ── Relays: PB0 / PB1 / PB2  — output PP, low speed ─────────── */
+    /* Relays: PB0/PB1/PB2 */
     GPIO_InitStruct.Pin   = Relay1_Pin | Relay2_Pin | Relay3_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* ── LoRa RST: PB6  — output PP, low speed ────────────────────── */
+    /* LoRa RST: PB6 */
     GPIO_InitStruct.Pin   = LORA_STATUS_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(LORA_STATUS_GPIO_Port, &GPIO_InitStruct);
 
-    /* ── LoRa DIO0: PB7 (RF_DATA_Pin) — input, no pull ────────────── *
-     *  Used by lora.c as SX1278 DIO0 in WIRELESS_MODE_LORA.          *
-     *  In RF433 mode this pin is an unused floating input (harmless). */
+    /* LoRa DIO0: PB7 — input, no pull */
     GPIO_InitStruct.Pin  = RF_DATA_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(RF_DATA_GPIO_Port, &GPIO_InitStruct);
 
-    /* ── XY-MK-5V DATA: PD1 (RF_connector_Pin) — input, no pull ───── *
-     *  Used by rf.c (RECEIVER) for 433 MHz OOK bit-bang decode.       *
-     *  PD01 remap (step 4) makes PD1 available as GPIO.               *
-     *  XY-MK-5V drives DATA actively — no pull needed.               *
-     *  A pull-up would distort the module's AGC envelope signal.      *
-     *  In LoRa mode this pin is an unused floating input (harmless).  */
+    /* XY-MK-5V DATA: PD1 — input, no pull */
     GPIO_InitStruct.Pin  = RF_connector_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(RF_connector_GPIO_Port, &GPIO_InitStruct);  /* GPIOD */
 
-    /* ── LED4 / LED5: PB8 / PB9  — output PP, low speed ──────────── */
+    /* LED4/LED5: PB8/PB9 */
     GPIO_InitStruct.Pin   = LED4_Pin | LED5_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* ── Switches: PB12–PB15  — input, pull-up, EXTI both edges ───── */
+    /* Switches: PB12–PB15 — input pull-up, EXTI both edges */
     GPIO_InitStruct.Pin  = SWITCH1_Pin | SWITCH2_Pin | SWITCH3_Pin | SWITCH4_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* ── LED1: PA8  — output PP, low speed ────────────────────────── */
+    /* LED1: PA8 */
     GPIO_InitStruct.Pin   = LED1_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* ── LED2 / LED3: PA11 / PA12  — output PP, low speed ─────────── */
+    /* LED2/LED3: PA11/PA12 */
     GPIO_InitStruct.Pin   = LED2_Pin | LED3_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* ── LoRa NSS: PA15  — output PP, high speed ──────────────────── *
-     *  NSS toggles at SPI clock rate; GPIO_SPEED_FREQ_HIGH reduces    *
-     *  edge distortion on the CS line.                                */
+    /* LoRa NSS: PA15 — high speed */
     GPIO_InitStruct.Pin   = LORA_SELECT_Pin;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(LORA_SELECT_GPIO_Port, &GPIO_InitStruct);
-
-    /* Re-assert NSS HIGH after HAL_GPIO_Init (init resets ODR) */
     HAL_GPIO_WritePin(LORA_SELECT_GPIO_Port, LORA_SELECT_Pin, GPIO_PIN_SET);
-
-    /* ── SPI1 AF pins PB3/PB4/PB5 ─────────────────────────────────── *
-     *  HAL configures these via HAL_SPI_MspInit() in stm32f1xx_hal_msp.c
-     *  when HAL_SPI_Init() is called. No manual init needed here.     */
 }
 
 /* ====================================================================
- *  MX_ADC1_Init
- *  8 channels: PA0–PA7 (ADC1_IN0–IN7)
- *  ScanConvMode DISABLED — adc.c reads channels individually.
+ *  MX_ADC1_Init  (unchanged)
  * ==================================================================== */
 static void MX_ADC1_Init(void)
 {
@@ -627,14 +506,8 @@ static void MX_ADC1_Init(void)
     if (HAL_ADC_Init(&hadc1) != HAL_OK) Error_Handler();
 
     uint32_t chList[] = {
-        ADC_CHANNEL_0,  /* PA0 — ADC0       */
-        ADC_CHANNEL_1,  /* PA1 — ADC1       */
-        ADC_CHANNEL_2,  /* PA2 — ADC2       */
-        ADC_CHANNEL_3,  /* PA3 — ADC3       */
-        ADC_CHANNEL_4,  /* PA4 — ADC4       */
-        ADC_CHANNEL_5,  /* PA5 — ADC5       */
-        ADC_CHANNEL_6,  /* PA6 — AC_VOLTAGE */
-        ADC_CHANNEL_7   /* PA7 — AC_CURRENT */
+        ADC_CHANNEL_0, ADC_CHANNEL_1, ADC_CHANNEL_2, ADC_CHANNEL_3,
+        ADC_CHANNEL_4, ADC_CHANNEL_5, ADC_CHANNEL_6, ADC_CHANNEL_7
     };
     for (uint8_t r = 0u; r < 8u; r++)
     {
@@ -646,7 +519,7 @@ static void MX_ADC1_Init(void)
 }
 
 /* ====================================================================
- *  MX_I2C2_Init  — PB10=SCL, PB11=SDA (default, no remap)
+ *  MX_I2C2_Init  (unchanged)
  * ==================================================================== */
 static void MX_I2C2_Init(void)
 {
@@ -663,10 +536,7 @@ static void MX_I2C2_Init(void)
 }
 
 /* ====================================================================
- *  MX_SPI1_Init
- *  SPI1 remapped to PB3(CLK)/PB4(MISO)/PB5(MOSI).
- *  NSS managed in software (PA15 toggled manually).
- *  64 MHz / 16 = 4 MHz SPI clock — within SX1278 10 MHz max.
+ *  MX_SPI1_Init  (unchanged)
  * ==================================================================== */
 static void MX_SPI1_Init(void)
 {
@@ -674,8 +544,8 @@ static void MX_SPI1_Init(void)
     hspi1.Init.Mode              = SPI_MODE_MASTER;
     hspi1.Init.Direction         = SPI_DIRECTION_2LINES;
     hspi1.Init.DataSize          = SPI_DATASIZE_8BIT;
-    hspi1.Init.CLKPolarity       = SPI_POLARITY_LOW;   /* CPOL=0 */
-    hspi1.Init.CLKPhase          = SPI_PHASE_1EDGE;    /* CPHA=0 — SX1278 mode 0 */
+    hspi1.Init.CLKPolarity       = SPI_POLARITY_LOW;
+    hspi1.Init.CLKPhase          = SPI_PHASE_1EDGE;
     hspi1.Init.NSS               = SPI_NSS_SOFT;
     hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
     hspi1.Init.FirstBit          = SPI_FIRSTBIT_MSB;
@@ -686,10 +556,7 @@ static void MX_SPI1_Init(void)
 }
 
 /* ====================================================================
- *  MX_TIM3_Init
- *  Default: prescaler=0, period=0xFFFF, internal clock.
- *  RF_Init() reconfigures TIM3 to 1 MHz (prescaler=63) for RF433.
- *  In LoRa/LOCAL mode TIM3 is unused after init.
+ *  MX_TIM3_Init  (unchanged — RF_Init() represcales to 1 MHz)
  * ==================================================================== */
 static void MX_TIM3_Init(void)
 {
@@ -713,7 +580,7 @@ static void MX_TIM3_Init(void)
 }
 
 /* ====================================================================
- *  MX_USART1_UART_Init  — PA9=TX, PA10=RX, no remap needed
+ *  MX_USART1_UART_Init  (unchanged)
  * ==================================================================== */
 static void MX_USART1_UART_Init(void)
 {

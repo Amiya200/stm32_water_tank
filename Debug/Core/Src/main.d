@@ -31,12 +31,12 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h \
  ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h \
  ../Core/Inc/lcd_i2c.h ../Core/Inc/main.h ../Core/Inc/rtc_i2c.h \
- ../Core/Inc/global.h ../Core/Inc/adc.h ../Core/Inc/lora.h \
- ../Core/Inc/lora_protocol.h ../Core/Inc/rf.h ../Core/Inc/uart.h \
- ../Core/Inc/model_handle.h ../Core/Inc/adc.h ../Core/Inc/eeprom_i2c.h \
- ../Core/Inc/screen.h ../Core/Inc/lcd_i2c.h ../Core/Inc/model_handle.h \
- ../Core/Inc/led.h ../Core/Inc/relay.h ../Core/Inc/acs712.h \
- ../Core/Inc/device_id.h
+ ../Core/Inc/global.h ../Core/Inc/rf.h ../Core/Inc/adc.h \
+ ../Core/Inc/lora.h ../Core/Inc/lora_protocol.h ../Core/Inc/rf.h \
+ ../Core/Inc/uart.h ../Core/Inc/model_handle.h ../Core/Inc/adc.h \
+ ../Core/Inc/eeprom_i2c.h ../Core/Inc/screen.h ../Core/Inc/lcd_i2c.h \
+ ../Core/Inc/model_handle.h ../Core/Inc/led.h ../Core/Inc/relay.h \
+ ../Core/Inc/acs712.h ../Core/Inc/device_id.h
 ../Core/Inc/main.h:
 ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h:
 ../Core/Inc/stm32f1xx_hal_conf.h:
@@ -73,6 +73,7 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Core/Inc/main.h:
 ../Core/Inc/rtc_i2c.h:
 ../Core/Inc/global.h:
+../Core/Inc/rf.h:
 ../Core/Inc/adc.h:
 ../Core/Inc/lora.h:
 ../Core/Inc/lora_protocol.h:
